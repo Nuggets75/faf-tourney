@@ -198,7 +198,9 @@ function drawTopbar(modeText) {
   const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
   topbarRight.innerHTML =
     '<a class="btn amber small" href="/host">Host tournament</a>' +
-    '<button class="gearbtn" id="cmdrBtn" title="Player login" style="font-family:var(--mono);font-size:12px;letter-spacing:1px">' + (me() ? esc(me()) : 'LOG IN') + '</button>' +
+    (me()
+      ? '<button class="btn ghost small" id="cmdrBtn" title="Player account">' + esc(me()) + '</button>'
+      : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
     (mode ? '<span>' + esc(mode) + '</span>' : '') +
     '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
@@ -289,17 +291,43 @@ async function renderHome() {
   let list = [];
   try { list = await api('/api/tournaments'); } catch (e) {}
 
+  const loginPanel = me() ? '' : `
+    <div class="panel section">
+      <h2>Log <span class="h2-strong">In</span></h2>
+      <div class="row" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <label style="margin-top:0">FAF name</label>
+          <input type="text" id="homeLgName" maxlength="30" placeholder="Your in-game name" autocomplete="off">
+        </div>
+        <button class="btn primary" id="homeLgGo" style="padding-top:10px;padding-bottom:10px">Log in</button>
+      </div>
+      <div class="muted small" style="margin-top:10px">Your name pre-fills every signup form. FAF login comes later.</div>
+    </div>`;
+
   const groups = [
     ['Open for signups', list.filter(t => t.status === 'signup'), 'Nothing open right now.'],
     ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0), 'No tournaments running.'],
     ['Completed', list.filter(t => t.status === 'finished'), 'No finished tournaments yet.']
   ];
 
-  app.innerHTML = groups.map((g, i) => `
+  app.innerHTML = loginPanel + groups.map((g, i) => `
     <div class="panel section">
       <h2>${esc(g[0])} <span class="h2-strong">(${g[1].length})</span></h2>
       <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
     </div>`).join('');
+
+  const hlName = document.getElementById('homeLgName');
+  if (hlName) {
+    const go = () => {
+      const n = hlName.value.trim();
+      if (!n) return toast('Enter your name', true);
+      localStorage.setItem('cmdrName', n);
+      toast('Logged in as ' + n);
+      route();
+    };
+    hlName.onkeydown = e => { if (e.key === 'Enter') go(); };
+    document.getElementById('homeLgGo').onclick = go;
+  }
 
   groups.forEach((g, i) => {
     const tl = document.getElementById('tlist' + i);
