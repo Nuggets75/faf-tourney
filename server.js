@@ -23,6 +23,22 @@ function loadDB() {
   } catch (e) {
     db = { tournaments: {} };
   }
+  // migrate v1 records so old test tournaments don't crash the client
+  for (const t of Object.values(db.tournaments)) {
+    if (!t.competition) {
+      t.competition = 'team';
+      t.bracketType = 'single';
+      t.formation = t.format === 'premade' ? 'premade' : 'draft';
+      t.draftOrder = 'snake';
+    }
+    if (!t.maps) t.maps = {};
+    if (t.lobbyOptions === undefined) t.lobbyOptions = '';
+    if (t.mods === undefined) t.mods = '';
+    for (const m of (t.matches || [])) {
+      if (!m.bracket) m.bracket = 'wb';
+      if (!m.bo) m.bo = t.bestOf || 3;
+    }
+  }
 }
 
 let saveTimer = null;
@@ -41,16 +57,12 @@ function saveDB() {
   }, 150);
 }
 
-function uid(len) {
-  return crypto.randomBytes(len || 8).toString('hex');
-}
+function uid(len) { return crypto.randomBytes(len || 8).toString('hex'); }
+function now() { return Date.now(); }
 
 // ---------- helpers ----------
 
-function now() { return Date.now(); }
-
 function getT(id) { return db.tournaments[id] || null; }
-
 function isAdmin(t, token) { return !!token && token === t.adminToken; }
 
 function teamOfCaptainToken(t, token) {
@@ -58,32 +70,35 @@ function teamOfCaptainToken(t, token) {
   for (const team of t.teams) if (team.captainToken === token) return team;
   return null;
 }
+function playerById(t, pid) { return t.players.find(p => p.id === pid) || null; }
+function teamById(t, tid) { return t.teams.find(x => x.id === tid) || null; }
+function matchById(t, mid) { return t.matches.find(x => x.id === mid) || null; }
 
-function playerById(t, pid) {
-  return t.players.find(p => p.id === pid) || null;
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+  }
+  return a;
 }
 
-function teamById(t, tid) {
-  return t.teams.find(x => x.id === tid) || null;
-}
-
-// Public view: strip secrets
 function publicView(t) {
   return {
-    id: t.id,
-    name: t.name,
-    description: t.description,
-    format: t.format,
-    teamSize: t.teamSize,
-    bestOf: t.bestOf,
-    seeding: t.seeding,
-    status: t.status,
-    createdAt: t.createdAt,
+    id: t.id, name: t.name, description: t.description,
+    lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
+    competition: t.competition, formation: t.formation,
+    teamSize: t.teamSize, draftOrder: t.draftOrder,
+    bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
+    cfg: t.cfg || null, seeding: t.seeding,
+    status: t.status, createdAt: t.createdAt,
+    rounds: t.rounds || 0,
+    maps: t.maps || {},
     players: t.players,
     teams: t.teams.map(x => ({
       id: x.id, name: x.name, seed: x.seed,
       captainId: x.captainId, playerIds: x.playerIds,
-      eliminated: x.eliminated || false
+      eliminated: x.eliminated || false,
+      out: x.out || null
     })),
     draft: t.draft,
     matches: t.matches,
@@ -92,9 +107,106 @@ function publicView(t) {
   };
 }
 
-// ---------- bracket ----------
+// ---------- generic elimination engine ----------
+// slot values: null = pending, 'BYE' = confirmed empty, otherwise teamId
 
-// classic seed placement order for a bracket of size n (power of two)
+function newMatch(t, bracket, round, index, bo) {
+  const m = {
+    id: 'm' + uid(4), bracket, round, index, bo: bo || 3, hcap: 0,
+    team1: null, team2: null, score1: null, score2: null,
+    status: 'waiting', winner: null, loser: null,
+    winnerTo: null, loserTo: null
+  };
+  t.matches.push(m);
+  return m;
+}
+
+function routeVal(t, m, isWinner, val) {
+  const to = isWinner ? m.winnerTo : m.loserTo;
+  if (to) {
+    const dest = matchById(t, to.id);
+    if (dest) setSlot(t, dest, to.slot, val);
+    return;
+  }
+  if (isWinner) {
+    if (val && val !== 'BYE') { t.championTeamId = val; t.status = 'finished'; }
+  } else if (val && val !== 'BYE') {
+    const lt = teamById(t, val);
+    if (lt) { lt.eliminated = true; lt.out = { bracket: m.bracket, round: m.round }; }
+  }
+}
+
+function setSlot(t, m, slot, val) {
+  if (slot === 1) m.team1 = val; else m.team2 = val;
+  evaluate(t, m);
+}
+
+function evaluate(t, m) {
+  if (m.status !== 'waiting') return;
+  if (m.team1 === null || m.team2 === null) return;
+  const real1 = m.team1 !== 'BYE', real2 = m.team2 !== 'BYE';
+  if (real1 && real2) {
+    m.status = 'ready';
+    if (m.hcap) { m.score1 = 1; m.score2 = 0; }
+    return;
+  }
+  m.status = 'bye';
+  if (real1 || real2) {
+    m.winner = real1 ? m.team1 : m.team2;
+    m.loser = 'BYE';
+  } else {
+    m.winner = 'BYE'; m.loser = 'BYE';
+  }
+  routeVal(t, m, false, m.loser);
+  routeVal(t, m, true, m.winner);
+}
+
+function finalizeMatch(t, m, s1, s2) {
+  m.score1 = s1; m.score2 = s2;
+  m.status = 'done';
+  m.winner = s1 > s2 ? m.team1 : m.team2;
+  m.loser = s1 > s2 ? m.team2 : m.team1;
+  if (m.bracket === 'sw') { swissAfterReport(t); return; }
+  routeVal(t, m, false, m.loser);
+  routeVal(t, m, true, m.winner);
+}
+
+// undo a done match (admin correction). returns error string or null
+function undoMatch(t, m) {
+  for (const to of [m.winnerTo, m.loserTo]) {
+    if (!to) continue;
+    const dest = matchById(t, to.id);
+    if (dest && (dest.status === 'live' || dest.status === 'done')) {
+      return 'The next match has already started — cannot correct this one';
+    }
+  }
+  for (const pair of [[m.winnerTo, m.winner], [m.loserTo, m.loser]]) {
+    const to = pair[0], val = pair[1];
+    if (!to) continue;
+    const dest = matchById(t, to.id);
+    if (!dest) continue;
+    if (to.slot === 1 && dest.team1 === val) dest.team1 = null;
+    if (to.slot === 2 && dest.team2 === val) dest.team2 = null;
+    dest.status = 'waiting';
+    dest.score1 = null; dest.score2 = null;
+    dest.winner = null; dest.loser = null;
+  }
+  if (!m.winnerTo && m.winner && m.winner !== 'BYE') {
+    t.championTeamId = null;
+    t.status = 'running';
+  }
+  if (m.loser && m.loser !== 'BYE') {
+    const lt = teamById(t, m.loser);
+    if (lt) { lt.eliminated = false; lt.out = null; }
+  }
+  m.winner = null; m.loser = null;
+  m.status = 'ready';
+  if (m.hcap) { m.score1 = 1; m.score2 = 0; } else { m.score1 = null; m.score2 = null; }
+  return null;
+}
+
+// ---------- bracket construction ----------
+
 function seedOrder(n) {
   let order = [1];
   while (order.length < n) {
@@ -105,142 +217,265 @@ function seedOrder(n) {
   }
   return order;
 }
-
 function nextPow2(n) { let p = 1; while (p < n) p *= 2; return p; }
+function log2i(n) { let r = 0; while ((1 << r) < n) r++; return r; }
 
-function buildBracket(t) {
+function seededSlots(t) {
   const teams = t.teams.slice().sort((a, b) => a.seed - b.seed);
-  const n = teams.length;
-  if (n < 2) return false;
-  const size = nextPow2(n);
-  const order = seedOrder(size); // seeds by slot position
-  const slots = order.map(s => (s <= n ? teams[s - 1].id : null));
-
-  const rounds = Math.log2(size);
-  const matches = [];
-  let idCounter = 1;
-
-  // create empty structure
-  for (let r = 1; r <= rounds; r++) {
-    const count = size / Math.pow(2, r);
-    for (let i = 0; i < count; i++) {
-      matches.push({
-        id: 'm' + (idCounter++),
-        round: r,
-        index: i,
-        team1: null, team2: null,
-        score1: null, score2: null,
-        winner: null,
-        status: 'waiting' // waiting | ready | done | bye
-      });
-    }
-  }
-
-  function matchAt(round, index) {
-    return matches.find(m => m.round === round && m.index === index);
-  }
-
-  // fill round 1
-  const r1count = size / 2;
-  for (let i = 0; i < r1count; i++) {
-    const m = matchAt(1, i);
-    m.team1 = slots[i * 2];
-    m.team2 = slots[i * 2 + 1];
-  }
-
-  t.matches = matches;
-  t.rounds = rounds;
-
-  // resolve byes + readiness
-  for (const m of matches.filter(x => x.round === 1)) {
-    if (m.team1 && !m.team2) { advance(t, m, m.team1, true); }
-    else if (m.team2 && !m.team1) { advance(t, m, m.team2, true); }
-    else if (m.team1 && m.team2) { m.status = 'ready'; }
-  }
-  return true;
+  const size = nextPow2(teams.length);
+  return seedOrder(size).map(s => (s <= teams.length ? teams[s - 1].id : 'BYE'));
 }
 
-function advance(t, m, winnerTeamId, isBye) {
-  m.winner = winnerTeamId;
-  m.status = isBye ? 'bye' : 'done';
-  const loserId = (m.team1 === winnerTeamId) ? m.team2 : m.team1;
-  if (!isBye && loserId) {
-    const lt = teamById(t, loserId);
-    if (lt) lt.eliminated = true;
+const BO_OK = [1, 3, 5, 7];
+function cleanBoList(arr, len) {
+  const out = [];
+  for (let i = 0; i < len; i++) {
+    const v = parseInt(Array.isArray(arr) ? arr[i] : null, 10);
+    out.push(BO_OK.indexOf(v) >= 0 ? v : 3);
   }
-  const nextRound = m.round + 1;
-  if (nextRound > t.rounds) {
-    t.championTeamId = winnerTeamId;
+  return out;
+}
+
+function buildSingle(t, cfg) {
+  const slots = seededSlots(t);
+  const size = slots.length;
+  const R = log2i(size);
+  t.rounds = R;
+  const grid = {};
+  for (let r = 1; r <= R; r++) {
+    grid[r] = [];
+    const count = size / Math.pow(2, r);
+    for (let i = 0; i < count; i++) grid[r].push(newMatch(t, 'wb', r, i, cfg.rounds[r - 1]));
+  }
+  for (let r = 1; r < R; r++) {
+    grid[r].forEach((m, i) => {
+      m.winnerTo = { id: grid[r + 1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+    });
+  }
+  grid[1].forEach((m, i) => {
+    setSlot(t, m, 1, slots[i * 2]);
+    setSlot(t, m, 2, slots[i * 2 + 1]);
+  });
+}
+
+function buildDouble(t, cfg) {
+  const slots = seededSlots(t);
+  const size = slots.length; // >= 4 (n>=3 enforced by caller)
+  const R = log2i(size);
+  t.rounds = R;
+  const wb = {}, lb = {};
+  for (let r = 1; r <= R; r++) {
+    wb[r] = [];
+    const count = size / Math.pow(2, r);
+    for (let i = 0; i < count; i++) wb[r].push(newMatch(t, 'wb', r, i, cfg.wb[r - 1]));
+  }
+  const lbRounds = 2 * R - 2;
+  for (let q = 1; q <= lbRounds; q++) {
+    lb[q] = [];
+    const k = (q % 2 === 1) ? (q + 3) / 2 : (q + 2) / 2;
+    const count = size / Math.pow(2, k);
+    for (let i = 0; i < count; i++) lb[q].push(newMatch(t, 'lb', q, i, cfg.lb[q - 1]));
+  }
+  const gf = newMatch(t, 'gf', 1, 0, cfg.gf);
+  if (cfg.lbHandicap) gf.hcap = 1;
+
+  for (let r = 1; r <= R; r++) {
+    wb[r].forEach((m, i) => {
+      if (r < R) m.winnerTo = { id: wb[r + 1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+      else m.winnerTo = { id: gf.id, slot: 1 };
+      if (r === 1) {
+        m.loserTo = { id: lb[1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+      } else {
+        const q = 2 * r - 2;
+        const cnt = lb[q].length;
+        const j = (r % 2 === 0) ? (cnt - 1 - i) : i; // alternate to delay rematches
+        m.loserTo = { id: lb[q][j].id, slot: 1 };
+      }
+    });
+  }
+  for (let q = 1; q <= lbRounds; q++) {
+    lb[q].forEach((m, i) => {
+      if (q === lbRounds) { m.winnerTo = { id: gf.id, slot: 2 }; return; }
+      if (q % 2 === 1) m.winnerTo = { id: lb[q + 1][i].id, slot: 2 };
+      else m.winnerTo = { id: lb[q + 1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+    });
+  }
+  wb[1].forEach((m, i) => {
+    setSlot(t, m, 1, slots[i * 2]);
+    setSlot(t, m, 2, slots[i * 2 + 1]);
+  });
+}
+
+// ---------- swiss ----------
+
+function swissStandings(t) {
+  const S = {};
+  for (const team of t.teams) S[team.id] = { teamId: team.id, seed: team.seed, wins: 0, losses: 0, gd: 0, byes: 0 };
+  for (const m of t.matches) {
+    if (m.bracket !== 'sw') continue;
+    if (m.status === 'bye') {
+      const id = m.team1 !== 'BYE' ? m.team1 : m.team2;
+      if (S[id]) { S[id].wins++; S[id].byes++; S[id].gd += 1; }
+    } else if (m.status === 'done') {
+      const w = S[m.winner], l = S[m.loser];
+      const ws = m.winner === m.team1 ? m.score1 : m.score2;
+      const ls = m.winner === m.team1 ? m.score2 : m.score1;
+      if (w) { w.wins++; w.gd += ws - ls; }
+      if (l) { l.losses++; l.gd -= ws - ls; }
+    }
+  }
+  return Object.values(S).sort((a, b) => b.wins - a.wins || b.gd - a.gd || a.seed - b.seed);
+}
+
+function swissPairRound(t, r) {
+  const standings = swissStandings(t);
+  const pool = standings.map(s => s.teamId);
+  const played = {};
+  for (const m of t.matches) {
+    if (m.bracket === 'sw' && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE') {
+      played[m.team1 + '|' + m.team2] = 1;
+      played[m.team2 + '|' + m.team1] = 1;
+    }
+  }
+  if (pool.length % 2 === 1) {
+    let byeIdx = pool.length - 1;
+    for (let i = pool.length - 1; i >= 0; i--) {
+      const st = standings.find(s => s.teamId === pool[i]);
+      if (st && st.byes === 0) { byeIdx = i; break; }
+    }
+    const byeTeam = pool.splice(byeIdx, 1)[0];
+    const bm = newMatch(t, 'sw', r, 99, t.cfg.bo);
+    bm.team1 = byeTeam; bm.team2 = 'BYE'; bm.status = 'bye'; bm.winner = byeTeam; bm.loser = 'BYE';
+  }
+  let idx = 0;
+  while (pool.length) {
+    const a = pool.shift();
+    let j = 0;
+    while (j < pool.length - 1 && played[a + '|' + pool[j]]) j++;
+    const b = pool.splice(j, 1)[0];
+    const m = newMatch(t, 'sw', r, idx++, t.cfg.bo);
+    m.team1 = a; m.team2 = b; m.status = 'ready';
+  }
+}
+
+function swissMaxRound(t) {
+  let r = 0;
+  for (const m of t.matches) if (m.bracket === 'sw' && m.round > r) r = m.round;
+  return r;
+}
+
+function swissAfterReport(t) {
+  const maxR = swissMaxRound(t);
+  const open = t.matches.some(m => m.bracket === 'sw' && m.round === maxR &&
+    (m.status === 'ready' || m.status === 'live' || m.status === 'waiting'));
+  if (open) return;
+  if (maxR < t.cfg.rounds) { swissPairRound(t, maxR + 1); return; }
+  const gfExisting = t.matches.find(m => m.bracket === 'gf');
+  if (t.cfg.final) {
+    if (!gfExisting) {
+      const top = swissStandings(t);
+      const gf = newMatch(t, 'gf', 1, 0, t.cfg.finalBo);
+      gf.team1 = top[0].teamId; gf.team2 = top[1].teamId; gf.status = 'ready';
+    }
+  } else {
+    const top = swissStandings(t);
+    t.championTeamId = top[0].teamId;
+    t.status = 'finished';
+  }
+}
+
+// ---------- FFA ----------
+
+function ffaGroups(entrantIds, perMatch) {
+  const k = entrantIds.length;
+  let g = Math.ceil(k / perMatch);
+  if (g > 1 && Math.floor(k / g) < 2) g = Math.max(1, Math.floor(k / 2));
+  const base = Math.floor(k / g), extra = k - base * g;
+  const groups = [];
+  let pos = 0;
+  for (let i = 0; i < g; i++) {
+    const sz = base + (i < extra ? 1 : 0);
+    groups.push(entrantIds.slice(pos, pos + sz));
+    pos += sz;
+  }
+  return groups;
+}
+
+function ffaCreateRound(t, r, entrantIds) {
+  const groups = ffaGroups(shuffle(entrantIds.slice()), t.ffaCfg.perMatch);
+  groups.forEach((grp, i) => {
+    const m = newMatch(t, 'ffa', r, i, 1);
+    m.entrants = grp;
+    m.winners = [];
+    m.status = 'ready';
+  });
+}
+
+function ffaMaxRound(t) {
+  let r = 0;
+  for (const m of t.matches) if (m.bracket === 'ffa' && m.round > r) r = m.round;
+  return r;
+}
+
+function ffaAfterReport(t) {
+  const maxR = ffaMaxRound(t);
+  const roundMatches = t.matches.filter(m => m.bracket === 'ffa' && m.round === maxR);
+  if (roundMatches.some(m => m.status !== 'done')) return;
+  let winners = [];
+  for (const m of roundMatches) winners = winners.concat(m.winners);
+  if (winners.length === 1) {
+    t.championTeamId = winners[0];
     t.status = 'finished';
     return;
   }
-  const next = t.matches.find(x => x.round === nextRound && x.index === Math.floor(m.index / 2));
-  if (!next) return;
-  if (m.index - Math.floor(m.index / 2) * 2 === 0) next.team1 = winnerTeamId;
-  else next.team2 = winnerTeamId;
-  if (next.team1 && next.team2) next.status = 'ready';
-  // double-bye chains (tiny brackets): if the other feeder was a bye slot that can never fill
-  const feederA = t.matches.find(x => x.round === m.round && x.index === Math.floor(m.index / 2) * 2);
-  const feederB = t.matches.find(x => x.round === m.round && x.index === Math.floor(m.index / 2) * 2 + 1);
-  const other = (feederA === m) ? feederB : feederA;
-  if (other && !other.team1 && !other.team2 && other.status === 'waiting') {
-    other.status = 'bye';
-    // next gets winner by walkover
-    if (next.team1 && !next.team2) advance(t, next, next.team1, true);
-    else if (next.team2 && !next.team1) advance(t, next, next.team2, true);
-  }
+  ffaCreateRound(t, maxR + 1, winners);
 }
 
-// ---------- draft ----------
+// ---------- teams & draft ----------
+
+function makeTeam(t, name, captainPid, memberPids, seed) {
+  const team = {
+    id: 't' + uid(4), name, seed,
+    captainId: captainPid, playerIds: memberPids.slice(),
+    captainToken: uid(10), eliminated: false, out: null
+  };
+  t.teams.push(team);
+  for (const pid of memberPids) { const p = playerById(t, pid); if (p) p.teamId = team.id; }
+  return team;
+}
+
+function applySeeding(t, arr, avgFn) {
+  if (t.seeding === 'rating') arr.sort((a, b) => avgFn(b) - avgFn(a));
+  else shuffle(arr);
+}
 
 function buildDraft(t, captainIds) {
-  // teams: one per captain, named after captain
   t.teams = [];
   const seeds = captainIds.slice();
-  if (t.seeding === 'rating') {
-    seeds.sort((a, b) => (playerById(t, b).rating || 0) - (playerById(t, a).rating || 0));
-  } else {
-    for (let i = seeds.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const tmp = seeds[i]; seeds[i] = seeds[j]; seeds[j] = tmp;
-    }
-  }
+  applySeeding(t, seeds, pid => (playerById(t, pid).rating || 0));
   seeds.forEach((pid, i) => {
     const p = playerById(t, pid);
-    const team = {
-      id: 't' + uid(4),
-      name: 'Team ' + p.name,
-      seed: i + 1,
-      captainId: pid,
-      playerIds: [pid],
-      captainToken: uid(10),
-      eliminated: false
-    };
-    t.teams.push(team);
-    p.teamId = team.id;
+    makeTeam(t, 'Team ' + p.name, pid, [pid], i + 1);
   });
-
-  // snake order of team ids across (teamSize - 1) rounds
   const numTeams = t.teams.length;
   const picksPerTeam = Math.max(0, t.teamSize - 1);
   const poolSize = t.players.filter(p => !p.teamId).length;
   const totalPicks = Math.min(numTeams * picksPerTeam, poolSize);
-  const order = [];
   const base = t.teams.map(x => x.id);
+  const order = [];
   let i = 0;
-  while (order.length < totalPicks) {
+  while (order.length < totalPicks && i < 10000) {
     const round = Math.floor(i / numTeams);
     const pos = i - round * numTeams;
-    const idx = (round % 2 === 0) ? pos : (numTeams - 1 - pos);
+    let idx;
+    if (t.draftOrder === 'snake') idx = (round % 2 === 0) ? pos : (numTeams - 1 - pos);
+    else idx = numTeams - 1 - pos; // linear: bottom seed picks first, every round
     const teamId = base[idx];
     const team = teamById(t, teamId);
-    if (team.playerIds.length + order.filter(o => o === teamId).length < t.teamSize) {
-      order.push(teamId);
-    }
+    if (team.playerIds.length + order.filter(o => o === teamId).length < t.teamSize) order.push(teamId);
     i++;
-    if (i > 10000) break;
   }
-  t.draft = { order: order, current: 0 };
+  t.draft = { order, current: 0 };
   t.status = 'draft';
 }
 
@@ -249,21 +484,44 @@ function finishDraftIfDone(t) {
   if (t.draft.current >= t.draft.order.length) {
     t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
     t.status = 'drafted';
-    t.draft = { order: t.draft.order, current: t.draft.current, done: true };
+    t.draft.done = true;
   }
 }
 
-// ---------- API ----------
-
-function json(res, code, obj) {
-  const body = JSON.stringify(obj);
-  res.writeHead(code, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-  });
-  res.end(body);
+function formTeamsGrouped(t) {
+  if (t.teamSize === 1) {
+    if (t.players.length < 2) return 'Need at least 2 players';
+    const arr = t.players.slice();
+    applySeeding(t, arr, p => p.rating || 0);
+    t.teams = [];
+    arr.forEach((p, i) => makeTeam(t, p.name, p.id, [p.id], i + 1));
+    t.subs = [];
+    t.status = 'drafted';
+    return null;
+  }
+  const groups = {};
+  for (const p of t.players) {
+    const key = (p.teamName || '').toLowerCase();
+    if (!key) continue;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(p);
+  }
+  const entries = Object.values(groups);
+  if (entries.length < 2) return 'Need at least 2 teams (players set a team name at signup)';
+  applySeeding(t, entries, g => g.reduce((s, p) => s + (p.rating || 0), 0) / g.length);
+  t.teams = [];
+  entries.forEach((g, i) => makeTeam(t, g[0].teamName, g[0].id, g.map(p => p.id), i + 1));
+  t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
+  t.status = 'drafted';
+  return null;
 }
 
+// ---------- API plumbing ----------
+
+function json(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
 function bad(res, msg) { json(res, 400, { error: msg }); }
 
 function readBody(req) {
@@ -285,57 +543,64 @@ function cleanName(s, max) {
   if (typeof s !== 'string') return '';
   return s.replace(/[<>]/g, '').trim().slice(0, max || 40);
 }
+function intIn(v, lo, hi, dflt) {
+  const n = parseInt(v, 10);
+  return (n >= lo && n <= hi) ? n : dflt;
+}
+
+// ---------- API ----------
 
 async function handleAPI(req, res, url) {
-  const parts = url.pathname.split('/').filter(Boolean); // ['api', ...]
+  const parts = url.pathname.split('/').filter(Boolean);
   const method = req.method;
 
-  // POST /api/tournaments
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'POST') {
     const b = await readBody(req);
     const name = cleanName(b.name, 60);
     if (!name) return bad(res, 'Name required');
-    const format = (b.format === 'premade') ? 'premade' : 'draft';
-    let teamSize = parseInt(b.teamSize, 10);
-    if (!(teamSize >= 1 && teamSize <= 8)) teamSize = 2;
-    let bestOf = parseInt(b.bestOf, 10);
-    if ([1, 3, 5, 7].indexOf(bestOf) < 0) bestOf = 3;
+    const competition = b.competition === 'ffa' ? 'ffa' : 'team';
+    let teamSize, formation, bracketType = 'single', ffaCfg = null, draftOrder = 'linear';
+    if (competition === 'team') {
+      teamSize = intIn(b.teamSize, 1, 6, 2);
+      formation = (teamSize === 1) ? 'solo' : (b.formation === 'premade' ? 'premade' : 'draft');
+      bracketType = ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0 ? b.bracketType : 'single';
+      draftOrder = b.draftOrder === 'snake' ? 'snake' : 'linear';
+    } else {
+      teamSize = intIn(b.teamSize, 1, 3, 1);
+      formation = (teamSize === 1) ? 'solo' : 'premade';
+      ffaCfg = {
+        perMatch: intIn(b.perMatch, 3, 8, 6),
+        advance: intIn(b.advance, 1, 2, 1)
+      };
+    }
     const t = {
-      id: uid(5),
-      adminToken: uid(12),
-      name: name,
-      description: cleanName(b.description, 500),
-      format: format,
-      teamSize: teamSize,
-      bestOf: bestOf,
+      id: uid(5), adminToken: uid(12),
+      name, description: cleanName(b.description, 500),
+      lobbyOptions: cleanName(b.lobbyOptions, 500),
+      mods: cleanName(b.mods, 500),
+      competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
+      cfg: null, maps: {},
       seeding: (b.seeding === 'rating') ? 'rating' : 'random',
-      status: 'signup',
-      createdAt: now(),
-      players: [],
-      teams: [],
-      matches: [],
-      rounds: 0,
-      draft: null,
-      subs: []
+      status: 'signup', createdAt: now(),
+      players: [], teams: [], matches: [], rounds: 0, draft: null, subs: []
     };
     db.tournaments[t.id] = t;
     saveDB();
     return json(res, 200, { id: t.id, adminToken: t.adminToken });
   }
 
-  // GET /api/tournaments
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     const list = Object.values(db.tournaments)
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
-        id: t.id, name: t.name, status: t.status, format: t.format,
+        id: t.id, name: t.name, status: t.status,
+        competition: t.competition, bracketType: t.bracketType,
         teamSize: t.teamSize, players: t.players.length,
         teams: t.teams.length, createdAt: t.createdAt
       }));
     return json(res, 200, list);
   }
 
-  // /api/t/:id/...
   if (parts.length >= 3 && parts[1] === 't') {
     const t = getT(parts[2]);
     if (!t) return json(res, 404, { error: 'Tournament not found' });
@@ -358,29 +623,23 @@ async function handleAPI(req, res, url) {
     if (method !== 'POST') return bad(res, 'Unsupported');
     const b = await readBody(req);
 
-    // signup
     if (sub === 'signup') {
       if (t.status !== 'signup') return bad(res, 'Signups are closed');
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Player name required');
-      const lower = name.toLowerCase();
-      if (t.players.some(p => p.name.toLowerCase() === lower)) return bad(res, 'That name is already signed up');
+      if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, 'That name is already signed up');
       let rating = parseInt(b.rating, 10);
       if (!(rating >= 0 && rating <= 4000)) rating = null;
       const p = {
-        id: 'p' + uid(4),
-        name: name,
-        rating: rating,
-        teamName: t.format === 'premade' ? cleanName(b.teamName, 30) : '',
-        teamId: null,
-        signedAt: now()
+        id: 'p' + uid(4), name, rating,
+        teamName: (t.formation === 'premade') ? cleanName(b.teamName, 30) : '',
+        teamId: null, signedAt: now()
       };
       t.players.push(p);
       saveDB();
       return json(res, 200, { ok: true, playerId: p.id });
     }
 
-    // remove player (admin)
     if (sub === 'remove') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
       if (t.status !== 'signup') return bad(res, 'Can only remove players during signups');
@@ -389,13 +648,62 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
-    // phase control (admin)
+    // edit player (admin, any time) — this is also the substitution mechanism:
+    // rename the dropped player to the sub's FAF name and fix the rating
+    if (sub === 'edit_player') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      const p = playerById(t, b.playerId);
+      if (!p) return bad(res, 'Player not found');
+      const name = cleanName(b.name, 30);
+      if (!name) return bad(res, 'Name required');
+      if (t.players.some(x => x.id !== p.id && x.name.toLowerCase() === name.toLowerCase())) {
+        return bad(res, 'Another player already has that name');
+      }
+      let rating = parseInt(b.rating, 10);
+      if (!(rating >= 0 && rating <= 4000)) rating = null;
+      const oldName = p.name;
+      p.name = name;
+      p.rating = rating;
+      // keep auto-derived team names in sync
+      for (const team of t.teams) {
+        if (team.captainId === p.id) {
+          if (team.name === 'Team ' + oldName) team.name = 'Team ' + name;
+          if (team.name === oldName) team.name = name; // solo teams
+        }
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // edit tournament info (admin, any time)
+    if (sub === 'edit_info') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (b.description !== undefined) t.description = cleanName(b.description, 500);
+      if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
+      if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // set maps for a round (admin, any time)
+    if (sub === 'set_maps') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      const bracket = String(b.bracket || '');
+      const round = parseInt(b.round, 10);
+      if (['wb', 'lb', 'gf', 'sw', 'ffa'].indexOf(bracket) < 0 || !(round >= 1 && round <= 30)) return bad(res, 'Bad round');
+      let maps = Array.isArray(b.maps) ? b.maps.map(m => cleanName(m, 50)).filter(m => m) : [];
+      maps = maps.slice(0, 9);
+      t.maps[bracket + ':' + round] = maps;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'phase') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
       const a = b.action;
 
       if (a === 'reopen_signups') {
-        if (t.status !== 'signup' && t.status !== 'draft' && t.status !== 'drafted') return bad(res, 'Bracket already started');
+        if (['signup', 'draft', 'drafted'].indexOf(t.status) < 0) return bad(res, 'Bracket already started');
         t.status = 'signup';
         t.teams = []; t.draft = null; t.subs = [];
         for (const p of t.players) p.teamId = null;
@@ -404,65 +712,61 @@ async function handleAPI(req, res, url) {
       }
 
       if (a === 'start_draft') {
-        if (t.format !== 'draft') return bad(res, 'This tournament uses premade teams');
+        if (t.formation !== 'draft') return bad(res, 'This tournament does not use a draft');
         if (t.status !== 'signup') return bad(res, 'Draft already started');
         const capIds = Array.isArray(b.captainIds) ? b.captainIds.filter(id => playerById(t, id)) : [];
         if (capIds.length < 2) return bad(res, 'Pick at least 2 captains');
-        if (capIds.length > t.players.length) return bad(res, 'More captains than players');
         buildDraft(t, capIds);
-        finishDraftIfDone(t); // teamSize 1 edge case
+        finishDraftIfDone(t);
         saveDB();
         return json(res, 200, { ok: true });
       }
 
       if (a === 'form_teams') {
-        if (t.format !== 'premade') return bad(res, 'This tournament uses captain drafting');
+        if (t.formation === 'draft') return bad(res, 'This tournament drafts teams');
         if (t.status !== 'signup') return bad(res, 'Teams already formed');
-        // group by teamName
-        const groups = {};
-        for (const p of t.players) {
-          const key = (p.teamName || '').toLowerCase();
-          if (!key) continue;
-          if (!groups[key]) groups[key] = [];
-          groups[key].push(p);
-        }
-        const entries = Object.values(groups).filter(g => g.length >= 1);
-        if (entries.length < 2) return bad(res, 'Need at least 2 teams (players set a team name at signup)');
-        // seeding
-        if (t.seeding === 'rating') {
-          entries.sort((g1, g2) => {
-            const avg = g => g.reduce((s, p) => s + (p.rating || 0), 0) / g.length;
-            return avg(g2) - avg(g1);
-          });
-        } else {
-          for (let i = entries.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            const tmp = entries[i]; entries[i] = entries[j]; entries[j] = tmp;
-          }
-        }
-        t.teams = entries.map((g, i) => {
-          const team = {
-            id: 't' + uid(4),
-            name: g[0].teamName,
-            seed: i + 1,
-            captainId: g[0].id,
-            playerIds: g.map(p => p.id),
-            captainToken: uid(10),
-            eliminated: false
-          };
-          for (const p of g) p.teamId = team.id;
-          return team;
-        });
-        t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
-        t.status = 'drafted';
+        const err = formTeamsGrouped(t);
+        if (err) return bad(res, err);
         saveDB();
         return json(res, 200, { ok: true });
       }
 
       if (a === 'start_bracket') {
         if (t.status !== 'drafted') return bad(res, 'Form teams first');
-        if (!buildBracket(t)) return bad(res, 'Need at least 2 teams');
-        if (t.status !== 'finished') t.status = 'running';
+        const n = t.teams.length;
+        if (n < 2) return bad(res, 'Need at least 2 teams');
+        const c = b.config || {};
+
+        if (t.competition === 'ffa') {
+          ffaCreateRound(t, 1, t.teams.map(x => x.id));
+          t.status = 'running';
+        } else if (t.bracketType === 'single') {
+          const R = log2i(nextPow2(n));
+          t.cfg = { rounds: cleanBoList(c.rounds, R) };
+          buildSingle(t, t.cfg);
+          if (t.status !== 'finished') t.status = 'running';
+        } else if (t.bracketType === 'double') {
+          if (n < 3) return bad(res, 'Double elimination needs at least 3 teams');
+          const R = log2i(nextPow2(n));
+          t.cfg = {
+            wb: cleanBoList(c.wb, R),
+            lb: cleanBoList(c.lb, 2 * R - 2),
+            gf: BO_OK.indexOf(parseInt(c.gf, 10)) >= 0 ? parseInt(c.gf, 10) : 5,
+            lbHandicap: c.lbHandicap ? 1 : 0
+          };
+          buildDouble(t, t.cfg);
+          if (t.status !== 'finished') t.status = 'running';
+        } else { // swiss
+          const defR = Math.max(1, log2i(nextPow2(n)));
+          t.cfg = {
+            rounds: intIn(c.rounds, 1, 15, defR),
+            bo: (parseInt(c.bo, 10) === 1) ? 1 : 3,
+            final: c.final ? 1 : 0,
+            finalBo: BO_OK.indexOf(parseInt(c.finalBo, 10)) >= 0 ? parseInt(c.finalBo, 10) : 5
+          };
+          swissPairRound(t, 1);
+          t.status = 'running';
+        }
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -470,7 +774,6 @@ async function handleAPI(req, res, url) {
       return bad(res, 'Unknown action');
     }
 
-    // draft pick (current captain or admin)
     if (sub === 'pick') {
       if (t.status !== 'draft' || !t.draft) return bad(res, 'No draft in progress');
       const d = t.draft;
@@ -478,9 +781,7 @@ async function handleAPI(req, res, url) {
       const turnTeamId = d.order[d.current];
       const admin = isAdmin(t, b.token);
       const capTeam = teamOfCaptainToken(t, b.token);
-      if (!admin && (!capTeam || capTeam.id !== turnTeamId)) {
-        return json(res, 403, { error: 'Not your pick' });
-      }
+      if (!admin && (!capTeam || capTeam.id !== turnTeamId)) return json(res, 403, { error: 'Not your pick' });
       const p = playerById(t, b.playerId);
       if (!p) return bad(res, 'Player not found');
       if (p.teamId) return bad(res, 'Player already picked');
@@ -493,45 +794,87 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
-    // report score (captain of either team, or admin)
+    // score report — supports running (partial) scores
     if (sub === 'report') {
       if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
-      const m = t.matches.find(x => x.id === b.matchId);
+      const m = matchById(t, b.matchId);
       if (!m) return bad(res, 'Match not found');
-      if (m.status !== 'ready' && !(m.status === 'done' && isAdmin(t, b.token))) {
-        return bad(res, m.status === 'done' ? 'Already reported (admin can correct)' : 'Match not ready');
-      }
       const admin = isAdmin(t, b.token);
       const capTeam = teamOfCaptainToken(t, b.token);
+
+      // ---- FFA ----
+      if (m.bracket === 'ffa') {
+        if (!admin && (!capTeam || m.entrants.indexOf(capTeam.id) < 0)) {
+          return json(res, 403, { error: 'Only participants or the organizer can report this match' });
+        }
+        if (m.status === 'done') {
+          if (!admin) return bad(res, 'Already reported — only the organizer can correct it');
+          if (t.matches.some(x => x.bracket === 'ffa' && x.round > m.round)) {
+            return bad(res, 'The next round was already generated — cannot correct');
+          }
+          // undo
+          for (const eid of m.entrants) {
+            const lt = teamById(t, eid);
+            if (lt) { lt.eliminated = false; lt.out = null; }
+          }
+          m.winners = [];
+          m.status = 'ready';
+          t.championTeamId = null;
+          if (t.status === 'finished') t.status = 'running';
+        }
+        if (m.status !== 'ready') return bad(res, 'Match not ready');
+        const roundMatchCount = t.matches.filter(x => x.bracket === 'ffa' && x.round === m.round).length;
+        const isFinal = roundMatchCount === 1;
+        const need = isFinal ? 1 : Math.min(t.ffaCfg.advance, m.entrants.length - 1);
+        const win = Array.isArray(b.winners) ? b.winners.filter(id => m.entrants.indexOf(id) >= 0) : [];
+        if (win.length !== need) return bad(res, 'Select exactly ' + need + ' winner' + (need > 1 ? 's' : ''));
+        m.winners = win;
+        m.status = 'done';
+        for (const eid of m.entrants) {
+          if (win.indexOf(eid) < 0) {
+            const lt = teamById(t, eid);
+            if (lt) { lt.eliminated = true; lt.out = { bracket: 'ffa', round: m.round }; }
+          }
+        }
+        ffaAfterReport(t);
+        saveDB();
+        return json(res, 200, { ok: true });
+      }
+
+      // ---- 1v1-style matches (wb / lb / gf / sw) ----
       if (!admin && (!capTeam || (capTeam.id !== m.team1 && capTeam.id !== m.team2))) {
         return json(res, 403, { error: 'Only the two captains or the organizer can report this match' });
       }
-      const s1 = parseInt(b.score1, 10), s2 = parseInt(b.score2, 10);
-      const maxW = Math.ceil(t.bestOf / 2);
-      if (!(s1 >= 0 && s2 >= 0 && s1 <= maxW && s2 <= maxW)) return bad(res, 'Scores must be 0-' + maxW);
-      if (s1 === s2) return bad(res, 'No draws — one team must win');
-      if (s1 !== maxW && s2 !== maxW) return bad(res, 'Winner needs ' + maxW + ' wins (best of ' + t.bestOf + ')');
 
-      // admin correction of a finished match: only if next match not played yet
       if (m.status === 'done') {
-        const nm = t.matches.find(x => x.round === m.round + 1 && x.index === Math.floor(m.index / 2));
-        if (nm && nm.status === 'done') return bad(res, 'Next match already played — cannot correct');
-        // undo previous advancement
-        const prevWinner = m.winner;
-        const prevLoser = (m.team1 === prevWinner) ? m.team2 : m.team1;
-        const lt = teamById(t, prevLoser); if (lt) lt.eliminated = false;
-        if (nm) {
-          if (nm.team1 === prevWinner) nm.team1 = null;
-          if (nm.team2 === prevWinner) nm.team2 = null;
-          nm.status = (nm.team1 && nm.team2) ? 'ready' : 'waiting';
+        if (!admin) return bad(res, 'Already reported — only the organizer can correct it');
+        if (m.bracket === 'sw') {
+          const later = t.matches.some(x => x.bracket === 'sw' && x.round > m.round && (x.status === 'live' || x.status === 'done') &&
+            (x.team1 === m.team1 || x.team1 === m.team2 || x.team2 === m.team1 || x.team2 === m.team2));
+          const gf = t.matches.find(x => x.bracket === 'gf');
+          if (later || (gf && (gf.status === 'live' || gf.status === 'done'))) {
+            return bad(res, 'Later matches already played — cannot correct');
+          }
+          m.status = 'ready'; m.winner = null; m.loser = null;
         } else {
-          t.championTeamId = null;
-          t.status = 'running';
+          const err = undoMatch(t, m);
+          if (err) return bad(res, err);
         }
       }
 
-      m.score1 = s1; m.score2 = s2;
-      advance(t, m, s1 > s2 ? m.team1 : m.team2, false);
+      if (m.status !== 'ready' && m.status !== 'live') return bad(res, 'Match not ready yet');
+      const maxW = Math.ceil(m.bo / 2);
+      const s1 = parseInt(b.score1, 10), s2 = parseInt(b.score2, 10);
+      if (!(s1 >= 0 && s2 >= 0 && s1 <= maxW && s2 <= maxW)) return bad(res, 'Scores must be between 0 and ' + maxW);
+      if (m.hcap && s1 < 1) return bad(res, 'This grand final starts 1-0 (upper bracket advantage)');
+      if (s1 === maxW && s2 === maxW) return bad(res, 'Both teams cannot reach ' + maxW);
+
+      if (s1 === maxW || s2 === maxW) {
+        finalizeMatch(t, m, s1, s2);
+      } else {
+        m.score1 = s1; m.score2 = s2;
+        m.status = 'live';
+      }
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -545,13 +888,9 @@ async function handleAPI(req, res, url) {
 // ---------- static ----------
 
 const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2'
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2'
 };
 
 function serveStatic(req, res, url) {
@@ -565,8 +904,6 @@ function serveStatic(req, res, url) {
     res.end(data);
   });
 }
-
-// ---------- server ----------
 
 loadDB();
 
