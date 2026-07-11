@@ -11,6 +11,7 @@ const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const BOOT = String(Date.now()); // cache-buster, changes every container restart
 
 // ---------- storage ----------
 
@@ -900,7 +901,11 @@ function serveStatic(req, res, url) {
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); return res.end('not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    if (file.endsWith('index.html')) data = data.toString().replace(/__V__/g, BOOT);
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'Cache-Control': 'no-store'
+    });
     res.end(data);
   });
 }
