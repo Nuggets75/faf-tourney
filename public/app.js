@@ -961,15 +961,20 @@ function drawTeams(el) {
 
   const capPool = document.getElementById('capPool');
   if (capPool) {
-    for (const p of T.players) {
-      const chip = document.createElement('label');
-      chip.className = 'poolchip';
-      chip.style.cursor = 'pointer';
-      chip.innerHTML = `<input type="checkbox" value="${p.id}"${F.capSel[p.id] ? ' checked' : ''}> ${esc(p.name)} <span class="rating">${p.rating != null ? p.rating : ''}</span>`;
-      const cb = chip.querySelector('input');
+    const tbl = document.createElement('table');
+    tbl.innerHTML = '<thead><tr><th style="width:40px">#</th><th>Name</th><th style="width:90px">Rating</th><th style="width:90px">Captain</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    const sorted = T.players.slice().sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    sorted.forEach((p, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="mono muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.rating != null ? p.rating : '\u2014'}</td>
+        <td><input type="checkbox" value="${p.id}"${F.capSel[p.id] ? ' checked' : ''}></td>`;
+      const cb = tr.querySelector('input');
       cb.onchange = () => { if (cb.checked) F.capSel[p.id] = 1; else delete F.capSel[p.id]; };
-      capPool.appendChild(chip);
-    }
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    capPool.appendChild(tbl);
     document.getElementById('startDraft').onclick = async () => {
       const ids = Object.keys(F.capSel);
       if (ids.length < 2) return toast('Pick at least 2 captains', true);
@@ -989,17 +994,25 @@ function drawTeams(el) {
 
   const dp = document.getElementById('draftPool');
   if (dp) {
-    const free = T.players.filter(p => !p.teamId);
-    if (!free.length) dp.innerHTML = '<div class="empty">Pool is empty.</div>';
-    for (const p of free) {
-      const chip = document.createElement('div');
-      chip.className = 'poolchip';
-      chip.innerHTML = `${esc(p.name)} <span class="rating">${p.rating != null ? p.rating : ''}</span> <button class="btn amber small">Pick</button>`;
-      chip.querySelector('button').onclick = async () => {
-        try { await api('/api/t/' + T.id + '/pick', { playerId: p.id, token: myToken() }); await refresh(); }
-        catch (e) { toast(e.message, true); }
-      };
-      dp.appendChild(chip);
+    const free = T.players.filter(p => !p.teamId).sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    if (!free.length) {
+      dp.innerHTML = '<div class="empty">Pool is empty.</div>';
+    } else {
+      const tbl = document.createElement('table');
+      tbl.innerHTML = '<thead><tr><th style="width:40px">#</th><th>Name</th><th style="width:90px">Rating</th><th style="width:90px"></th></tr></thead>';
+      const tb = document.createElement('tbody');
+      free.forEach((p, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="mono muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.rating != null ? p.rating : '\u2014'}</td>
+          <td style="text-align:right"><button class="btn amber small">Pick</button></td>`;
+        tr.querySelector('button').onclick = async () => {
+          try { await api('/api/t/' + T.id + '/pick', { playerId: p.id, token: myToken() }); await refresh(); }
+          catch (e) { toast(e.message, true); }
+        };
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      dp.appendChild(tbl);
     }
   }
 
@@ -1637,6 +1650,100 @@ async function drawAdmin(el) {
     ${copyRow('Organizer link — KEEP PRIVATE (full control)', base + '?admin=' + secrets.adminToken)}
   </div>`;
 
+  if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
+    const locked = T.status !== 'signup';
+    const boSel = (id, val) => `<select id="${id}">${[1,3,5,7].map(o => '<option value="' + o + '"' + (o === val ? ' selected' : '') + '>Bo' + o + '</option>').join('')}</select>`;
+    const p = T.plan || {};
+    const fc = T.ffaCfg || {};
+    const dis = locked ? ' disabled' : '';
+    html += `<div class="panel section"><h2>Format</h2>
+      ${locked ? '<p class="muted small">Team setup fields are locked while the draft/teams exist \u2014 reopen signups to change them. Bracket, match lengths and caps stay editable until the bracket starts.</p>' : '<p class="muted small">Fix wrong options here. Everything is editable until the bracket starts.</p>'}
+      <label>Competition</label>
+      <select id="af_comp"${dis}><option value="team"${T.competition === 'team' ? ' selected' : ''}>Team bracket</option><option value="ffa"${T.competition === 'ffa' ? ' selected' : ''}>FFA</option></select>
+      <div id="af_team">
+        <label>Team size</label>
+        <select id="af_size"${dis}>${[1,2,3,4,5,6].map(n => '<option value="' + n + '"' + (n === T.teamSize && T.competition === 'team' ? ' selected' : '') + '>' + n + 'v' + n + '</option>').join('')}</select>
+        <div id="af_formWrap">
+          <label>Team formation</label>
+          <select id="af_form"${dis}><option value="draft"${T.formation !== 'premade' ? ' selected' : ''}>Captains draft</option><option value="premade"${T.formation === 'premade' ? ' selected' : ''}>Premade teams</option></select>
+          <div id="af_orderWrap">
+            <label>Draft pick order</label>
+            <select id="af_order"${dis}><option value="linear"${T.draftOrder !== 'snake' ? ' selected' : ''}>Bottom to top, every round</option><option value="snake"${T.draftOrder === 'snake' ? ' selected' : ''}>Snake (1\u2192N, N\u21921, ...)</option></select>
+          </div>
+        </div>
+        <label>Bracket</label>
+        <select id="af_bt"><option value="single"${T.bracketType === 'single' ? ' selected' : ''}>Single elimination</option><option value="double"${T.bracketType === 'double' ? ' selected' : ''}>Double elimination</option><option value="swiss"${T.bracketType === 'swiss' ? ' selected' : ''}>Swiss</option></select>
+        <div id="af_pSingle">
+          <label>Match lengths</label>
+          <div class="row" style="gap:10px">
+            <div style="flex:1"><div class="muted small">Early rounds</div>${boSel('af_early', p.early || 3)}</div>
+            <div style="flex:1"><div class="muted small">Semifinal</div>${boSel('af_semi', p.semi || 3)}</div>
+            <div style="flex:1"><div class="muted small">Final</div>${boSel('af_final', p.final || 5)}</div>
+          </div>
+        </div>
+        <div id="af_pDouble" style="display:none">
+          <label>Match lengths</label>
+          <div class="row" style="gap:10px">
+            <div style="flex:1"><div class="muted small">Winners bracket rounds</div>${boSel('af_wb', p.wb || 3)}</div>
+            <div style="flex:1"><div class="muted small">Winners bracket final</div>${boSel('af_wbf', p.wbFinal || 3)}</div>
+          </div>
+          <div class="row" style="gap:10px;margin-top:8px">
+            <div style="flex:1"><div class="muted small">Losers bracket rounds</div>${boSel('af_lb', p.lb || 3)}</div>
+            <div style="flex:1"><div class="muted small">Losers bracket final</div>${boSel('af_lbf', p.lbFinal || 3)}</div>
+          </div>
+          <div class="row" style="gap:10px;margin-top:8px"><div style="flex:1"><div class="muted small">Grand final</div>${boSel('af_gf', p.gf || 5)}</div></div>
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+            <input type="checkbox" id="af_hcap"${p.lbHandicap || p.lbHandicap === undefined ? ' checked' : ''}> Upper bracket finalist starts the grand final 1-0 up
+          </label>
+        </div>
+        <div id="af_pSwiss" style="display:none">
+          <label>Match lengths</label>
+          <div class="row" style="gap:10px">
+            <div style="flex:1"><div class="muted small">Each match</div><select id="af_swbo"><option value="1"${p.bo === 1 ? ' selected' : ''}>Bo1</option><option value="3"${p.bo !== 1 ? ' selected' : ''}>Bo3</option></select></div>
+            <div style="flex:1"><div class="muted small">Final</div>${boSel('af_swfbo', p.finalBo || 5)}</div>
+          </div>
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+            <input type="checkbox" id="af_swfinal"${p.final === 0 ? '' : ' checked'}> Final between the top 2 after the last round
+          </label>
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+            <input type="checkbox" id="af_swfast"${p.fast ? ' checked' : ''}> Fast pairing \u2014 next matchup starts as soon as two teams are free
+          </label>
+        </div>
+      </div>
+      <div id="af_ffa" style="display:none">
+        <label>Entrants</label>
+        <select id="af_fsize"${dis}>${[1,2,3].map(n => '<option value="' + n + '"' + (n === T.teamSize && T.competition === 'ffa' ? ' selected' : '') + '>' + (n === 1 ? 'Solo players' : 'Teams of ' + n) + '</option>').join('')}</select>
+        <label id="af_pmLabel">Players per FFA lobby</label>
+        <select id="af_pm"></select>
+        <label>Mode</label>
+        <select id="af_fmode"><option value="points"${fc.mode !== 'elim' ? ' selected' : ''}>Points over rounds</option><option value="elim"${fc.mode === 'elim' ? ' selected' : ''}>Knockout</option></select>
+        <div id="af_fpoints">
+          <label>Number of rounds</label>
+          <input type="number" id="af_frounds" min="1" max="10" value="${fc.rounds || 3}" autocomplete="off">
+          <label>After each round</label>
+          <div class="row" style="gap:10px;align-items:center">
+            <select id="af_fcutmode" style="flex:1"><option value="0"${!fc.cutTo ? ' selected' : ''}>Everyone continues</option><option value="1"${fc.cutTo ? ' selected' : ''}>Cut to the top \u2026</option></select>
+            <input type="number" id="af_fcutto" min="2" max="64" value="${fc.cutTo || 8}" style="flex:0 0 90px;${fc.cutTo ? '' : 'display:none'}" autocomplete="off">
+          </div>
+          <label>After the last round</label>
+          <div class="row" style="gap:10px;align-items:center">
+            <select id="af_ffinalmode" style="flex:1"><option value="0"${!fc.finalSize ? ' selected' : ''}>Highest points is champion</option><option value="1"${fc.finalSize ? ' selected' : ''}>Top \u2026 play a final lobby</option></select>
+            <input type="number" id="af_ffinalsize" min="2" max="16" value="${fc.finalSize || 4}" style="flex:0 0 90px;${fc.finalSize ? '' : 'display:none'}" autocomplete="off">
+          </div>
+        </div>
+        <div id="af_felim" style="display:none">
+          <label>Advancing per lobby</label>
+          <select id="af_fadv">${[1,2,3,4].map(n => '<option value="' + n + '"' + (n === (fc.advance || 1) ? ' selected' : '') + '>' + (n === 1 ? 'Winner only' : 'Top ' + n) + '</option>').join('')}</select>
+        </div>
+      </div>
+      <label>Seeding</label>
+      <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option></select>
+      <label>Max teams / entrants (0 = unlimited)</label>
+      <input type="number" id="af_max" min="0" max="128" value="${T.maxTeams || 0}" autocomplete="off">
+      <div style="margin-top:16px"><button class="btn amber" id="af_save">Save format</button></div>
+    </div>`;
+  }
+
   html += `<div class="panel section"><h2>Game setup</h2>
     <label>Description</label><textarea id="aiDesc" maxlength="500">${esc(T.description || '')}</textarea>
     <label>Lobby options</label><textarea id="aiLobby" maxlength="500">${esc(T.lobbyOptions || '')}</textarea>
@@ -1664,6 +1771,69 @@ async function drawAdmin(el) {
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
+
+  const afComp = document.getElementById('af_comp');
+  if (afComp) {
+    const g = id => document.getElementById(id);
+    const syncPm = () => {
+      const es = parseInt(g('af_fsize').value, 10);
+      const maxL = Math.max(2, Math.floor(16 / es));
+      g('af_pmLabel').textContent = (es === 1 ? 'Players' : 'Teams') + ' per FFA lobby';
+      const cur = parseInt(g('af_pm').value, 10) || (T.ffaCfg && T.ffaCfg.perMatch) || 6;
+      g('af_pm').innerHTML = '';
+      for (let n = 2; n <= maxL; n++) {
+        const players = es === 1 ? '' : ' (' + (n * es) + ' players)';
+        g('af_pm').innerHTML += '<option value="' + n + '"' + (n === Math.min(cur, maxL) ? ' selected' : '') + '>' + n + players + '</option>';
+      }
+    };
+    const sync = () => {
+      const isFfa = afComp.value === 'ffa';
+      g('af_team').style.display = isFfa ? 'none' : '';
+      g('af_ffa').style.display = isFfa ? '' : 'none';
+      g('af_formWrap').style.display = g('af_size').value === '1' ? 'none' : '';
+      g('af_orderWrap').style.display = (g('af_form').value === 'draft' && g('af_size').value !== '1') ? '' : 'none';
+      g('af_pSingle').style.display = g('af_bt').value === 'single' ? '' : 'none';
+      g('af_pDouble').style.display = g('af_bt').value === 'double' ? '' : 'none';
+      g('af_pSwiss').style.display = g('af_bt').value === 'swiss' ? '' : 'none';
+      g('af_fpoints').style.display = g('af_fmode').value === 'points' ? '' : 'none';
+      g('af_felim').style.display = g('af_fmode').value === 'elim' ? '' : 'none';
+      g('af_fcutto').style.display = g('af_fcutmode').value === '1' ? '' : 'none';
+      g('af_ffinalsize').style.display = g('af_ffinalmode').value === '1' ? '' : 'none';
+      syncPm();
+    };
+    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode']) g(id).onchange = sync;
+    sync();
+
+    g('af_save').onclick = async () => {
+      const isFfa = afComp.value === 'ffa';
+      const body = { admin: adminToken(), maxTeams: g('af_max').value };
+      if (T.status === 'signup') {
+        body.competition = afComp.value;
+        body.teamSize = isFfa ? g('af_fsize').value : g('af_size').value;
+        body.formation = g('af_form').value;
+        body.draftOrder = g('af_order').value;
+        body.seeding = g('af_seed').value;
+      }
+      if (!isFfa) {
+        body.bracketType = g('af_bt').value;
+        if (g('af_bt').value === 'single') body.plan = { early: g('af_early').value, semi: g('af_semi').value, final: g('af_final').value };
+        else if (g('af_bt').value === 'double') body.plan = { wb: g('af_wb').value, wbFinal: g('af_wbf').value, lb: g('af_lb').value, lbFinal: g('af_lbf').value, gf: g('af_gf').value, lbHandicap: g('af_hcap').checked };
+        else body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };
+      } else {
+        body.perMatch = g('af_pm').value;
+        body.mode = g('af_fmode').value;
+        body.rounds = g('af_frounds').value;
+        body.cutTo = g('af_fcutmode').value === '1' ? g('af_fcutto').value : 0;
+        body.finalSize = g('af_ffinalmode').value === '1' ? g('af_ffinalsize').value : 0;
+        body.advance = g('af_fadv').value;
+      }
+      try {
+        await api('/api/t/' + T.id + '/edit_format', body);
+        toast('Format saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
   document.getElementById('aiSave').onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/edit_info', {

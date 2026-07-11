@@ -915,6 +915,69 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // edit format/settings (admin, before the bracket starts)
+    if (sub === 'edit_format') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (['signup', 'draft', 'drafted'].indexOf(t.status) < 0) return bad(res, 'The format is locked once the bracket has started');
+      const bo = (v, d) => BO_OK.indexOf(parseInt(v, 10)) >= 0 ? parseInt(v, 10) : d;
+
+      // structural changes only while signups are open
+      const structural = ['competition', 'teamSize', 'formation', 'draftOrder', 'seeding'].some(k => b[k] !== undefined);
+      if (structural && t.status !== 'signup') return bad(res, 'Reopen signups to change the team setup');
+
+      const competition = b.competition !== undefined ? (b.competition === 'ffa' ? 'ffa' : 'team') : t.competition;
+      let teamSize = t.teamSize, formation = t.formation;
+      if (competition === 'team') {
+        teamSize = b.teamSize !== undefined ? intIn(b.teamSize, 1, 6, t.teamSize) : (t.competition === 'team' ? t.teamSize : 1);
+        const wantForm = b.formation !== undefined ? b.formation : (t.formation === 'premade' ? 'premade' : 'draft');
+        formation = (teamSize === 1) ? 'solo' : (wantForm === 'premade' ? 'premade' : 'draft');
+      } else {
+        teamSize = b.teamSize !== undefined ? intIn(b.teamSize, 1, 3, Math.min(t.teamSize, 3)) : Math.min(t.teamSize, 3);
+        formation = (teamSize === 1) ? 'solo' : 'premade';
+      }
+      if (formation === 'premade' && teamSize > 1 &&
+          (t.formation !== 'premade' || t.teamSize !== teamSize || t.competition !== competition) &&
+          t.players.length > 0) {
+        return bad(res, 'Remove the current signups first \u2014 premade tournaments register whole teams of the new size');
+      }
+
+      t.competition = competition;
+      t.teamSize = teamSize;
+      t.formation = formation;
+      if (b.draftOrder !== undefined) t.draftOrder = b.draftOrder === 'snake' ? 'snake' : 'linear';
+      if (b.seeding !== undefined) t.seeding = b.seeding === 'rating' ? 'rating' : 'random';
+      if (b.maxTeams !== undefined) t.maxTeams = intIn(b.maxTeams, 0, 128, t.maxTeams);
+
+      if (competition === 'team') {
+        if (b.bracketType !== undefined && ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0) t.bracketType = b.bracketType;
+        const pb = b.plan || {};
+        const op = (t.plan && typeof t.plan === 'object') ? t.plan : {};
+        if (t.bracketType === 'single') {
+          t.plan = { early: bo(pb.early, op.early || 3), semi: bo(pb.semi, op.semi || 3), final: bo(pb.final, op.final || 5) };
+        } else if (t.bracketType === 'double') {
+          t.plan = { wb: bo(pb.wb, op.wb || 3), wbFinal: bo(pb.wbFinal, op.wbFinal || 3), lb: bo(pb.lb, op.lb || 3), lbFinal: bo(pb.lbFinal, op.lbFinal || 3), gf: bo(pb.gf, op.gf || 5), lbHandicap: pb.lbHandicap !== undefined ? (pb.lbHandicap ? 1 : 0) : (op.lbHandicap ? 1 : 0) };
+        } else {
+          t.plan = { bo: pb.bo !== undefined ? ((parseInt(pb.bo, 10) === 1) ? 1 : 3) : (op.bo || 3), final: pb.final !== undefined ? (pb.final ? 1 : 0) : (op.final !== undefined ? op.final : 1), finalBo: bo(pb.finalBo, op.finalBo || 5), fast: pb.fast !== undefined ? (pb.fast ? 1 : 0) : (op.fast ? 1 : 0) };
+        }
+        t.ffaCfg = null;
+      } else {
+        const oc = t.ffaCfg || {};
+        t.ffaCfg = {
+          perMatch: b.perMatch !== undefined ? intIn(b.perMatch, 2, 16, oc.perMatch || 6) : (oc.perMatch || 6),
+          advance: b.advance !== undefined ? intIn(b.advance, 1, 4, oc.advance || 1) : (oc.advance || 1),
+          mode: b.mode !== undefined ? (b.mode === 'points' ? 'points' : 'elim') : (oc.mode || 'points'),
+          rounds: b.rounds !== undefined ? intIn(b.rounds, 1, 10, oc.rounds || 3) : (oc.rounds || 3),
+          cutTo: b.cutTo !== undefined ? intIn(b.cutTo, 0, 64, oc.cutTo || 0) : (oc.cutTo || 0),
+          finalSize: b.finalSize !== undefined ? intIn(b.finalSize, 0, 16, oc.finalSize || 0) : (oc.finalSize || 0)
+        };
+        if (t.ffaCfg.cutTo === 1) t.ffaCfg.cutTo = 2;
+        if (t.ffaCfg.finalSize === 1) t.ffaCfg.finalSize = 2;
+        t.plan = null;
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     // edit tournament info (admin, any time)
     if (sub === 'edit_info') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
