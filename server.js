@@ -11,6 +11,9 @@ const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// Site-wide admin password. Set via ADMIN_PASSWORD environment variable in the
+// Dockhand stack — NOT in this repo, so it is never visible on GitHub.
+const GADMIN = process.env.ADMIN_PASSWORD || '';
 const BOOT = String(Date.now()); // cache-buster, changes every container restart
 
 // ---------- storage ----------
@@ -64,7 +67,7 @@ function now() { return Date.now(); }
 // ---------- helpers ----------
 
 function getT(id) { return db.tournaments[id] || null; }
-function isAdmin(t, token) { return !!token && token === t.adminToken; }
+function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
 
 function teamOfCaptainToken(t, token) {
   if (!token) return null;
@@ -590,6 +593,13 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { id: t.id, adminToken: t.adminToken });
   }
 
+  if (parts.length === 2 && parts[1] === 'siteadmin' && method === 'POST') {
+    const b = await readBody(req);
+    if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
+    if (b.password !== GADMIN) return json(res, 403, { error: 'Wrong password' });
+    return json(res, 200, { ok: true });
+  }
+
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     const list = Object.values(db.tournaments)
       .sort((a, b) => b.createdAt - a.createdAt)
@@ -624,13 +634,20 @@ async function handleAPI(req, res, url) {
     if (method !== 'POST') return bad(res, 'Unsupported');
     const b = await readBody(req);
 
+    if (sub === 'delete') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      delete db.tournaments[t.id];
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'signup') {
       if (t.status !== 'signup') return bad(res, 'Signups are closed');
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Player name required');
       if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, 'That name is already signed up');
-      let rating = parseInt(b.rating, 10);
-      if (!(rating >= 0 && rating <= 4000)) rating = null;
+      const rating = parseInt(b.rating, 10);
+      if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter your FAF rating (0\u20134000)');
       const p = {
         id: 'p' + uid(4), name, rating,
         teamName: (t.formation === 'premade') ? cleanName(b.teamName, 30) : '',
@@ -660,8 +677,8 @@ async function handleAPI(req, res, url) {
       if (t.players.some(x => x.id !== p.id && x.name.toLowerCase() === name.toLowerCase())) {
         return bad(res, 'Another player already has that name');
       }
-      let rating = parseInt(b.rating, 10);
-      if (!(rating >= 0 && rating <= 4000)) rating = null;
+      const rating = parseInt(b.rating, 10);
+      if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Rating must be 0\u20134000');
       const oldName = p.name;
       p.name = name;
       p.rating = rating;

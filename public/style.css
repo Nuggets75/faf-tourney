@@ -185,11 +185,13 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .bsection-title { font-family: var(--display); font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text); margin: 0 0 12px; padding-left: 12px; border-left: 3px solid var(--amber); }
 .bsection-title.lb { border-left-color: var(--red); }
 .bsection-title.gf { border-left-color: var(--green); }
-.bracket { display: flex; gap: 34px; overflow-x: auto; padding: 8px 2px 18px; }
+.bracket { display: flex; gap: 46px; overflow-x: auto; padding: 8px 2px 18px; position: relative; }
+svg.connectors { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
+svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .bcol { display: flex; flex-direction: column; justify-content: space-around; gap: 14px; min-width: 220px; }
 .bcol-title { font-family: var(--display); font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); text-align: center; margin-bottom: 2px; }
 .bcol-maps { font-family: var(--mono); font-size: 10px; color: var(--blue); text-align: center; margin: -2px 0 4px; white-space: normal; }
-.bmatch { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; overflow: hidden; transition: border-color .15s, box-shadow .15s; }
+.bmatch { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; overflow: hidden; transition: border-color .15s, box-shadow .15s; position: relative; z-index: 1; }
 .bmatch.ready { border-color: #ffb44766; }
 .bmatch.ready:hover { box-shadow: 0 0 16px #ffb44722; }
 .bmatch.live { border-color: #5c9ee877; box-shadow: 0 0 14px #5c9ee81f; }

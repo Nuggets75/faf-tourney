@@ -41,9 +41,10 @@ function tourneyId() {
   const m = location.pathname.match(/^\/t\/([a-z0-9]+)/i);
   return m ? m[1] : null;
 }
+function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
 function adminToken() {
   const id = tourneyId();
-  return id ? localStorage.getItem('admin_' + id) : null;
+  return (id ? localStorage.getItem('admin_' + id) : null) || siteAdmin();
 }
 function capToken() {
   const id = tourneyId();
@@ -175,9 +176,45 @@ function openSettings() {
 }
 
 function drawTopbar(modeText) {
-  topbarRight.innerHTML = (modeText ? '<span>' + esc(modeText) + '</span>' : '') +
+  const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
+  topbarRight.innerHTML = (mode ? '<span>' + esc(mode) + '</span>' : '') +
+    '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
+  document.getElementById('lockBtn').onclick = siteAdminFlow;
+}
+
+function siteAdminFlow() {
+  if (siteAdmin()) {
+    localStorage.removeItem('siteAdmin');
+    toast('Site admin off');
+    route();
+    return;
+  }
+  modal(`
+    <h3>Site admin</h3>
+    <p class="muted small">Full control over every tournament on this server.</p>
+    <label>Password</label>
+    <input type="password" id="saPass" autocomplete="off">
+    <div class="actions">
+      <button class="btn ghost" id="saCancel">Cancel</button>
+      <button class="btn primary" id="saGo">Log in</button>
+    </div>`, root => {
+    const inp = root.querySelector('#saPass');
+    inp.focus();
+    const go = async () => {
+      try {
+        await api('/api/siteadmin', { password: inp.value });
+        localStorage.setItem('siteAdmin', inp.value);
+        closeModal();
+        toast('Site admin on');
+        route();
+      } catch (e) { toast(e.message, true); }
+    };
+    inp.onkeydown = e => { if (e.key === 'Enter') go(); };
+    root.querySelector('#saCancel').onclick = closeModal;
+    root.querySelector('#saGo').onclick = go;
+  });
 }
 
 // ---------- home ----------
@@ -197,9 +234,9 @@ async function renderHome() {
         <label>Description (rules, schedule)</label>
         <textarea id="cDesc" maxlength="500" placeholder="Sunday 19:00 CEST. Check-in in Discord..."></textarea>
         <label>Lobby options</label>
-        <textarea id="cLobby" maxlength="500" placeholder="e.g. 1500 unit cap, no share until death, expansions allowed, timeouts 3x90s"></textarea>
+        <textarea id="cLobby" maxlength="500" placeholder="e.g. 1500 unit cap, full share"></textarea>
         <label>Mods</label>
-        <input type="text" id="cMods" maxlength="500" placeholder="e.g. No mods / BlackOps FAF + BrewLAN">
+        <input type="text" id="cMods" maxlength="500" placeholder="e.g. M28 / Random events">
 
         <label>Competition</label>
         <select id="cComp">
@@ -219,8 +256,8 @@ async function renderHome() {
             <div id="draftOrderWrap">
               <label>Draft pick order</label>
               <select id="cDraftOrder">
-                <option value="linear" selected>Bottom to top, every round (balanced, most common)</option>
-                <option value="snake">Snake (1→N, then N→1)</option>
+                <option value="linear" selected>Bottom to top, every round</option>
+                <option value="snake">Snake (1→N, N→1, 1→N, ...)</option>
               </select>
             </div>
           </div>
@@ -248,8 +285,8 @@ async function renderHome() {
 
         <label>Seeding</label>
         <select id="cSeed">
+          <option value="rating" selected>By rating (entered at signup)</option>
           <option value="random">Random</option>
-          <option value="rating">By rating (self-reported at signup)</option>
         </select>
         <div style="margin-top:20px">
           <button class="btn primary" id="cGo">Create tournament</button>
@@ -284,7 +321,21 @@ async function renderHome() {
         <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a></div>
         <div class="tlist-meta">${esc(kind)} · ${t.players} signed up</div>
       </div>
-      <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>`;
+      <span style="display:flex;align-items:center;gap:10px">
+        <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
+        ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}
+      </span>`;
+    const delBtn = div.querySelector('[data-del]');
+    if (delBtn) delBtn.onclick = () => {
+      modal(`<h3>Delete tournament</h3><p>Remove <strong>${esc(t.name)}</strong> permanently? This cannot be undone.</p>
+        <div class="actions"><button class="btn ghost" id="dCancel">Cancel</button><button class="btn danger" id="dGo">Delete</button></div>`, root => {
+        root.querySelector('#dCancel').onclick = closeModal;
+        root.querySelector('#dGo').onclick = async () => {
+          try { await api('/api/t/' + t.id + '/delete', { admin: siteAdmin() }); closeModal(); toast('Deleted'); renderHome(); }
+          catch (e) { toast(e.message, true); }
+        };
+      });
+    };
     tl.appendChild(div);
   }
 
@@ -492,9 +543,9 @@ function drawPlayers(el) {
     html += `<div class="panel section"><h2>Sign up</h2>
       <div class="grid2">
         <div>
-          <label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name">
-          <label>Rating (optional, for seeding)</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500">
-          ${teamField ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Same name = same team">' : ''}
+          <label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">
+          <label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
+          ${teamField ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Same name = same team" autocomplete="off">' : ''}
           <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up</button></div>
         </div>
         <div class="muted small" style="align-self:end">
@@ -549,6 +600,7 @@ function drawPlayers(el) {
   if (go) go.onclick = async () => {
     const name = (document.getElementById('sName').value || '').trim();
     if (!name) return toast('Enter your FAF name', true);
+    if (document.getElementById('sRating').value === '') return toast('Enter your rating — it is used for balancing and seeding', true);
     try {
       await api('/api/t/' + T.id + '/signup', {
         name,
@@ -566,8 +618,8 @@ function editPlayer(p) {
   modal(`
     <h3>Edit player</h3>
     <p class="muted small">To substitute a player who can't play, just overwrite the name and rating with the sub's — team spots and match history stay intact.</p>
-    <label>FAF name</label><input type="text" id="epName" maxlength="30" value="${esc(p.name)}">
-    <label>Rating</label><input type="number" id="epRating" min="0" max="4000" value="${p.rating != null ? p.rating : ''}">
+    <label>FAF name</label><input type="text" id="epName" maxlength="30" value="${esc(p.name)}" autocomplete="off">
+    <label>Rating</label><input type="number" id="epRating" min="0" max="4000" value="${p.rating != null ? p.rating : ''}" autocomplete="off">
     <div class="actions">
       <button class="btn ghost" id="epCancel">Cancel</button>
       <button class="btn primary" id="epGo">Save</button>
@@ -860,26 +912,78 @@ function editMaps(bracket, round) {
   });
 }
 
+function mLabel(m) {
+  if (m.bracket === 'gf') return T.bracketType === 'swiss' ? 'FINAL' : 'GRAND FINAL';
+  if (m.bracket === 'sw') return 'R' + m.round + ' M' + (m.index + 1);
+  if (m.bracket === 'ffa') return 'R' + m.round + ' LOBBY ' + (m.index + 1);
+  const p = m.bracket === 'lb' ? 'LB ' : (T.bracketType === 'double' ? 'WB ' : '');
+  return p + 'R' + m.round + ' M' + (m.index + 1);
+}
+
+// feeders[destMatchId:slot] = { m: feederMatch, type: 'Winner'|'Loser' }
+let feeders = {};
+function buildFeeders() {
+  feeders = {};
+  for (const m of T.matches) {
+    if (m.winnerTo) feeders[m.winnerTo.id + ':' + m.winnerTo.slot] = { m, type: 'Winner' };
+    if (m.loserTo) feeders[m.loserTo.id + ':' + m.loserTo.slot] = { m, type: 'Loser' };
+  }
+}
+
 function matchBox(m) {
   const admin = !!adminToken();
   const box = document.createElement('div');
   box.className = 'bmatch ' + m.status;
-  const row = (tid, score) => {
+  const row = (tid, score, slot) => {
     const seed = tid && tid !== 'BYE' ? teamSeed(tid) : null;
     const win = m.winner && m.winner === tid && tid !== 'BYE';
-    const nm = tid === 'BYE' ? 'bye' : (tid ? teamName(tid) : 'TBD');
+    let nm;
+    if (tid === 'BYE') nm = 'bye';
+    else if (tid) nm = teamName(tid);
+    else {
+      const src = feeders[m.id + ':' + slot];
+      nm = src ? src.type + ' of ' + mLabel(src.m) : 'TBD';
+    }
     return `<div class="brow ${win ? 'winner' : ''}">
       <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}">${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
       <span class="bscore">${score != null ? score : ''}</span></div>`;
   };
   const canReport = m.status === 'ready' || m.status === 'live';
-  box.innerHTML = `<div class="botag">BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
-    row(m.team1, m.score1) + row(m.team2, m.score2) +
+  box.dataset.mid = m.id;
+  box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
+    row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
     ((canReport || (m.status === 'done' && admin))
       ? `<div class="bfoot"><button class="btn ${canReport ? 'amber' : 'ghost'} small">${canReport ? 'Report score' : 'Correct'}</button></div>` : '');
   const btn = box.querySelector('.bfoot button');
   if (btn) btn.onclick = () => reportScore(m.id);
   return box;
+}
+
+let connectorRedraws = [];
+function drawConnectors(wrap, bracket) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'connectors');
+  wrap.prepend(svg);
+  const draw = () => {
+    svg.setAttribute('width', wrap.scrollWidth);
+    svg.setAttribute('height', wrap.scrollHeight);
+    let paths = '';
+    for (const m of T.matches) {
+      if (m.bracket !== bracket || !m.winnerTo) continue;
+      const dest = T.matches.find(x => x.id === m.winnerTo.id);
+      if (!dest || dest.bracket !== bracket) continue; // cross-bracket handled by "Winner/Loser of" text
+      const a = wrap.querySelector('[data-mid="' + m.id + '"]');
+      const b = wrap.querySelector('[data-mid="' + dest.id + '"]');
+      if (!a || !b) continue;
+      const x1 = a.offsetLeft + a.offsetWidth, y1 = a.offsetTop + a.offsetHeight / 2;
+      const x2 = b.offsetLeft, y2 = b.offsetTop + b.offsetHeight / 2;
+      const mx = Math.round((x1 + x2) / 2);
+      paths += '<path d="M ' + x1 + ' ' + y1 + ' L ' + mx + ' ' + y1 + ' L ' + mx + ' ' + y2 + ' L ' + x2 + ' ' + y2 + '"/>';
+    }
+    svg.innerHTML = paths;
+  };
+  draw();
+  connectorRedraws.push(draw);
 }
 
 function bracketColumns(el, bracket, title) {
@@ -906,10 +1010,13 @@ function bracketColumns(el, bracket, title) {
   }
   sec.appendChild(wrap);
   el.appendChild(sec);
+  drawConnectors(wrap, bracket);
 }
 
 function drawBracket(el) {
   el.innerHTML = '';
+  connectorRedraws = [];
+  buildFeeders();
   if (!T.matches.length) {
     el.innerHTML = '<div class="panel"><div class="empty">The bracket appears once the organizer starts it.</div></div>';
     return;
@@ -1223,6 +1330,9 @@ document.addEventListener('click', e => {
     route();
   }
 });
+
+window.addEventListener('resize', () => { for (const f of connectorRedraws) f(); });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { for (const f of connectorRedraws) f(); });
 
 applyScale();
 route();
