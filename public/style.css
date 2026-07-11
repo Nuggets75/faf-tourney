@@ -32,7 +32,6 @@ body {
     linear-gradient(var(--line) 1px, transparent 1px),
     linear-gradient(90deg, var(--line) 1px, transparent 1px);
   background-size: 100% 100%, 48px 48px, 48px 48px;
-  background-attachment: fixed;
 }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -60,6 +59,7 @@ a:hover { text-decoration: underline; }
 .gearbtn:hover { color: var(--amber); border-color: #ffb44766; box-shadow: 0 0 10px #ffb44722; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+main.wide { max-width: none; padding-left: 34px; padding-right: 34px; }
 
 h1, h2, h3 { font-family: var(--display); font-weight: 600; letter-spacing: .5px; }
 h1 { font-size: 30px; margin: 0 0 4px; }
@@ -188,7 +188,8 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .bracket { display: flex; gap: 46px; overflow-x: auto; padding: 8px 2px 18px; position: relative; }
 svg.connectors { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
 svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
-.bcol { display: flex; flex-direction: column; justify-content: space-around; gap: 14px; min-width: 220px; }
+.bcol { display: flex; flex-direction: column; min-width: 220px; }
+.bcol-matches { flex: 1; display: flex; flex-direction: column; justify-content: space-around; gap: 14px; }
 .bcol-title { font-family: var(--display); font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); text-align: center; margin-bottom: 2px; }
 .mapblock {
   border: 1px solid #2c4258; border-left: 3px solid var(--blue);

@@ -93,6 +93,7 @@ function publicView(t) {
     competition: t.competition, formation: t.formation,
     teamSize: t.teamSize, draftOrder: t.draftOrder,
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
+    plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding,
     status: t.status, createdAt: t.createdAt,
     rounds: t.rounds || 0,
@@ -368,12 +369,35 @@ function swissMaxRound(t) {
   return r;
 }
 
-function swissAfterReport(t) {
-  const maxR = swissMaxRound(t);
-  const open = t.matches.some(m => m.bracket === 'sw' && m.round === maxR &&
-    (m.status === 'ready' || m.status === 'live' || m.status === 'waiting'));
-  if (open) return;
-  if (maxR < t.cfg.rounds) { swissPairRound(t, maxR + 1); return; }
+// per-team progress: how many swiss matches completed (incl. byes), any pending?
+function swissProgress(t) {
+  const st = {};
+  for (const team of t.teams) st[team.id] = { played: 0, pending: false };
+  for (const m of t.matches) {
+    if (m.bracket !== 'sw') continue;
+    if (m.status === 'bye') {
+      const id = m.team1 !== 'BYE' ? m.team1 : m.team2;
+      if (st[id]) st[id].played++;
+    } else if (m.status === 'done') {
+      if (st[m.team1]) st[m.team1].played++;
+      if (st[m.team2]) st[m.team2].played++;
+    } else {
+      if (st[m.team1]) st[m.team1].pending = true;
+      if (st[m.team2]) st[m.team2].pending = true;
+    }
+  }
+  return st;
+}
+
+function swissGiveBye(t, teamId, round) {
+  const bm = newMatch(t, 'sw', round, 99, t.cfg.bo);
+  bm.team1 = teamId; bm.team2 = 'BYE'; bm.status = 'bye'; bm.winner = teamId; bm.loser = 'BYE';
+}
+
+function swissFinishIfDone(t) {
+  const st = swissProgress(t);
+  const unfinished = t.teams.filter(x => st[x.id].played < t.cfg.rounds);
+  if (unfinished.length) return false;
   const gfExisting = t.matches.find(m => m.bracket === 'gf');
   if (t.cfg.final) {
     if (!gfExisting) {
@@ -381,11 +405,68 @@ function swissAfterReport(t) {
       const gf = newMatch(t, 'gf', 1, 0, t.cfg.finalBo);
       gf.team1 = top[0].teamId; gf.team2 = top[1].teamId; gf.status = 'ready';
     }
-  } else {
+  } else if (!t.championTeamId) {
     const top = swissStandings(t);
     t.championTeamId = top[0].teamId;
     t.status = 'finished';
   }
+  return true;
+}
+
+function swissAfterReport(t) {
+  if (swissFinishIfDone(t)) return;
+
+  if (t.cfg.fast) {
+    // eager pairing: match up free teams as soon as possible
+    const played = {};
+    for (let guard = 0; guard < 200; guard++) {
+      const st = swissProgress(t);
+      const standingsOrder = swissStandings(t).map(x => x.teamId);
+      const pos = {};
+      standingsOrder.forEach((id, i) => { pos[id] = i; });
+      const pool = t.teams
+        .filter(x => st[x.id].played < t.cfg.rounds && !st[x.id].pending)
+        .map(x => x.id)
+        .sort((a, b) => (st[a].played - st[b].played) || (pos[a] - pos[b]));
+      if (pool.length >= 2) {
+        const playedPairs = {};
+        for (const m of t.matches) {
+          if (m.bracket === 'sw' && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE') {
+            playedPairs[m.team1 + '|' + m.team2] = 1;
+            playedPairs[m.team2 + '|' + m.team1] = 1;
+          }
+        }
+        const a = pool[0];
+        // prefer same progress + no rematch, then same progress, then no rematch, then anyone
+        let b = pool.slice(1).find(x => st[x].played === st[a].played && !playedPairs[a + '|' + x]);
+        if (!b) b = pool.slice(1).find(x => st[x].played === st[a].played);
+        if (!b) b = pool.slice(1).find(x => !playedPairs[a + '|' + x]);
+        if (!b) b = pool[1];
+        const m = newMatch(t, 'sw', Math.min(st[a].played, st[b].played) + 1, 98, t.cfg.bo);
+        m.team1 = a; m.team2 = b; m.status = 'ready';
+        continue; // try to pair more
+      }
+      if (pool.length === 1) {
+        const othersPending = t.teams.some(x => x.id !== pool[0] && st[x.id].played < t.cfg.rounds && st[x.id].pending);
+        if (!othersPending) {
+          swissGiveBye(t, pool[0], st[pool[0]].played + 1);
+          if (swissFinishIfDone(t)) return;
+          continue;
+        }
+      }
+      break;
+    }
+    swissFinishIfDone(t);
+    return;
+  }
+
+  // classic: next round only when the current one is fully done
+  const maxR = swissMaxRound(t);
+  const open = t.matches.some(m => m.bracket === 'sw' && m.round === maxR &&
+    (m.status === 'ready' || m.status === 'live' || m.status === 'waiting'));
+  if (open) return;
+  if (maxR < t.cfg.rounds) { swissPairRound(t, maxR + 1); return; }
+  swissFinishIfDone(t);
 }
 
 // ---------- FFA ----------
@@ -405,12 +486,51 @@ function ffaGroups(entrantIds, perMatch) {
   return groups;
 }
 
+// total points per team across all FFA matches
+function ffaTotals(t) {
+  const tot = {};
+  for (const team of t.teams) tot[team.id] = 0;
+  for (const m of t.matches) {
+    if (m.bracket !== 'ffa' || !m.points) continue;
+    for (const id of Object.keys(m.points)) {
+      if (tot[id] !== undefined) tot[id] += m.points[id];
+    }
+  }
+  return tot;
+}
+
+function ffaRank(t, ids) {
+  const tot = ffaTotals(t);
+  return ids.slice().sort((a, b) => (tot[b] || 0) - (tot[a] || 0) ||
+    (teamById(t, a).seed - teamById(t, b).seed));
+}
+
 function ffaCreateRound(t, r, entrantIds) {
-  const groups = ffaGroups(shuffle(entrantIds.slice()), t.ffaCfg.perMatch);
+  let ordered;
+  if (t.ffaCfg.mode === 'points' && r > 1) {
+    ordered = ffaRank(t, entrantIds); // group leaders together (snake distribution)
+  } else {
+    ordered = shuffle(entrantIds.slice());
+  }
+  const groups = ffaGroups(ordered.length ? ordered : entrantIds, t.ffaCfg.perMatch);
+  // snake-distribute for points mode so lobbies are balanced by standings
+  if (t.ffaCfg.mode === 'points' && r > 1 && groups.length > 1) {
+    const g = groups.length;
+    const redis = [];
+    for (let i = 0; i < g; i++) redis.push([]);
+    ordered.forEach((id, i) => {
+      const row = Math.floor(i / g);
+      const col = (row % 2 === 0) ? (i % g) : (g - 1 - (i % g));
+      redis[col].push(id);
+    });
+    groups.length = 0;
+    for (const grp of redis) if (grp.length) groups.push(grp);
+  }
   groups.forEach((grp, i) => {
     const m = newMatch(t, 'ffa', r, i, 1);
     m.entrants = grp;
     m.winners = [];
+    m.points = null;
     m.status = 'ready';
   });
 }
@@ -421,10 +541,51 @@ function ffaMaxRound(t) {
   return r;
 }
 
+function ffaMarkOut(t, id, round) {
+  const lt = teamById(t, id);
+  if (lt) { lt.eliminated = true; lt.out = { bracket: 'ffa', round }; }
+}
+
 function ffaAfterReport(t) {
   const maxR = ffaMaxRound(t);
   const roundMatches = t.matches.filter(m => m.bracket === 'ffa' && m.round === maxR);
   if (roundMatches.some(m => m.status !== 'done')) return;
+  const cfg = t.ffaCfg;
+
+  if (cfg.mode === 'points') {
+    const finalM = roundMatches.find(m => m.isFinal);
+    if (finalM) {
+      t.championTeamId = finalM.winners[0];
+      t.status = 'finished';
+      for (const id of finalM.entrants) if (id !== t.championTeamId) ffaMarkOut(t, id, maxR);
+      return;
+    }
+    let survivors = [];
+    for (const m of roundMatches) survivors = survivors.concat(m.entrants);
+    if (maxR < cfg.rounds) {
+      if (cfg.cutTo >= 2 && survivors.length > cfg.cutTo) {
+        const ranked = ffaRank(t, survivors);
+        for (const id of ranked.slice(cfg.cutTo)) ffaMarkOut(t, id, maxR);
+        survivors = ranked.slice(0, cfg.cutTo);
+      }
+      ffaCreateRound(t, maxR + 1, survivors);
+      return;
+    }
+    // all scheduled rounds played
+    const ranked = ffaRank(t, survivors);
+    if (cfg.finalSize >= 2 && ranked.length > 1) {
+      const fin = ranked.slice(0, Math.min(cfg.finalSize, ranked.length));
+      for (const id of ranked.slice(fin.length)) ffaMarkOut(t, id, maxR);
+      const m = newMatch(t, 'ffa', maxR + 1, 0, 1);
+      m.entrants = fin; m.winners = []; m.points = null; m.isFinal = 1; m.status = 'ready';
+      return;
+    }
+    t.championTeamId = ranked[0];
+    t.status = 'finished';
+    return;
+  }
+
+  // knockout mode
   let winners = [];
   for (const m of roundMatches) winners = winners.concat(m.winners);
   if (winners.length === 1) {
@@ -563,26 +724,44 @@ async function handleAPI(req, res, url) {
     const name = cleanName(b.name, 60);
     if (!name) return bad(res, 'Name required');
     const competition = b.competition === 'ffa' ? 'ffa' : 'team';
-    let teamSize, formation, bracketType = 'single', ffaCfg = null, draftOrder = 'linear';
+    let teamSize, formation, bracketType = 'single', ffaCfg = null, draftOrder = 'linear', plan = null;
+    const pb = b.plan || {};
+    const bo = (v, d) => BO_OK.indexOf(parseInt(v, 10)) >= 0 ? parseInt(v, 10) : d;
     if (competition === 'team') {
       teamSize = intIn(b.teamSize, 1, 6, 2);
       formation = (teamSize === 1) ? 'solo' : (b.formation === 'premade' ? 'premade' : 'draft');
       bracketType = ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0 ? b.bracketType : 'single';
       draftOrder = b.draftOrder === 'snake' ? 'snake' : 'linear';
+      if (bracketType === 'single') {
+        plan = { early: bo(pb.early, 3), semi: bo(pb.semi, 3), final: bo(pb.final, 5) };
+      } else if (bracketType === 'double') {
+        plan = { wb: bo(pb.wb, 3), wbFinal: bo(pb.wbFinal, 3), lb: bo(pb.lb, 3), lbFinal: bo(pb.lbFinal, 3), gf: bo(pb.gf, 5), lbHandicap: pb.lbHandicap ? 1 : 0 };
+      } else {
+        plan = { bo: (parseInt(pb.bo, 10) === 1) ? 1 : 3, final: pb.final ? 1 : 0, finalBo: bo(pb.finalBo, 5), fast: pb.fast ? 1 : 0 };
+      }
     } else {
       teamSize = intIn(b.teamSize, 1, 3, 1);
       formation = (teamSize === 1) ? 'solo' : 'premade';
+      const mode = b.mode === 'points' ? 'points' : 'elim';
       ffaCfg = {
-        perMatch: intIn(b.perMatch, 3, 8, 6),
-        advance: intIn(b.advance, 1, 2, 1)
+        perMatch: intIn(b.perMatch, 2, 16, Math.min(6, Math.floor(16 / teamSize))),
+        advance: intIn(b.advance, 1, 4, 1),
+        mode,
+        rounds: intIn(b.rounds, 1, 10, 3),
+        cutTo: intIn(b.cutTo, 0, 64, 0),
+        finalSize: intIn(b.finalSize, 0, 16, 0)
       };
+      if (ffaCfg.cutTo === 1) ffaCfg.cutTo = 2;
+      if (ffaCfg.finalSize === 1) ffaCfg.finalSize = 2;
     }
+    const maxTeams = intIn(b.maxTeams, 0, 128, 0);
     const t = {
       id: uid(5), adminToken: uid(12),
       name, description: cleanName(b.description, 500),
       lobbyOptions: cleanName(b.lobbyOptions, 500),
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
+      plan, maxTeams,
       cfg: null, maps: {},
       seeding: (b.seeding === 'rating') ? 'rating' : 'random',
       status: 'signup', createdAt: now(),
@@ -644,6 +823,7 @@ async function handleAPI(req, res, url) {
     if (sub === 'signup') {
       if (t.status !== 'signup') return bad(res, 'Signups are closed');
       if (t.formation === 'premade' && t.teamSize > 1) return bad(res, 'This tournament uses whole-team registration \u2014 one player registers the full team');
+      if (t.maxTeams > 0 && t.formation === 'solo' && t.players.length >= t.maxTeams) return bad(res, 'The tournament is full (' + t.maxTeams + ' entrants)');
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Player name required');
       if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, 'That name is already signed up');
@@ -664,6 +844,11 @@ async function handleAPI(req, res, url) {
       if (t.formation !== 'premade' || t.teamSize < 2) return bad(res, 'This tournament uses solo signups');
       const teamName = cleanName(b.teamName, 30);
       if (!teamName) return bad(res, 'Team name required');
+      if (t.maxTeams > 0) {
+        const names = {};
+        for (const p of t.players) if (p.teamName) names[p.teamName.toLowerCase()] = 1;
+        if (Object.keys(names).length >= t.maxTeams) return bad(res, 'The tournament is full (' + t.maxTeams + ' teams)');
+      }
       if (t.players.some(p => (p.teamName || '').toLowerCase() === teamName.toLowerCase())) {
         return bad(res, 'A team named "' + teamName + '" already exists \u2014 pick a different name');
       }
@@ -817,7 +1002,8 @@ async function handleAPI(req, res, url) {
             rounds: intIn(c.rounds, 1, 15, defR),
             bo: (parseInt(c.bo, 10) === 1) ? 1 : 3,
             final: c.final ? 1 : 0,
-            finalBo: BO_OK.indexOf(parseInt(c.finalBo, 10)) >= 0 ? parseInt(c.finalBo, 10) : 5
+            finalBo: BO_OK.indexOf(parseInt(c.finalBo, 10)) >= 0 ? parseInt(c.finalBo, 10) : 5,
+            fast: c.fast ? 1 : 0
           };
           swissPairRound(t, 1);
           t.status = 'running';
@@ -873,22 +1059,42 @@ async function handleAPI(req, res, url) {
             if (lt) { lt.eliminated = false; lt.out = null; }
           }
           m.winners = [];
+          m.points = null;
           m.status = 'ready';
           t.championTeamId = null;
           if (t.status === 'finished') t.status = 'running';
         }
         if (m.status !== 'ready') return bad(res, 'Match not ready');
+
+        if (t.ffaCfg.mode === 'points' && !m.isFinal) {
+          // points per entrant
+          const pts = (b.points && typeof b.points === 'object') ? b.points : {};
+          const stored = {};
+          for (const eid of m.entrants) {
+            const v = parseInt(pts[eid], 10);
+            if (!(v >= 0 && v <= 1000)) return bad(res, 'Enter points (0\u20131000) for every player');
+            stored[eid] = v;
+          }
+          m.points = stored;
+          m.status = 'done';
+          ffaAfterReport(t);
+          saveDB();
+          return json(res, 200, { ok: true });
+        }
+
         const roundMatchCount = t.matches.filter(x => x.bracket === 'ffa' && x.round === m.round).length;
-        const isFinal = roundMatchCount === 1;
+        const isFinal = m.isFinal || roundMatchCount === 1;
         const need = isFinal ? 1 : Math.min(t.ffaCfg.advance, m.entrants.length - 1);
         const win = Array.isArray(b.winners) ? b.winners.filter(id => m.entrants.indexOf(id) >= 0) : [];
         if (win.length !== need) return bad(res, 'Select exactly ' + need + ' winner' + (need > 1 ? 's' : ''));
         m.winners = win;
         m.status = 'done';
-        for (const eid of m.entrants) {
-          if (win.indexOf(eid) < 0) {
-            const lt = teamById(t, eid);
-            if (lt) { lt.eliminated = true; lt.out = { bracket: 'ffa', round: m.round }; }
+        if (t.ffaCfg.mode !== 'points') {
+          for (const eid of m.entrants) {
+            if (win.indexOf(eid) < 0) {
+              const lt = teamById(t, eid);
+              if (lt) { lt.eliminated = true; lt.out = { bracket: 'ffa', round: m.round }; }
+            }
           }
         }
         ffaAfterReport(t);

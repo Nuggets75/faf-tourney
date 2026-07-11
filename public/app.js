@@ -116,11 +116,29 @@ function statusLabel(s) {
 function typeLine(t) {
   if (t.competition === 'ffa') {
     const sz = t.teamSize === 1 ? 'solo' : t.teamSize + '-player teams';
-    return 'FFA (' + sz + ', ' + t.ffaCfg.perMatch + ' per lobby)';
+    const md = t.ffaCfg.mode === 'points' ? 'points' : 'knockout';
+    return 'FFA ' + md + ' (' + sz + ', ' + t.ffaCfg.perMatch + ' per lobby)' + (t.maxTeams ? ' · max ' + t.maxTeams : '');
   }
   const bt = { single: 'single elim', double: 'double elim', swiss: 'swiss' }[t.bracketType];
   const form = t.teamSize === 1 ? '1v1' : t.teamSize + 'v' + t.teamSize + ' · ' + (t.formation === 'draft' ? 'captains draft' : 'premade');
-  return form + ' · ' + bt;
+  return form + ' · ' + bt + (t.maxTeams ? ' · max ' + t.maxTeams + ' teams' : '');
+}
+
+function planSummary(t) {
+  if (t.competition === 'ffa') {
+    const c = t.ffaCfg;
+    if (c.mode === 'points') {
+      return c.rounds + ' round' + (c.rounds > 1 ? 's' : '') + ' · placement points each round' +
+        (c.cutTo ? ' · cut to top ' + c.cutTo + ' after each round' : '') +
+        (c.finalSize ? ' · top ' + c.finalSize + ' play a final lobby' : ' · highest points wins');
+    }
+    return 'Knockout · top ' + c.advance + ' advance' + (c.advance === 1 ? 's' : '') + ' from each lobby';
+  }
+  const p = t.plan;
+  if (!p) return '';
+  if (t.bracketType === 'single') return 'Bo' + p.early + ' rounds · Bo' + p.semi + ' semifinal · Bo' + p.final + ' final';
+  if (t.bracketType === 'double') return 'WB Bo' + p.wb + ' (final Bo' + p.wbFinal + ') · LB Bo' + p.lb + ' (final Bo' + p.lbFinal + ') · grand final Bo' + p.gf + (p.lbHandicap ? ' (UB starts 1-0 up)' : '');
+  return 'Bo' + p.bo + ' matches' + (p.final ? ' · Bo' + p.finalBo + ' final between the top 2' : ' · highest standing wins') + (p.fast ? ' · fast pairing' : '');
 }
 
 function modal(html, onMount) {
@@ -219,6 +237,8 @@ function siteAdminFlow() {
 
 // ---------- home ----------
 
+function pv(id) { return document.getElementById(id).value; }
+
 async function renderHome() {
   stopPoll();
   drawTopbar('');
@@ -267,7 +287,45 @@ async function renderHome() {
             <option value="double">Double elimination</option>
             <option value="swiss">Swiss</option>
           </select>
-          <div class="muted small" style="margin-top:6px">Best-of per round (and swiss settings) are configured when you start the bracket.</div>
+
+          <div id="planSingle">
+            <label>Match lengths</label>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">Early rounds</div><select id="pEarly"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">Semifinal</div><select id="pSemi"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">Final</div><select id="pFinal"><option value="1">Bo1</option><option value="3">Bo3</option><option value="5" selected>Bo5</option><option value="7">Bo7</option></select></div>
+            </div>
+          </div>
+          <div id="planDouble" style="display:none">
+            <label>Match lengths</label>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">WB rounds</div><select id="pWb"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">WB final</div><select id="pWbFinal"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+            </div>
+            <div class="row" style="gap:10px;margin-top:8px">
+              <div style="flex:1"><div class="muted small">LB rounds</div><select id="pLb"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">LB final</div><select id="pLbFinal"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+            </div>
+            <div class="row" style="gap:10px;margin-top:8px">
+              <div style="flex:1"><div class="muted small">Grand final</div><select id="pGf"><option value="1">Bo1</option><option value="3">Bo3</option><option value="5" selected>Bo5</option><option value="7">Bo7</option></select></div>
+            </div>
+            <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+              <input type="checkbox" id="pHcap" checked> Upper bracket finalist starts the grand final 1-0 up
+            </label>
+          </div>
+          <div id="planSwiss" style="display:none">
+            <label>Match lengths</label>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">Each match</div><select id="pSwBo"><option value="1">Bo1</option><option value="3" selected>Bo3</option></select></div>
+              <div style="flex:1"><div class="muted small">Final</div><select id="pSwFinalBo"><option value="1">Bo1</option><option value="3">Bo3</option><option value="5" selected>Bo5</option><option value="7">Bo7</option></select></div>
+            </div>
+            <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+              <input type="checkbox" id="pSwFinal" checked> Final between the top 2 after the last round
+            </label>
+            <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+              <input type="checkbox" id="pSwFast"> Fast pairing \u2014 next matchup starts as soon as two teams are free
+            </label>
+          </div>
         </div>
 
         <div id="ffaOpts" style="display:none">
@@ -277,11 +335,35 @@ async function renderHome() {
             <option value="2">Teams of 2</option>
             <option value="3">Teams of 3</option>
           </select>
-          <label>Entrants per FFA lobby</label>
-          <select id="cPerMatch">${[3,4,5,6,7,8].map(n => '<option value="'+n+'"'+(n===6?' selected':'')+'>'+n+'</option>').join('')}</select>
-          <label>Advancing per lobby</label>
-          <select id="cAdvance"><option value="1">Winner only</option><option value="2">Top 2</option></select>
+          <label id="perMatchLabel">Players per FFA lobby</label>
+          <select id="cPerMatch"></select>
+          <label>Mode</label>
+          <select id="cFfaMode">
+            <option value="points" selected>Points over rounds \u2014 placement points each round, highest total wins</option>
+            <option value="elim">Knockout \u2014 top finishers advance, rest are out</option>
+          </select>
+          <div id="ffaPointsOpts">
+            <label>Number of rounds</label>
+            <input type="number" id="cFfaRounds" min="1" max="10" value="3" autocomplete="off">
+            <label>After each round</label>
+            <div class="row" style="gap:10px;align-items:center">
+              <select id="cFfaCutMode" style="flex:1"><option value="0">Everyone continues</option><option value="1">Cut to the top \u2026</option></select>
+              <input type="number" id="cFfaCutTo" min="2" max="64" value="8" style="flex:0 0 90px;display:none" autocomplete="off">
+            </div>
+            <label>After the last round</label>
+            <div class="row" style="gap:10px;align-items:center">
+              <select id="cFfaFinalMode" style="flex:1"><option value="0">Highest points is champion</option><option value="1">Top \u2026 play a final lobby</option></select>
+              <input type="number" id="cFfaFinalSize" min="2" max="16" value="4" style="flex:0 0 90px;display:none" autocomplete="off">
+            </div>
+          </div>
+          <div id="ffaElimOpts" style="display:none">
+            <label>Advancing per lobby</label>
+            <select id="cAdvance"><option value="1">Winner only</option><option value="2">Top 2</option><option value="3">Top 3</option><option value="4">Top 4</option></select>
+          </div>
         </div>
+
+        <label>Max ${'\u200b'}teams / entrants (0 = unlimited)</label>
+        <input type="number" id="cMaxTeams" min="0" max="128" value="0" autocomplete="off">
 
         <label>Seeding</label>
         <select id="cSeed">
@@ -301,14 +383,43 @@ async function renderHome() {
   const comp = document.getElementById('cComp');
   const size = document.getElementById('cSize');
   const formation = document.getElementById('cFormation');
+  const cBracket = document.getElementById('cBracket');
+  const ffaSize = document.getElementById('cFfaSize');
+  const ffaMode = document.getElementById('cFfaMode');
+  const perMatch = document.getElementById('cPerMatch');
+  const cutMode = document.getElementById('cFfaCutMode');
+  const finalMode = document.getElementById('cFfaFinalMode');
+
+  const syncPerMatch = () => {
+    const es = parseInt(ffaSize.value, 10);
+    const maxL = Math.max(2, Math.floor(16 / es));
+    document.getElementById('perMatchLabel').textContent = (es === 1 ? 'Players' : 'Teams') + ' per FFA lobby';
+    const cur = parseInt(perMatch.value, 10) || Math.min(6, maxL);
+    perMatch.innerHTML = '';
+    for (let n = 2; n <= maxL; n++) {
+      const players = es === 1 ? '' : ' (' + (n * es) + ' players)';
+      perMatch.innerHTML += '<option value="' + n + '"' + (n === Math.min(cur, maxL) ? ' selected' : '') + '>' + n + players + '</option>';
+    }
+  };
   const syncVis = () => {
     const isFfa = comp.value === 'ffa';
     document.getElementById('teamOpts').style.display = isFfa ? 'none' : '';
     document.getElementById('ffaOpts').style.display = isFfa ? '' : 'none';
     document.getElementById('formationWrap').style.display = size.value === '1' ? 'none' : '';
     document.getElementById('draftOrderWrap').style.display = (formation.value === 'draft' && size.value !== '1') ? '' : 'none';
+    document.getElementById('planSingle').style.display = cBracket.value === 'single' ? '' : 'none';
+    document.getElementById('planDouble').style.display = cBracket.value === 'double' ? '' : 'none';
+    document.getElementById('planSwiss').style.display = cBracket.value === 'swiss' ? '' : 'none';
+    document.getElementById('ffaPointsOpts').style.display = ffaMode.value === 'points' ? '' : 'none';
+    document.getElementById('ffaElimOpts').style.display = ffaMode.value === 'elim' ? '' : 'none';
+    document.getElementById('cFfaCutTo').style.display = cutMode.value === '1' ? '' : 'none';
+    document.getElementById('cFfaFinalSize').style.display = finalMode.value === '1' ? '' : 'none';
+    syncPerMatch();
   };
   comp.onchange = syncVis; size.onchange = syncVis; formation.onchange = syncVis;
+  cBracket.onchange = syncVis; ffaSize.onchange = syncVis; ffaMode.onchange = syncVis;
+  cutMode.onchange = syncVis; finalMode.onchange = syncVis;
+  syncVis();
 
   const tl = document.getElementById('tlist');
   for (const t of list) {
@@ -343,6 +454,11 @@ async function renderHome() {
     const name = document.getElementById('cName').value.trim();
     if (!name) return toast('Give the tournament a name', true);
     const isFfa = comp.value === 'ffa';
+    const bt = cBracket.value;
+    let plan = {};
+    if (bt === 'single') plan = { early: pv('pEarly'), semi: pv('pSemi'), final: pv('pFinal') };
+    else if (bt === 'double') plan = { wb: pv('pWb'), wbFinal: pv('pWbFinal'), lb: pv('pLb'), lbFinal: pv('pLbFinal'), gf: pv('pGf'), lbHandicap: document.getElementById('pHcap').checked };
+    else plan = { bo: pv('pSwBo'), final: document.getElementById('pSwFinal').checked, finalBo: pv('pSwFinalBo'), fast: document.getElementById('pSwFast').checked };
     try {
       const r = await api('/api/tournaments', {
         name,
@@ -350,12 +466,18 @@ async function renderHome() {
         lobbyOptions: document.getElementById('cLobby').value,
         mods: document.getElementById('cMods').value,
         competition: comp.value,
-        teamSize: isFfa ? document.getElementById('cFfaSize').value : size.value,
+        teamSize: isFfa ? ffaSize.value : size.value,
         formation: formation.value,
         draftOrder: document.getElementById('cDraftOrder').value,
-        bracketType: document.getElementById('cBracket').value,
-        perMatch: document.getElementById('cPerMatch').value,
-        advance: document.getElementById('cAdvance').value,
+        bracketType: bt,
+        plan,
+        maxTeams: document.getElementById('cMaxTeams').value,
+        perMatch: perMatch.value,
+        advance: ffaMode.value === 'elim' ? document.getElementById('cAdvance').value : 1,
+        mode: ffaMode.value,
+        rounds: document.getElementById('cFfaRounds').value,
+        cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
+        finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
@@ -439,6 +561,7 @@ function drawTournament() {
 
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; drawTournament(); });
 
+  document.querySelector('main').classList.toggle('wide', currentTab === 'bracket');
   const body = document.getElementById('tabBody');
   if (currentTab === 'overview') drawOverview(body);
   else if (currentTab === 'players') drawPlayers(body);
@@ -452,6 +575,7 @@ function drawTournament() {
 
 function gameInfoPanel() {
   const cells = [];
+  cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
   if (T.description) cells.push(['Briefing', T.description]);
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);
@@ -844,7 +968,9 @@ function openStartConfig() {
     const rows = [];
     for (let r = 1; r <= R; r++) {
       const lbl = r === R ? 'Final' : r === R - 1 ? 'Semifinals' : r === R - 2 ? 'Quarterfinals' : 'Round ' + r;
-      rows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_r' + r, r === R ? 5 : 3)}</div></div>`);
+      const p = T.plan || {};
+      const dflt = r === R ? (p.final || 5) : r === R - 1 ? (p.semi || 3) : (p.early || 3);
+      rows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_r' + r, dflt)}</div></div>`);
     }
     return modal(`
       <h3>Bracket setup — single elimination</h3>
@@ -865,13 +991,14 @@ function openStartConfig() {
     if (n < 3) return toast('Double elimination needs at least 3 teams', true);
     const lbR = 2 * R - 2;
     const wbRows = [], lbRows = [];
+    const p = T.plan || {};
     for (let r = 1; r <= R; r++) {
       const lbl = r === R ? 'WB Final' : r === R - 1 ? 'WB Semis' : 'WB Round ' + r;
-      wbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_wb' + r, 3)}</div></div>`);
+      wbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_wb' + r, r === R ? (p.wbFinal || 3) : (p.wb || 3))}</div></div>`);
     }
     for (let q = 1; q <= lbR; q++) {
       const lbl = q === lbR ? 'LB Final' : 'LB Round ' + q;
-      lbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_lb' + q, 3)}</div></div>`);
+      lbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_lb' + q, q === lbR ? (p.lbFinal || 3) : (p.lb || 3))}</div></div>`);
     }
     return modal(`
       <h3>Bracket setup — double elimination</h3>
@@ -879,9 +1006,9 @@ function openStartConfig() {
       <label>Winners bracket</label>${wbRows.join('')}
       <label>Losers bracket</label>${lbRows.join('')}
       <label>Grand final</label>
-      <div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">Grand final</div><div style="width:110px">${boSelect('bo_gf', 5)}</div></div>
+      <div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">Grand final</div><div style="width:110px">${boSelect('bo_gf', (T.plan && T.plan.gf) || 5)}</div></div>
       <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
-        <input type="checkbox" id="cfgHcap" checked> Upper bracket finalist starts the grand final 1-0 up
+        <input type="checkbox" id="cfgHcap" ${T.plan && !T.plan.lbHandicap ? '' : 'checked'}> Upper bracket finalist starts the grand final 1-0 up
       </label>
       <div class="actions"><button class="btn ghost" id="cfgCancel">Cancel</button><button class="btn primary" id="cfgGo">Generate bracket</button></div>`,
       root => {
@@ -897,17 +1024,21 @@ function openStartConfig() {
 
   // swiss
   const defR = Math.max(1, R);
+  const sp = T.plan || {};
   return modal(`
     <h3>Swiss setup</h3>
     <p class="muted small">${n} teams. Everyone plays every round; pairings by standings, rematches avoided.</p>
     <label>Number of rounds</label>
-    <input type="number" id="swRounds" min="1" max="15" value="${defR}">
+    <input type="number" id="swRounds" min="1" max="15" value="${defR}" autocomplete="off">
     <label>Each match is</label>
-    <select id="swBo"><option value="1">Bo1</option><option value="3" selected>Bo3</option></select>
+    <select id="swBo"><option value="1"${sp.bo === 1 ? ' selected' : ''}>Bo1</option><option value="3"${sp.bo !== 1 ? ' selected' : ''}>Bo3</option></select>
     <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:16px">
-      <input type="checkbox" id="swFinal" checked> Final between the top 2 after the last round
+      <input type="checkbox" id="swFinal" ${sp.final === 0 ? '' : 'checked'}> Final between the top 2 after the last round
     </label>
-    <div id="swFinalBoWrap"><label>Final is</label>${boSelect('swFinalBo', 5)}</div>
+    <div id="swFinalBoWrap"><label>Final is</label>${boSelect('swFinalBo', sp.finalBo || 5)}</div>
+    <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+      <input type="checkbox" id="swFast" ${sp.fast ? 'checked' : ''}> Fast pairing \u2014 next matchup starts as soon as two teams are free
+    </label>
     <div class="actions"><button class="btn ghost" id="cfgCancel">Cancel</button><button class="btn primary" id="cfgGo">Start round 1</button></div>`,
     root => {
       const fin = root.querySelector('#swFinal');
@@ -917,7 +1048,8 @@ function openStartConfig() {
         rounds: parseInt(root.querySelector('#swRounds').value, 10),
         bo: parseInt(root.querySelector('#swBo').value, 10),
         final: fin.checked,
-        finalBo: parseInt(root.querySelector('#swFinalBo').value, 10)
+        finalBo: parseInt(root.querySelector('#swFinalBo').value, 10),
+        fast: root.querySelector('#swFast').checked
       });
     });
 }
@@ -1058,9 +1190,12 @@ function bracketColumns(el, bracket, title) {
     head.textContent = colLabel(bracket, r);
     col.appendChild(head);
     mapsLine(bracket, r, col);
+    const mc = document.createElement('div');
+    mc.className = 'bcol-matches';
     for (const m of ms.filter(x => x.round === r).sort((a, b) => a.index - b.index)) {
-      col.appendChild(matchBox(m));
+      mc.appendChild(matchBox(m));
     }
+    col.appendChild(mc);
     wrap.appendChild(col);
   }
   sec.appendChild(wrap);
@@ -1073,7 +1208,11 @@ function drawBracket(el) {
   connectorRedraws = [];
   buildFeeders();
   if (!T.matches.length) {
-    el.innerHTML = '<div class="panel"><div class="empty">The bracket appears once the organizer starts it.</div></div>';
+    el.innerHTML = `<div class="panel section"><h2>Format</h2>
+      <p style="margin:0 0 4px">${esc(typeLine(T))}</p>
+      <p class="muted" style="margin:0">${esc(planSummary(T))}</p>
+      <p class="muted small" style="margin-top:12px">The ${T.competition === 'ffa' || T.bracketType === 'swiss' ? 'rounds' : 'bracket'} generate${T.competition === 'ffa' || T.bracketType === 'swiss' ? '' : 's'} from these settings once the organizer starts \u2014 match lengths are already locked in above.</p>
+    </div>`;
     return;
   }
 
@@ -1157,12 +1296,25 @@ function drawFfaRounds(el) {
     for (const m of roundMs) {
       const card = document.createElement('div');
       card.className = 'ffacard ' + m.status;
-      const need = roundMs.length === 1 ? 1 : Math.min(T.ffaCfg.advance, m.entrants.length - 1);
-      card.innerHTML = `<div class="mono small muted">LOBBY ${m.index + 1} · ${m.entrants.length} entrants · top ${need} advance${need === 1 ? 's' : ''}</div>
-        <ul>${m.entrants.map(id => {
+      const pointsMode = T.ffaCfg.mode === 'points' && !m.isFinal;
+      let head;
+      if (m.isFinal) head = 'FINAL LOBBY · winner takes the tournament';
+      else if (pointsMode) head = 'LOBBY ' + (m.index + 1) + ' · ' + m.entrants.length + ' entrants · placement points';
+      else {
+        const need = roundMs.length === 1 ? 1 : Math.min(T.ffaCfg.advance, m.entrants.length - 1);
+        head = 'LOBBY ' + (m.index + 1) + ' · ' + m.entrants.length + ' entrants · top ' + need + ' advance' + (need === 1 ? 's' : '');
+      }
+      let list = m.entrants.slice();
+      if (pointsMode && m.status === 'done' && m.points) list.sort((a, b) => (m.points[b] || 0) - (m.points[a] || 0));
+      card.innerHTML = `<div class="mono small muted">${head}</div>
+        <ul>${list.map(id => {
+          if (pointsMode) {
+            const pts = m.status === 'done' && m.points ? m.points[id] : null;
+            return `<li><span>${esc(teamName(id))}</span>${pts != null ? '<span class="mono small" style="color:var(--amber)">' + pts + ' pts</span>' : ''}</li>`;
+          }
           const won = m.winners && m.winners.indexOf(id) >= 0;
           const cls = m.status === 'done' ? (won ? 'won' : 'lost') : '';
-          return `<li class="${cls}"><span>${esc(teamName(id))}</span>${won ? '<span class="mono small">ADV</span>' : ''}</li>`;
+          return `<li class="${cls}"><span>${esc(teamName(id))}</span>${won ? '<span class="mono small">' + (m.isFinal ? 'CHAMPION' : 'ADV') + '</span>' : ''}</li>`;
         }).join('')}</ul>
         ${m.status === 'ready' || !!adminToken() ? `<div style="margin-top:10px;text-align:right"><button class="btn ${m.status === 'ready' ? 'amber' : 'ghost'} small">${m.status === 'ready' ? 'Report result' : 'Correct'}</button></div>` : ''}`;
       const btn = card.querySelector('button');
@@ -1215,8 +1367,9 @@ function reportScore(matchId) {
 function reportFfa(matchId) {
   const m = T.matches.find(x => x.id === matchId);
   if (!m) return;
+  if (T.ffaCfg.mode === 'points' && !m.isFinal) return reportFfaPoints(m);
   const roundCount = T.matches.filter(x => x.bracket === 'ffa' && x.round === m.round).length;
-  const need = roundCount === 1 ? 1 : Math.min(T.ffaCfg.advance, m.entrants.length - 1);
+  const need = m.isFinal ? 1 : (roundCount === 1 ? 1 : Math.min(T.ffaCfg.advance, m.entrants.length - 1));
   modal(`
     <h3>Report result — Lobby ${m.index + 1}</h3>
     <p class="muted small">Tick the ${need === 1 ? 'winner' : 'top ' + need}.</p>
@@ -1236,6 +1389,36 @@ function reportFfa(matchId) {
       if (winners.length !== need) return toast('Select exactly ' + need, true);
       try {
         await api('/api/t/' + T.id + '/report', { matchId, winners, token: myToken() });
+        closeModal();
+        toast('Result saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+function reportFfaPoints(m) {
+  modal(`
+    <h3>Report result — Lobby ${m.index + 1}</h3>
+    <p class="muted small">Enter each ${T.teamSize === 1 ? 'player' : 'team'}'s points for this round (e.g. by placement).</p>
+    ${m.entrants.map(id => `
+      <div class="row" style="align-items:center;gap:10px;margin:8px 0">
+        <div style="flex:1">${esc(teamName(id))}</div>
+        <input type="number" class="ffaPts" data-id="${id}" min="0" max="1000" style="flex:0 0 100px" value="${m.points && m.points[id] != null ? m.points[id] : ''}" placeholder="pts" autocomplete="off">
+      </div>`).join('')}
+    <div class="actions">
+      <button class="btn ghost" id="rCancel">Cancel</button>
+      <button class="btn primary" id="rGo">Save result</button>
+    </div>`, root => {
+    root.querySelector('#rCancel').onclick = closeModal;
+    root.querySelector('#rGo').onclick = async () => {
+      const points = {};
+      for (const inp of root.querySelectorAll('.ffaPts')) {
+        if (inp.value === '') return toast('Enter points for everyone (0 is fine)', true);
+        points[inp.dataset.id] = inp.value;
+      }
+      try {
+        await api('/api/t/' + T.id + '/report', { matchId: m.id, points, token: myToken() });
         closeModal();
         toast('Result saved');
         await refresh();
@@ -1272,6 +1455,25 @@ function drawStandings(el) {
       ${rows.map((r, i) => `<tr class="${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
         <td class="mono">${i + 1}</td><td>${esc(teamName(r.id))}${T.championTeamId === r.id ? ' 🏆' : ''}</td>
         <td class="mono">${r.w}</td><td class="mono">${r.l}</td><td class="mono">${r.gd > 0 ? '+' : ''}${r.gd}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    return;
+  }
+
+  if (T.competition === 'ffa' && T.ffaCfg.mode === 'points') {
+    const tot = {};
+    for (const team of T.teams) tot[team.id] = 0;
+    for (const m of T.matches) {
+      if (m.bracket !== 'ffa' || !m.points) continue;
+      for (const id of Object.keys(m.points)) if (tot[id] !== undefined) tot[id] += m.points[id];
+    }
+    const rows = T.teams.slice().sort((a, b) =>
+      (T.championTeamId === b.id) - (T.championTeamId === a.id) || tot[b.id] - tot[a.id] || a.seed - b.seed);
+    el.innerHTML = `<div class="panel section"><h2>Points <span class="h2-strong">Standings</span></h2>
+      <table><thead><tr><th>#</th><th>${T.teamSize === 1 ? 'Player' : 'Team'}</th><th>Points</th><th></th></tr></thead><tbody>
+      ${rows.map((team, i) => `<tr class="${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
+        <td class="mono">${i + 1}</td><td>${esc(team.name)}${T.championTeamId === team.id ? ' \ud83c\udfc6' : ''}</td>
+        <td class="mono">${tot[team.id]}</td>
+        <td class="small muted">${team.out ? 'Cut after round ' + team.out.round : ''}</td></tr>`).join('')}
       </tbody></table></div>`;
     return;
   }
@@ -1387,6 +1589,11 @@ document.addEventListener('click', e => {
 });
 
 window.addEventListener('resize', () => { for (const f of connectorRedraws) f(); });
+// mousewheel over a focused number input changes the value and blocks page zoom/scroll
+document.addEventListener('wheel', () => {
+  const a = document.activeElement;
+  if (a && a.tagName === 'INPUT' && a.type === 'number') a.blur();
+}, { passive: true });
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { for (const f of connectorRedraws) f(); });
 
 applyScale();
