@@ -58,10 +58,10 @@ a:hover { text-decoration: underline; }
 }
 .gearbtn:hover { color: var(--amber); border-color: #ffb44766; box-shadow: 0 0 10px #ffb44722; }
 
-main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
-body { overflow-x: hidden; }
-.bsection { width: 100vw; margin-left: calc(50% - 50vw); padding: 0 34px; }
-.bsection-title { max-width: 1132px; margin-left: auto; margin-right: auto; }
+main { padding: 28px 0 80px; }
+.page { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+.widepage { padding: 0 34px; }
+
 
 h1, h2, h3 { font-family: var(--display); font-weight: 600; letter-spacing: .5px; }
 h1 { font-size: 30px; margin: 0 0 4px; }
@@ -184,7 +184,7 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 
 /* bracket */
 .bsection { margin-bottom: 30px; }
-.bsection-title { font-family: var(--display); font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text); margin: 0 0 12px; padding-left: 12px; border-left: 3px solid var(--amber); }
+.bsection-title { font-family: var(--display); font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text); margin: 0 auto 12px; padding-left: 12px; border-left: 3px solid var(--amber); width: max-content; }
 .bsection-title.lb { border-left-color: var(--red); }
 .bsection-title.gf { border-left-color: var(--green); }
 .bracket { overflow-x: auto; padding: 8px 2px 18px; }

@@ -225,7 +225,7 @@ function loginFlow() {
   }
   modal(`
     <h3>Log in</h3>
-    <p class="muted small">Just your FAF name for now — it pre-fills signup forms. FAF login comes later.</p>
+    <p class="muted small">Your name pre-fills every signup form.</p>
     <label>FAF name</label>
     <input type="text" id="lgName" maxlength="30" autocomplete="off">
     <div class="actions">
@@ -301,7 +301,7 @@ async function renderHome() {
         </div>
         <button class="btn primary" id="homeLgGo" style="padding-top:10px;padding-bottom:10px">Log in</button>
       </div>
-      <div class="muted small" style="margin-top:10px">Your name pre-fills every signup form. FAF login comes later.</div>
+      <div class="muted small" style="margin-top:10px">Your name pre-fills every signup form.</div>
     </div>`;
 
   const groups = [
@@ -310,11 +310,11 @@ async function renderHome() {
     ['Completed', list.filter(t => t.status === 'finished'), 'No finished tournaments yet.']
   ];
 
-  app.innerHTML = loginPanel + groups.map((g, i) => `
+  app.innerHTML = '<div class="page">' + loginPanel + groups.map((g, i) => `
     <div class="panel section">
       <h2>${esc(g[0])} <span class="h2-strong">(${g[1].length})</span></h2>
       <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
-    </div>`).join('');
+    </div>`).join('') + '</div>';
 
   const hlName = document.getElementById('homeLgName');
   if (hlName) {
@@ -365,7 +365,7 @@ async function renderHost() {
   stopPoll();
   drawTopbar('');
   app.innerHTML = `
-    <div style="max-width:640px;margin:0 auto">
+    <div class="page" style="max-width:640px">
       <p style="margin:0 0 16px"><a href="/">\u2190 Back to tournaments</a></p>
       <div class="panel section">
         <h2>Host a <span class="h2-strong">Tournament</span></h2>
@@ -592,7 +592,7 @@ async function renderTournament() {
   captureTokensFromURL();
   try { await loadTournament(); }
   catch (e) {
-    app.innerHTML = '<div class="panel"><div class="empty">Tournament not found.</div><a href="/">← Back</a></div>';
+    app.innerHTML = '<div class="page"><div class="panel"><div class="empty">Tournament not found.</div><a href="/">← Back</a></div></div>';
     return;
   }
   drawTopbar(adminToken() ? 'ORGANIZER' : (capToken() ? 'CAPTAIN' : ''));
@@ -631,20 +631,22 @@ function drawTournament() {
   };
 
   app.innerHTML = `
-    <div class="headrow">
-      <div>
-        <h1>${esc(T.name)}</h1>
-        <div class="muted small">${esc(typeLine(T))}</div>
+    <div class="page">
+      <div class="headrow">
+        <div>
+          <h1>${esc(T.name)}</h1>
+          <div class="muted small">${esc(typeLine(T))}</div>
+        </div>
+        <span class="pill ${T.status}">${esc(statusLabel(T.status))}</span>
       </div>
-      <span class="pill ${T.status}">${esc(statusLabel(T.status))}</span>
+      <div class="stepper">
+        ${steps.map((s, i) => `<div class="step ${i < phaseIdx ? 'done' : i === phaseIdx ? 'now' : ''}">${s}</div>`).join('')}
+      </div>
+      <div class="tabs">
+        ${tabs.map(tb => `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}</button>`).join('')}
+      </div>
     </div>
-    <div class="stepper">
-      ${steps.map((s, i) => `<div class="step ${i < phaseIdx ? 'done' : i === phaseIdx ? 'now' : ''}">${s}</div>`).join('')}
-    </div>
-    <div class="tabs">
-      ${tabs.map(tb => `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}</button>`).join('')}
-    </div>
-    <div id="tabBody"></div>`;
+    <div id="tabBody" class="${currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page'}"></div>`;
 
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; drawTournament(); });
 
@@ -1312,6 +1314,18 @@ function bracketColumns(el, bracket, title, gfMatch) {
   drawConnectors(inner);
 }
 
+function alignBracketSections(el) {
+  const inners = Array.from(el.querySelectorAll('.binner'));
+  let w = 0;
+  for (const i of inners) { i.style.width = ''; w = Math.max(w, i.scrollWidth); }
+  for (const i of inners) i.style.width = w + 'px';
+  // align section titles with the bracket blocks
+  for (const t of el.querySelectorAll('.bsection-title')) {
+    t.style.width = w + 'px';
+    t.style.maxWidth = '100%';
+  }
+}
+
 function drawBracket(el) {
   el.innerHTML = '';
   connectorRedraws = [];
@@ -1333,10 +1347,14 @@ function drawBracket(el) {
     const gf = T.matches.find(m => m.bracket === 'gf');
     bracketColumns(el, 'wb', 'Winners bracket', gf);
     bracketColumns(el, 'lb', 'Losers bracket');
+    alignBracketSections(el);
+    for (const f of connectorRedraws) f();
     return;
   }
 
   bracketColumns(el, 'wb', '');
+  alignBracketSections(el);
+  for (const f of connectorRedraws) f();
 }
 
 function drawSwissRounds(el) {
