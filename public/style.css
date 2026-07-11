@@ -185,7 +185,8 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .bsection-title { font-family: var(--display); font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: var(--text); margin: 0 0 12px; padding-left: 12px; border-left: 3px solid var(--amber); }
 .bsection-title.lb { border-left-color: var(--red); }
 .bsection-title.gf { border-left-color: var(--green); }
-.bracket { display: flex; gap: 46px; overflow-x: auto; padding: 8px 2px 18px; position: relative; }
+.bracket { overflow-x: auto; padding: 8px 2px 18px; }
+.binner { display: flex; gap: 46px; position: relative; width: max-content; margin: 0 auto; }
 svg.connectors { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
 svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .bcol { display: flex; flex-direction: column; min-width: 220px; }

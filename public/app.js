@@ -87,10 +87,10 @@ function roundLabel(m) {
     const cnt = T.matches.filter(x => x.bracket === 'ffa' && x.round === m.round).length;
     return (cnt === 1 && m.round === maxR && m.round > 1) ? 'FINAL' : 'ROUND ' + m.round;
   }
-  if (m.bracket === 'lb') return 'LB ROUND ' + m.round;
+  if (m.bracket === 'lb') return 'LOSERS BRACKET R' + m.round;
   // wb
   const R = T.rounds || 1;
-  const prefix = T.bracketType === 'double' ? 'WB ' : '';
+  const prefix = T.bracketType === 'double' ? 'WINNERS BRACKET ' : '';
   if (m.round === R) return prefix + (T.bracketType === 'double' ? 'FINAL' : 'FINAL');
   if (m.round === R - 1) return prefix + 'SEMIS';
   if (m.round === R - 2) return prefix + 'QUARTERS';
@@ -137,7 +137,7 @@ function planSummary(t) {
   const p = t.plan;
   if (!p) return '';
   if (t.bracketType === 'single') return 'Bo' + p.early + ' rounds · Bo' + p.semi + ' semifinal · Bo' + p.final + ' final';
-  if (t.bracketType === 'double') return 'WB Bo' + p.wb + ' (final Bo' + p.wbFinal + ') · LB Bo' + p.lb + ' (final Bo' + p.lbFinal + ') · grand final Bo' + p.gf + (p.lbHandicap ? ' (UB starts 1-0 up)' : '');
+  if (t.bracketType === 'double') return 'Winners bracket Bo' + p.wb + ' (final Bo' + p.wbFinal + ') · losers bracket Bo' + p.lb + ' (final Bo' + p.lbFinal + ') · grand final Bo' + p.gf + (p.lbHandicap ? ' (upper finalist starts 1-0 up)' : '');
   return 'Bo' + p.bo + ' matches' + (p.final ? ' · Bo' + p.finalBo + ' final between the top 2' : ' · highest standing wins') + (p.fast ? ' · fast pairing' : '');
 }
 
@@ -250,7 +250,7 @@ async function renderHome() {
       <div class="panel section">
         <h2>Create <span class="h2-strong">Tournament</span></h2>
         <label>Tournament name</label>
-        <input type="text" id="cName" maxlength="60" placeholder="e.g. Nuggets 2v2 Cup #1">
+        <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
         <label>Description (rules, schedule)</label>
         <textarea id="cDesc" maxlength="500" placeholder="Sunday 19:00 CEST. Check-in in Discord..."></textarea>
         <label>Lobby options</label>
@@ -299,12 +299,12 @@ async function renderHome() {
           <div id="planDouble" style="display:none">
             <label>Match lengths</label>
             <div class="row" style="gap:10px">
-              <div style="flex:1"><div class="muted small">WB rounds</div><select id="pWb"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
-              <div style="flex:1"><div class="muted small">WB final</div><select id="pWbFinal"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">Winners bracket rounds</div><select id="pWb"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">Winners bracket final</div><select id="pWbFinal"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
             </div>
             <div class="row" style="gap:10px;margin-top:8px">
-              <div style="flex:1"><div class="muted small">LB rounds</div><select id="pLb"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
-              <div style="flex:1"><div class="muted small">LB final</div><select id="pLbFinal"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">Losers bracket rounds</div><select id="pLb"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
+              <div style="flex:1"><div class="muted small">Losers bracket final</div><select id="pLbFinal"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option><option value="7">Bo7</option></select></div>
             </div>
             <div class="row" style="gap:10px;margin-top:8px">
               <div style="flex:1"><div class="muted small">Grand final</div><select id="pGf"><option value="1">Bo1</option><option value="3">Bo3</option><option value="5" selected>Bo5</option><option value="7">Bo7</option></select></div>
@@ -993,16 +993,16 @@ function openStartConfig() {
     const wbRows = [], lbRows = [];
     const p = T.plan || {};
     for (let r = 1; r <= R; r++) {
-      const lbl = r === R ? 'WB Final' : r === R - 1 ? 'WB Semis' : 'WB Round ' + r;
+      const lbl = r === R ? 'Final' : r === R - 1 ? 'Semis' : 'Round ' + r;
       wbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_wb' + r, r === R ? (p.wbFinal || 3) : (p.wb || 3))}</div></div>`);
     }
     for (let q = 1; q <= lbR; q++) {
-      const lbl = q === lbR ? 'LB Final' : 'LB Round ' + q;
+      const lbl = q === lbR ? 'Final' : 'Round ' + q;
       lbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_lb' + q, q === lbR ? (p.lbFinal || 3) : (p.lb || 3))}</div></div>`);
     }
     return modal(`
       <h3>Bracket setup — double elimination</h3>
-      <p class="muted small">${n} teams. Winners bracket: ${R} rounds. Losers bracket: ${lbR} rounds.</p>
+      <p class="muted small">${n} teams. Winners bracket: ${R} rounds, losers bracket: ${lbR} rounds.</p>
       <label>Winners bracket</label>${wbRows.join('')}
       <label>Losers bracket</label>${lbRows.join('')}
       <label>Grand final</label>
@@ -1147,7 +1147,7 @@ function matchBox(m) {
 }
 
 let connectorRedraws = [];
-function drawConnectors(wrap, bracket) {
+function drawConnectors(wrap) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('class', 'connectors');
   wrap.prepend(svg);
@@ -1156,12 +1156,10 @@ function drawConnectors(wrap, bracket) {
     svg.setAttribute('height', wrap.scrollHeight);
     let paths = '';
     for (const m of T.matches) {
-      if (m.bracket !== bracket || !m.winnerTo) continue;
-      const dest = T.matches.find(x => x.id === m.winnerTo.id);
-      if (!dest || dest.bracket !== bracket) continue; // cross-bracket handled by "Winner/Loser of" text
+      if (!m.winnerTo) continue;
       const a = wrap.querySelector('[data-mid="' + m.id + '"]');
-      const b = wrap.querySelector('[data-mid="' + dest.id + '"]');
-      if (!a || !b) continue;
+      const b = wrap.querySelector('[data-mid="' + m.winnerTo.id + '"]');
+      if (!a || !b) continue; // cross-section drops handled by "Winner/Loser of" text
       const x1 = a.offsetLeft + a.offsetWidth, y1 = a.offsetTop + a.offsetHeight / 2;
       const x2 = b.offsetLeft, y2 = b.offsetTop + b.offsetHeight / 2;
       const mx = Math.round((x1 + x2) / 2);
@@ -1173,7 +1171,7 @@ function drawConnectors(wrap, bracket) {
   connectorRedraws.push(draw);
 }
 
-function bracketColumns(el, bracket, title) {
+function bracketColumns(el, bracket, title, gfMatch) {
   const ms = T.matches.filter(m => m.bracket === bracket);
   if (!ms.length) return;
   const rounds = Math.max.apply(null, ms.map(m => m.round));
@@ -1182,6 +1180,8 @@ function bracketColumns(el, bracket, title) {
   if (title) sec.innerHTML = `<div class="bsection-title ${bracket}">${esc(title)}</div>`;
   const wrap = document.createElement('div');
   wrap.className = 'bracket';
+  const inner = document.createElement('div');
+  inner.className = 'binner';
   for (let r = 1; r <= rounds; r++) {
     const col = document.createElement('div');
     col.className = 'bcol';
@@ -1196,11 +1196,26 @@ function bracketColumns(el, bracket, title) {
       mc.appendChild(matchBox(m));
     }
     col.appendChild(mc);
-    wrap.appendChild(col);
+    inner.appendChild(col);
   }
+  if (gfMatch) {
+    const col = document.createElement('div');
+    col.className = 'bcol';
+    const head = document.createElement('div');
+    head.className = 'bcol-title';
+    head.textContent = 'GRAND FINAL';
+    col.appendChild(head);
+    mapsLine('gf', 1, col);
+    const mc = document.createElement('div');
+    mc.className = 'bcol-matches';
+    mc.appendChild(matchBox(gfMatch));
+    col.appendChild(mc);
+    inner.appendChild(col);
+  }
+  wrap.appendChild(inner);
   sec.appendChild(wrap);
   el.appendChild(sec);
-  drawConnectors(wrap, bracket);
+  drawConnectors(inner);
 }
 
 function drawBracket(el) {
@@ -1221,23 +1236,9 @@ function drawBracket(el) {
   if (T.bracketType === 'swiss') return drawSwissRounds(el);
 
   if (T.bracketType === 'double') {
-    bracketColumns(el, 'wb', 'Winners bracket');
-    bracketColumns(el, 'lb', 'Losers bracket');
     const gf = T.matches.find(m => m.bracket === 'gf');
-    if (gf) {
-      const sec = document.createElement('div');
-      sec.className = 'bsection';
-      sec.innerHTML = '<div class="bsection-title gf">Grand final</div>';
-      const wrap = document.createElement('div');
-      wrap.className = 'bracket';
-      const col = document.createElement('div');
-      col.className = 'bcol';
-      mapsLine('gf', 1, col);
-      col.appendChild(matchBox(gf));
-      wrap.appendChild(col);
-      sec.appendChild(wrap);
-      el.appendChild(sec);
-    }
+    bracketColumns(el, 'wb', 'Winners bracket', gf);
+    bracketColumns(el, 'lb', 'Losers bracket');
     return;
   }
 
