@@ -42,6 +42,7 @@ function tourneyId() {
   return m ? m[1] : null;
 }
 function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
+function me() { return localStorage.getItem('cmdrName') || ''; }
 function adminToken() {
   const id = tourneyId();
   return (id ? localStorage.getItem('admin_' + id) : null) || siteAdmin();
@@ -195,11 +196,54 @@ function openSettings() {
 
 function drawTopbar(modeText) {
   const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
-  topbarRight.innerHTML = (mode ? '<span>' + esc(mode) + '</span>' : '') +
+  topbarRight.innerHTML =
+    '<a class="btn amber small" href="/host">Host tournament</a>' +
+    '<button class="gearbtn" id="cmdrBtn" title="Player login" style="font-family:var(--mono);font-size:12px;letter-spacing:1px">' + (me() ? esc(me()) : 'LOG IN') + '</button>' +
+    (mode ? '<span>' + esc(mode) + '</span>' : '') +
     '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
   document.getElementById('lockBtn').onclick = siteAdminFlow;
+  document.getElementById('cmdrBtn').onclick = loginFlow;
+}
+
+function loginFlow() {
+  if (me()) {
+    modal(`
+      <h3>Logged in as ${esc(me())}</h3>
+      <p class="muted small">Signup forms use this name automatically.</p>
+      <div class="actions">
+        <button class="btn ghost" id="lgClose">Close</button>
+        <button class="btn danger" id="lgOut">Log out</button>
+      </div>`, root => {
+      root.querySelector('#lgClose').onclick = closeModal;
+      root.querySelector('#lgOut').onclick = () => { localStorage.removeItem('cmdrName'); closeModal(); route(); };
+    });
+    return;
+  }
+  modal(`
+    <h3>Log in</h3>
+    <p class="muted small">Just your FAF name for now — it pre-fills signup forms. FAF login comes later.</p>
+    <label>FAF name</label>
+    <input type="text" id="lgName" maxlength="30" autocomplete="off">
+    <div class="actions">
+      <button class="btn ghost" id="lgCancel">Cancel</button>
+      <button class="btn primary" id="lgGo">Log in</button>
+    </div>`, root => {
+    const inp = root.querySelector('#lgName');
+    inp.focus();
+    const go = () => {
+      const n = inp.value.trim();
+      if (!n) return toast('Enter your name', true);
+      localStorage.setItem('cmdrName', n);
+      closeModal();
+      toast('Logged in as ' + n);
+      route();
+    };
+    inp.onkeydown = e => { if (e.key === 'Enter') go(); };
+    root.querySelector('#lgCancel').onclick = closeModal;
+    root.querySelector('#lgGo').onclick = go;
+  });
 }
 
 function siteAdminFlow() {
@@ -245,10 +289,58 @@ async function renderHome() {
   let list = [];
   try { list = await api('/api/tournaments'); } catch (e) {}
 
+  const groups = [
+    ['Open for signups', list.filter(t => t.status === 'signup'), 'Nothing open right now.'],
+    ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0), 'No tournaments running.'],
+    ['Completed', list.filter(t => t.status === 'finished'), 'No finished tournaments yet.']
+  ];
+
+  app.innerHTML = groups.map((g, i) => `
+    <div class="panel section">
+      <h2>${esc(g[0])} <span class="h2-strong">(${g[1].length})</span></h2>
+      <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
+    </div>`).join('');
+
+  groups.forEach((g, i) => {
+    const tl = document.getElementById('tlist' + i);
+    for (const t of g[1]) {
+      const div = document.createElement('div');
+      div.className = 'tlist-item';
+      const kind = t.competition === 'ffa' ? 'FFA' :
+        (t.teamSize + 'v' + t.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[t.bracketType] || ''));
+      div.innerHTML = `
+        <div>
+          <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a></div>
+          <div class="tlist-meta">${esc(kind)} \u00b7 ${t.players} signed up</div>
+        </div>
+        <span style="display:flex;align-items:center;gap:10px">
+          <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
+          ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}
+        </span>`;
+      const delBtn = div.querySelector('[data-del]');
+      if (delBtn) delBtn.onclick = () => {
+        modal(`<h3>Delete tournament</h3><p>Remove <strong>${esc(t.name)}</strong> permanently? This cannot be undone.</p>
+          <div class="actions"><button class="btn ghost" id="dCancel">Cancel</button><button class="btn danger" id="dGo">Delete</button></div>`, root => {
+          root.querySelector('#dCancel').onclick = closeModal;
+          root.querySelector('#dGo').onclick = async () => {
+            try { await api('/api/t/' + t.id + '/delete', { admin: siteAdmin() }); closeModal(); toast('Deleted'); renderHome(); }
+            catch (e) { toast(e.message, true); }
+          };
+        });
+      };
+      tl.appendChild(div);
+    }
+  });
+}
+
+async function renderHost() {
+  stopPoll();
+  drawTopbar('');
   app.innerHTML = `
-    <div class="grid2">
+    <div style="max-width:640px;margin:0 auto">
+      <p style="margin:0 0 16px"><a href="/">\u2190 Back to tournaments</a></p>
       <div class="panel section">
-        <h2>Create <span class="h2-strong">Tournament</span></h2>
+        <h2>Host a <span class="h2-strong">Tournament</span></h2>
         <label>Tournament name</label>
         <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
         <label>Description (rules, schedule)</label>
@@ -374,10 +466,6 @@ async function renderHome() {
           <button class="btn primary" id="cGo">Create tournament</button>
         </div>
       </div>
-      <div class="panel section">
-        <h2>Tournaments</h2>
-        <div id="tlist">${list.length ? '' : '<div class="empty">No tournaments yet. Create the first one.</div>'}</div>
-      </div>
     </div>`;
 
   const comp = document.getElementById('cComp');
@@ -420,35 +508,6 @@ async function renderHome() {
   cBracket.onchange = syncVis; ffaSize.onchange = syncVis; ffaMode.onchange = syncVis;
   cutMode.onchange = syncVis; finalMode.onchange = syncVis;
   syncVis();
-
-  const tl = document.getElementById('tlist');
-  for (const t of list) {
-    const div = document.createElement('div');
-    div.className = 'tlist-item';
-    const kind = t.competition === 'ffa' ? 'FFA' :
-      (t.teamSize + 'v' + t.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[t.bracketType] || ''));
-    div.innerHTML = `
-      <div>
-        <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a></div>
-        <div class="tlist-meta">${esc(kind)} · ${t.players} signed up</div>
-      </div>
-      <span style="display:flex;align-items:center;gap:10px">
-        <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
-        ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}
-      </span>`;
-    const delBtn = div.querySelector('[data-del]');
-    if (delBtn) delBtn.onclick = () => {
-      modal(`<h3>Delete tournament</h3><p>Remove <strong>${esc(t.name)}</strong> permanently? This cannot be undone.</p>
-        <div class="actions"><button class="btn ghost" id="dCancel">Cancel</button><button class="btn danger" id="dGo">Delete</button></div>`, root => {
-        root.querySelector('#dCancel').onclick = closeModal;
-        root.querySelector('#dGo').onclick = async () => {
-          try { await api('/api/t/' + t.id + '/delete', { admin: siteAdmin() }); closeModal(); toast('Deleted'); renderHome(); }
-          catch (e) { toast(e.message, true); }
-        };
-      });
-    };
-    tl.appendChild(div);
-  }
 
   document.getElementById('cGo').onclick = async () => {
     const name = document.getElementById('cName').value.trim();
@@ -561,7 +620,6 @@ function drawTournament() {
 
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; drawTournament(); });
 
-  document.querySelector('main').classList.toggle('wide', currentTab === 'bracket');
   const body = document.getElementById('tabBody');
   if (currentTab === 'overview') drawOverview(body);
   else if (currentTab === 'players') drawPlayers(body);
@@ -648,7 +706,7 @@ function fillQueue(el, matches, withReport) {
       if (m.status === 'live') inner += `<span class="livechip">LIVE</span>`;
     }
     const maps = mapsFor(m.bracket, m.round);
-    if (maps.length) inner += `<span class="mono small muted" title="Maps">🗺 ${esc(maps.join(', '))}</span>`;
+    if (maps.length) inner += `<span class="mono small muted" title="Maps">${esc(maps.map((mp, i) => 'G' + (i + 1) + ': ' + mp).join(' · '))}</span>`;
     if (withReport) inner += `<button class="btn amber small" data-m="${m.id}">Report</button>`;
     div.innerHTML = inner;
     if (withReport) div.querySelector('button').onclick = () => reportScore(m.id);
@@ -737,6 +795,8 @@ function drawPlayers(el) {
     inp.oninput = () => { F.signup[key] = inp.value; };
   };
   bindKeep('sName', 'name'); bindKeep('sRating', 'rating');
+  const sn = document.getElementById('sName');
+  if (sn && !sn.value && me()) { sn.value = me(); F.signup.name = me(); }
 
   // team registration form: preserve values + submit
   const rTeam = document.getElementById('rTeam');
@@ -746,6 +806,7 @@ function drawPlayers(el) {
     document.querySelectorAll('.regName').forEach(inp => {
       const i = parseInt(inp.dataset.i, 10);
       if (!F.reg.p[i]) F.reg.p[i] = { n: '', r: '' };
+      if (i === 0 && !F.reg.p[0].n && me()) F.reg.p[0].n = me();
       inp.value = F.reg.p[i].n;
       inp.oninput = () => { F.reg.p[i].n = inp.value; };
     });
@@ -1056,16 +1117,21 @@ function openStartConfig() {
 
 // ----- bracket / rounds -----
 
+function mapRows(maps) {
+  return maps.map((m, i) => '<div class="maprow"><span class="mapg">GAME ' + (i + 1) + '</span><span>' + esc(m) + '</span></div>').join('');
+}
+
 function mapsLine(bracket, round, el) {
   const admin = !!adminToken();
   const maps = mapsFor(bracket, round);
+  if (!maps.length && !admin) return;
   const div = document.createElement('div');
-  div.className = 'bcol-maps';
-  div.innerHTML = (maps.length ? '🗺 ' + esc(maps.join(' · ')) : (admin ? '<span class="muted">no maps set</span>' : '')) +
-    (admin ? ' <a href="#" class="small">edit</a>' : '');
+  div.className = 'mapblock';
+  div.innerHTML = '<div class="mapblock-head"><span>MAP POOL</span>' + (admin ? '<a href="#">edit</a>' : '') + '</div>' +
+    (maps.length ? mapRows(maps) : '<div class="maprow muted">no maps set</div>');
   const a = div.querySelector('a');
   if (a) a.onclick = e => { e.preventDefault(); editMaps(bracket, round); };
-  if (maps.length || admin) el.appendChild(div);
+  el.appendChild(div);
 }
 
 function editMaps(bracket, round) {
@@ -1339,7 +1405,7 @@ function reportScore(matchId) {
     <h3>Report score — ${esc(roundLabel(m))}</h3>
     <p class="muted small">Best of ${m.bo} — first to ${maxW}.${m.hcap ? ' Upper bracket finalist starts 1-0 up.' : ''}
     You can save a running score (e.g. 1-0) so everyone can follow along — the match completes automatically when a team reaches ${maxW}.</p>
-    ${maps.length ? '<p class="mono small" style="color:var(--blue)">🗺 ' + esc(maps.join(' · ')) + '</p>' : ''}
+    ${maps.length ? '<div class="mapblock"><div class="mapblock-head"><span>MAP POOL</span></div>' + mapRows(maps) + '</div>' : ''}
     <div class="row">
       <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="rs1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${m.score1 != null ? m.score1 : (m.hcap ? 1 : 0)}"></div>
       <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="rs2" min="0" max="${maxW}" value="${m.score2 != null ? m.score2 : 0}"></div>
@@ -1575,7 +1641,8 @@ async function refresh() {
 }
 
 function route() {
-  if (tourneyId()) renderTournament();
+  if (location.pathname === '/host') renderHost();
+  else if (tourneyId()) renderTournament();
   else renderHome();
 }
 

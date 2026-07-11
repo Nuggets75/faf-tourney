@@ -59,7 +59,9 @@ a:hover { text-decoration: underline; }
 .gearbtn:hover { color: var(--amber); border-color: #ffb44766; box-shadow: 0 0 10px #ffb44722; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
-main.wide { max-width: none; padding-left: 34px; padding-right: 34px; }
+body { overflow-x: hidden; }
+.bsection { width: 100vw; margin-left: calc(50% - 50vw); padding: 0 34px; }
+.bsection-title { max-width: 1132px; margin-left: auto; margin-right: auto; }
 
 h1, h2, h3 { font-family: var(--display); font-weight: 600; letter-spacing: .5px; }
 h1 { font-size: 30px; margin: 0 0 4px; }
@@ -201,6 +203,8 @@ svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .mapblock-head { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; color: var(--blue); margin-bottom: 5px; display: flex; justify-content: space-between; gap: 8px; }
 .mapblock-head a { font-family: var(--body); letter-spacing: 0; }
 .maprow { font-size: 13px; padding: 2px 0; display: flex; gap: 10px; align-items: baseline; }
+.bcol .mapblock { max-width: 240px; }
+.maprow span:last-child { word-break: break-word; }
 .maprow .mapg { font-family: var(--mono); font-size: 10px; color: var(--amber); letter-spacing: 1px; white-space: nowrap; min-width: 52px; }
 .bmatch { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; overflow: hidden; transition: border-color .15s, box-shadow .15s; position: relative; z-index: 1; }
 .bmatch.ready { border-color: #ffb44766; }

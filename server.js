@@ -1156,7 +1156,7 @@ const MIME = {
 
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/' || p.startsWith('/t/')) p = '/index.html';
+  if (p === '/' || p === '/host' || p.startsWith('/t/')) p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
