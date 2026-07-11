@@ -9,7 +9,7 @@ let currentTab = 'overview';
 let pollTimer = null;
 let lastSnapshot = '';
 // form state preserved across re-renders
-const F = { capSel: {}, signup: { name: '', rating: '', team: '' } };
+const F = { capSel: {}, signup: { name: '', rating: '', team: '' }, reg: { team: '', p: [] } };
 
 // ---------- utils ----------
 
@@ -539,22 +539,40 @@ function drawPlayers(el) {
   let html = '';
 
   if (T.status === 'signup') {
-    const teamField = (T.formation === 'premade' && T.teamSize > 1);
-    html += `<div class="panel section"><h2>Sign up</h2>
+    const teamReg = (T.formation === 'premade' && T.teamSize > 1);
+    if (teamReg) {
+      const rows = [];
+      for (let i = 0; i < T.teamSize; i++) {
+        rows.push(`<div class="row" style="gap:10px;margin-top:8px">
+          <div style="flex:2"><input type="text" class="regName" data-i="${i}" maxlength="30" placeholder="Player ${i + 1}${i === 0 ? ' (captain — that\u2019s you)' : ''}" autocomplete="off"></div>
+          <div style="flex:1"><input type="number" class="regRating" data-i="${i}" min="0" max="4000" placeholder="Rating" autocomplete="off"></div>
+        </div>`);
+      }
+      html += `<div class="panel section"><h2>Register your team</h2>
+        <div class="grid2">
+          <div>
+            <label>Team name</label><input type="text" id="rTeam" maxlength="30" placeholder="Unique team name" autocomplete="off">
+            <label>Players (${T.teamSize})</label>
+            ${rows.join('')}
+            <div style="margin-top:16px"><button class="btn primary" id="rGo">Register team</button></div>
+          </div>
+          <div class="muted small" style="align-self:end">One player registers the whole team — nobody can join your team afterwards. The first player listed becomes captain. Need a roster change later? The organizer can edit players at any time.</div>
+        </div></div>`;
+    } else {
+      html += `<div class="panel section"><h2>Sign up</h2>
       <div class="grid2">
         <div>
           <label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">
           <label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
-          ${teamField ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Same name = same team" autocomplete="off">' : ''}
           <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up</button></div>
         </div>
         <div class="muted small" style="align-self:end">
           ${T.competition === 'ffa' && T.teamSize === 1 ? 'Every player enters solo. Lobbies are grouped automatically.'
-            : teamField ? 'Everyone who enters the same team name lands on the same team. First member to sign up becomes captain.'
             : T.formation === 'draft' ? 'The organizer will pick captains once signups close, then captains draft their teams.'
             : 'Solo bracket — every signup is an entrant.'}
         </div>
       </div></div>`;
+    }
   }
 
   html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.length})</span></h2>
@@ -576,7 +594,7 @@ function drawPlayers(el) {
       <td class="small muted">${esc(inTeam)}</td>
       ${admin ? `<td style="text-align:right;white-space:nowrap">
         <button class="btn ghost small" data-edit="${p.id}">Edit</button>
-        ${T.status === 'signup' ? `<button class="btn danger small" data-del="${p.id}">Remove</button>` : ''}</td>` : ''}`;
+        ${T.status === 'signup' ? `<button class="btn danger small" data-del="${p.id}">${T.formation === 'premade' && T.teamSize > 1 ? 'Remove team' : 'Remove'}</button>` : ''}</td>` : ''}`;
     const eb = tr.querySelector('[data-edit]');
     if (eb) eb.onclick = () => editPlayer(p);
     const db = tr.querySelector('[data-del]');
@@ -594,7 +612,44 @@ function drawPlayers(el) {
     inp.value = F.signup[key] || '';
     inp.oninput = () => { F.signup[key] = inp.value; };
   };
-  bindKeep('sName', 'name'); bindKeep('sRating', 'rating'); bindKeep('sTeam', 'team');
+  bindKeep('sName', 'name'); bindKeep('sRating', 'rating');
+
+  // team registration form: preserve values + submit
+  const rTeam = document.getElementById('rTeam');
+  if (rTeam) {
+    rTeam.value = F.reg.team || '';
+    rTeam.oninput = () => { F.reg.team = rTeam.value; };
+    document.querySelectorAll('.regName').forEach(inp => {
+      const i = parseInt(inp.dataset.i, 10);
+      if (!F.reg.p[i]) F.reg.p[i] = { n: '', r: '' };
+      inp.value = F.reg.p[i].n;
+      inp.oninput = () => { F.reg.p[i].n = inp.value; };
+    });
+    document.querySelectorAll('.regRating').forEach(inp => {
+      const i = parseInt(inp.dataset.i, 10);
+      if (!F.reg.p[i]) F.reg.p[i] = { n: '', r: '' };
+      inp.value = F.reg.p[i].r;
+      inp.oninput = () => { F.reg.p[i].r = inp.value; };
+    });
+    document.getElementById('rGo').onclick = async () => {
+      const teamName = rTeam.value.trim();
+      if (!teamName) return toast('Enter a team name', true);
+      const players = [];
+      for (let i = 0; i < T.teamSize; i++) {
+        const n = (F.reg.p[i] && F.reg.p[i].n || '').trim();
+        const r = F.reg.p[i] && F.reg.p[i].r;
+        if (!n) return toast('Enter all ' + T.teamSize + ' player names', true);
+        if (r === '' || r == null) return toast('Enter a rating for ' + n, true);
+        players.push({ name: n, rating: r });
+      }
+      try {
+        await api('/api/t/' + T.id + '/signup_team', { teamName, players });
+        F.reg = { team: '', p: [] };
+        toast('Team "' + teamName + '" registered');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
 
   const go = document.getElementById('sGo');
   if (go) go.onclick = async () => {

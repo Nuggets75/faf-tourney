@@ -643,6 +643,7 @@ async function handleAPI(req, res, url) {
 
     if (sub === 'signup') {
       if (t.status !== 'signup') return bad(res, 'Signups are closed');
+      if (t.formation === 'premade' && t.teamSize > 1) return bad(res, 'This tournament uses whole-team registration \u2014 one player registers the full team');
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Player name required');
       if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, 'That name is already signed up');
@@ -658,10 +659,46 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true, playerId: p.id });
     }
 
+    if (sub === 'signup_team') {
+      if (t.status !== 'signup') return bad(res, 'Signups are closed');
+      if (t.formation !== 'premade' || t.teamSize < 2) return bad(res, 'This tournament uses solo signups');
+      const teamName = cleanName(b.teamName, 30);
+      if (!teamName) return bad(res, 'Team name required');
+      if (t.players.some(p => (p.teamName || '').toLowerCase() === teamName.toLowerCase())) {
+        return bad(res, 'A team named "' + teamName + '" already exists \u2014 pick a different name');
+      }
+      const arr = Array.isArray(b.players) ? b.players : [];
+      if (arr.length !== t.teamSize) return bad(res, 'Enter all ' + t.teamSize + ' players');
+      const seen = {};
+      const cleaned = [];
+      for (const it of arr) {
+        const pname = cleanName(it && it.name, 30);
+        if (!pname) return bad(res, 'Every player needs a name');
+        const low = pname.toLowerCase();
+        if (seen[low]) return bad(res, 'Duplicate player in your list: ' + pname);
+        seen[low] = 1;
+        if (t.players.some(p => p.name.toLowerCase() === low)) return bad(res, pname + ' is already signed up in another team');
+        const rating = parseInt(it && it.rating, 10);
+        if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a rating (0\u20134000) for ' + pname);
+        cleaned.push({ name: pname, rating });
+      }
+      for (const it of cleaned) {
+        t.players.push({ id: 'p' + uid(4), name: it.name, rating: it.rating, teamName, teamId: null, signedAt: now() });
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'remove') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
       if (t.status !== 'signup') return bad(res, 'Can only remove players during signups');
-      t.players = t.players.filter(p => p.id !== b.playerId);
+      const p = playerById(t, b.playerId);
+      if (p && t.formation === 'premade' && t.teamSize > 1 && p.teamName) {
+        const key = p.teamName.toLowerCase();
+        t.players = t.players.filter(x => (x.teamName || '').toLowerCase() !== key);
+      } else {
+        t.players = t.players.filter(x => x.id !== b.playerId);
+      }
       saveDB();
       return json(res, 200, { ok: true });
     }
