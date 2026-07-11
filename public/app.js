@@ -585,7 +585,8 @@ function formHasFocus() {
 }
 
 async function loadTournament() {
-  T = await api('/api/t/' + tourneyId());
+  const tok = myToken();
+  T = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
 }
 
 async function renderTournament() {
@@ -603,7 +604,8 @@ async function renderTournament() {
     if (document.getElementById('modalRoot').innerHTML) return; // modal open
     if (formHasFocus()) return;                                  // user is typing
     try {
-      const fresh = await api('/api/t/' + tourneyId());
+      const tok = myToken();
+      const fresh = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
       const snap = JSON.stringify(fresh);
       if (snap === lastSnapshot) return;                         // nothing changed
       T = fresh;
@@ -737,9 +739,10 @@ function fillQueue(el, matches, withReport) {
     }
     const maps = mapsFor(m.bracket, m.round);
     if (maps.length) inner += `<span class="mono small muted" title="Maps">${esc(maps.map((mp, i) => 'G' + (i + 1) + ': ' + mp).join(' · '))}</span>`;
-    if (withReport) inner += `<button class="btn amber small" data-m="${m.id}">Report</button>`;
+    const showBtn = withReport && (m.status === 'done' ? viewerIsAdmin() : canReportMatch(m));
+    if (showBtn) inner += `<button class="btn amber small" data-m="${m.id}">Report</button>`;
     div.innerHTML = inner;
-    if (withReport) div.querySelector('button').onclick = () => reportScore(m.id);
+    if (showBtn) div.querySelector('[data-m]').onclick = () => reportScore(m.id);
     el.appendChild(div);
   }
 }
@@ -940,6 +943,11 @@ function drawTeams(el) {
     html += `<div class="draft-turn">Pick ${d.current + 1} of ${d.order.length} — <strong>${esc(teamName(turnTeamId))}</strong> is picking.
       ${capToken() && !admin ? '<span class="muted small"> If it\u2019s your team\u2019s turn, the pick buttons below work for you.</span>' : ''}
     </div>`;
+    const orderChips = d.order.map((tid, i) => {
+      const cls = i < d.current ? 'po-done' : i === d.current ? 'po-now' : '';
+      return `<span class="po-chip ${cls}"><span class="po-num">${i + 1}</span>${esc(teamName(tid))}</span>`;
+    }).join('');
+    html += `<div class="panel section"><h2>Pick order</h2><div class="pickorder">${orderChips}</div></div>`;
     html += `<div class="panel section"><h2>Player pool</h2><div class="pool" id="draftPool"></div></div>`;
   }
 
@@ -994,6 +1002,8 @@ function drawTeams(el) {
 
   const dp = document.getElementById('draftPool');
   if (dp) {
+    const turnTeam = T.draft ? T.draft.order[T.draft.current] : null;
+    const canPick = viewerIsAdmin() || (T.viewer && T.viewer.teamId && T.viewer.teamId === turnTeam);
     const free = T.players.filter(p => !p.teamId).sort((a, b) => (b.rating || 0) - (a.rating || 0));
     if (!free.length) {
       dp.innerHTML = '<div class="empty">Pool is empty.</div>';
@@ -1004,8 +1014,9 @@ function drawTeams(el) {
       free.forEach((p, i) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td class="mono muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.rating != null ? p.rating : '\u2014'}</td>
-          <td style="text-align:right"><button class="btn amber small">Pick</button></td>`;
-        tr.querySelector('button').onclick = async () => {
+          <td style="text-align:right">${canPick ? '<button class="btn amber small">Pick</button>' : ''}</td>`;
+        const btn = tr.querySelector('button');
+        if (btn) btn.onclick = async () => {
           try { await api('/api/t/' + T.id + '/pick', { playerId: p.id, token: myToken() }); await refresh(); }
           catch (e) { toast(e.message, true); }
         };
@@ -1021,9 +1032,11 @@ function drawTeams(el) {
     for (const team of T.teams.slice().sort((a, b) => a.seed - b.seed)) {
       const card = document.createElement('div');
       card.className = 'teamcard' + (team.eliminated ? ' elim' : '');
+      const openSlots = (T.status === 'draft' || T.status === 'signup') ? Math.max(0, T.teamSize - team.playerIds.length) : 0;
       card.innerHTML = `<h3><span>${esc(team.name)}</span><span class="seedtag">SEED ${team.seed}</span></h3>
         <ul>${team.playerIds.map(pid =>
-          `<li>${esc(playerName(pid))}${pid === team.captainId && T.teamSize > 1 ? '<span class="captag">CAPTAIN</span>' : ''}</li>`).join('')}</ul>`;
+          `<li>${esc(playerName(pid))}${pid === team.captainId && T.teamSize > 1 ? '<span class="captag">CAPTAIN</span>' : ''}</li>`).join('')}${
+          Array(openSlots).fill('<li class="openslot">\u2014 open \u2014</li>').join('')}</ul>`;
       tg.appendChild(card);
     }
   }
@@ -1226,6 +1239,15 @@ function buildFeeders() {
   }
 }
 
+function viewerIsAdmin() { return !!(T.viewer && T.viewer.admin); }
+function canReportMatch(m) {
+  const v = T.viewer || {};
+  if (v.admin) return true;
+  if (!v.teamId) return false;
+  if (m.bracket === 'ffa') return m.entrants.indexOf(v.teamId) >= 0;
+  return m.team1 === v.teamId || m.team2 === v.teamId;
+}
+
 function matchBox(m) {
   const admin = !!adminToken();
   const box = document.createElement('div');
@@ -1244,11 +1266,12 @@ function matchBox(m) {
       <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}">${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
       <span class="bscore">${score != null ? score : ''}</span></div>`;
   };
-  const canReport = m.status === 'ready' || m.status === 'live';
+  const canReport = (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
+  const canCorrect = m.status === 'done' && viewerIsAdmin();
   box.dataset.mid = m.id;
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
-    ((canReport || (m.status === 'done' && admin))
+    ((canReport || canCorrect)
       ? `<div class="bfoot"><button class="btn ${canReport ? 'amber' : 'ghost'} small">${canReport ? 'Report score' : 'Correct'}</button></div>` : '');
   const btn = box.querySelector('.bfoot button');
   if (btn) btn.onclick = () => reportScore(m.id);
@@ -1442,7 +1465,7 @@ function drawFfaRounds(el) {
           const cls = m.status === 'done' ? (won ? 'won' : 'lost') : '';
           return `<li class="${cls}"><span>${esc(teamName(id))}</span>${won ? '<span class="mono small">' + (m.isFinal ? 'CHAMPION' : 'ADV') + '</span>' : ''}</li>`;
         }).join('')}</ul>
-        ${m.status === 'ready' || !!adminToken() ? `<div style="margin-top:10px;text-align:right"><button class="btn ${m.status === 'ready' ? 'amber' : 'ghost'} small">${m.status === 'ready' ? 'Report result' : 'Correct'}</button></div>` : ''}`;
+        ${(m.status === 'ready' && canReportMatch(m)) || (m.status === 'done' && viewerIsAdmin()) ? `<div style="margin-top:10px;text-align:right"><button class="btn ${m.status === 'ready' ? 'amber' : 'ghost'} small">${m.status === 'ready' ? 'Report result' : 'Correct'}</button></div>` : ''}`;
       const btn = card.querySelector('button');
       if (btn) btn.onclick = () => reportFfa(m.id);
       grid.appendChild(card);

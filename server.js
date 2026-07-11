@@ -796,7 +796,13 @@ async function handleAPI(req, res, url) {
     if (!t) return json(res, 404, { error: 'Tournament not found' });
     const sub = parts[3] || '';
 
-    if (method === 'GET' && !sub) return json(res, 200, publicView(t));
+    if (method === 'GET' && !sub) {
+      const tok = url.searchParams.get('token');
+      const view = publicView(t);
+      const capTeam = teamOfCaptainToken(t, tok);
+      view.viewer = { admin: isAdmin(t, tok) ? 1 : 0, teamId: capTeam ? capTeam.id : null };
+      return json(res, 200, view);
+    }
 
     if (method === 'GET' && sub === 'secrets') {
       if (!isAdmin(t, url.searchParams.get('admin'))) return json(res, 403, { error: 'Admin token required' });
