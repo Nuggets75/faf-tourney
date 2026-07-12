@@ -1648,15 +1648,12 @@ function drawPreviewConnectors(inner, idFn, R, gfId) {
       paths += '<path d="M ' + x1 + ' ' + y1 + ' L ' + mx + ' ' + y1 + ' L ' + mx + ' ' + y2 + ' L ' + x2 + ' ' + y2 + '"/>';
     };
     for (let r = 1; r < R; r++) {
-      const cnt = Math.max(1, inner.querySelectorAll('[data-pid^="' + (idFn(r, 0).replace(/_0$/, '_')) + '"]').length);
-      // count boxes in round r by probing
       let i = 0;
       while (inner.querySelector('[data-pid="' + idFn(r, i) + '"]')) {
         link(idFn(r, i), idFn(r + 1, Math.floor(i / 2)));
         i++;
       }
     }
-    // WB final -> GF
     if (gfId && inner.querySelector('[data-pid="' + gfId + '"]')) {
       link(idFn(R, 0), gfId);
     }
@@ -1684,7 +1681,7 @@ function drawPreviewConnectorsLB(inner, counts) {
       paths += '<path d="M ' + x1 + ' ' + y1 + ' L ' + mx + ' ' + y1 + ' L ' + mx + ' ' + y2 + ' L ' + x2 + ' ' + y2 + '"/>';
     };
     for (let q = 1; q < counts.length; q++) {
-      const same = counts[q] === counts[q - 1]; // minor->minor keeps count; feeds same index
+      const same = counts[q] === counts[q - 1];
       for (let i = 0; i < counts[q - 1]; i++) {
         const toIdx = same ? i : Math.floor(i / 2);
         link('pl_' + q + '_' + i, 'pl_' + (q + 1) + '_' + toIdx);

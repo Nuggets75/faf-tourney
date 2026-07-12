@@ -29,6 +29,7 @@ function loadDB() {
     db = { tournaments: {} };
   }
   // migrate v1 records so old test tournaments don't crash the client
+  let changed = false;
   for (const t of Object.values(db.tournaments)) {
     if (!t.competition) {
       t.competition = 'team';
@@ -44,7 +45,9 @@ function loadDB() {
       if (!m.bracket) m.bracket = 'wb';
       if (!m.bo) m.bo = t.bestOf || 3;
     }
+    if (backfillMatchLinks(t)) changed = true;
   }
+  if (changed) { try { saveDB(); } catch (e) {} }
 }
 
 let saveTimer = null;
@@ -315,6 +318,73 @@ function buildDouble(t, cfg) {
     setSlot(t, m, 1, slots[i * 2]);
     setSlot(t, m, 2, slots[i * 2 + 1]);
   });
+}
+
+// Reconstruct winnerTo/loserTo on existing brackets that were generated before those
+// links were stored (older tournaments in db.json). Imported tournaments already carry
+// their own links, so skip them. Idempotent: only runs when links are absent.
+function backfillMatchLinks(t) {
+  if (!t) return false;
+  const ms = (t.matches || []);
+  if (!ms.length) return false;
+  // if any elimination match already has winnerTo, assume links are present.
+  const elim = ms.filter(m => m.bracket === 'wb' || m.bracket === 'lb' || m.bracket === 'gf');
+  if (!elim.length) return false;
+  if (elim.some(m => m.winnerTo || m.loserTo)) return false;
+
+  const byRC = {}; // bracket -> round -> index -> match
+  for (const m of elim) {
+    byRC[m.bracket] = byRC[m.bracket] || {};
+    byRC[m.bracket][m.round] = byRC[m.bracket][m.round] || {};
+    byRC[m.bracket][m.round][m.index] = m;
+  }
+  const at = (br, r, i) => (byRC[br] && byRC[br][r] && byRC[br][r][i]) || null;
+  const gf = at('gf', 1, 0);
+
+  const wbRounds = byRC.wb ? Object.keys(byRC.wb).map(Number) : [];
+  const R = wbRounds.length ? Math.max.apply(null, wbRounds) : 0;
+
+  if (t.bracketType === 'double' && R > 0) {
+    const lbRoundsKeys = byRC.lb ? Object.keys(byRC.lb).map(Number) : [];
+    const lbRounds = lbRoundsKeys.length ? Math.max.apply(null, lbRoundsKeys) : 0;
+    // winners bracket
+    for (let r = 1; r <= R; r++) {
+      const row = byRC.wb[r] || {};
+      Object.keys(row).map(Number).forEach(i => {
+        const m = row[i];
+        if (r < R) { const nx = at('wb', r + 1, Math.floor(i / 2)); if (nx) m.winnerTo = { id: nx.id, slot: (i % 2) + 1 }; }
+        else if (gf) m.winnerTo = { id: gf.id, slot: 1 };
+        if (r === 1) { const d = at('lb', 1, Math.floor(i / 2)); if (d) m.loserTo = { id: d.id, slot: (i % 2) + 1 }; }
+        else {
+          const q = 2 * r - 2;
+          const cnt = byRC.lb && byRC.lb[q] ? Object.keys(byRC.lb[q]).length : 0;
+          const j = (r % 2 === 0) ? (cnt - 1 - i) : i;
+          const d = at('lb', q, j); if (d) m.loserTo = { id: d.id, slot: 1 };
+        }
+      });
+    }
+    // losers bracket
+    for (let q = 1; q <= lbRounds; q++) {
+      const row = byRC.lb[q] || {};
+      Object.keys(row).map(Number).forEach(i => {
+        const m = row[i];
+        if (q === lbRounds) { if (gf) m.winnerTo = { id: gf.id, slot: 2 }; return; }
+        if (q % 2 === 1) { const nx = at('lb', q + 1, i); if (nx) m.winnerTo = { id: nx.id, slot: 2 }; }
+        else { const nx = at('lb', q + 1, Math.floor(i / 2)); if (nx) m.winnerTo = { id: nx.id, slot: (i % 2) + 1 }; }
+      });
+    }
+  } else if (R > 0) {
+    // single elimination
+    for (let r = 1; r < R; r++) {
+      const row = byRC.wb[r] || {};
+      Object.keys(row).map(Number).forEach(i => {
+        const m = row[i];
+        const nx = at('wb', r + 1, Math.floor(i / 2));
+        if (nx) m.winnerTo = { id: nx.id, slot: (i % 2) + 1 };
+      });
+    }
+  }
+  return true;
 }
 
 // ---------- swiss ----------
