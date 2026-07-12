@@ -98,9 +98,9 @@ function roundLabel(m) {
   return prefix + 'ROUND ' + m.round;
 }
 
-function colLabel(bracket, r) {
+function colLabel(bracket, r, totalRounds) {
   if (bracket === 'wb') {
-    const R = T.rounds || 1;
+    const R = totalRounds || T.rounds || 1;
     if (r === R) return T.bracketType === 'double' ? 'WB FINAL' : 'FINAL';
     if (r === R - 1) return 'SEMIS';
     if (r === R - 2) return 'QUARTERS';
@@ -1364,7 +1364,7 @@ function bracketColumns(el, bracket, title, gfMatch) {
     col.className = 'bcol';
     const head = document.createElement('div');
     head.className = 'bcol-title';
-    head.textContent = colLabel(bracket, r);
+    head.textContent = colLabel(bracket, r, rounds);
     col.appendChild(head);
     mapsLine(bracket, r, col);
     const mc = document.createElement('div');
@@ -1524,28 +1524,33 @@ function drawBracketPreview(el) {
 
   // WINNERS/MAIN bracket preview
   const { sec, wrap, inner } = buildPreviewSection(T.bracketType === 'double' ? 'Winners bracket' : '', 'wb');
-  // round 1 pairs from seed order
   let roundSlots = [];
   for (let i = 0; i < bracketSize; i += 2) roundSlots.push([order[i], order[i + 1]]);
 
+  let pid = 0;
+  const idFor = (r, i) => 'pw_' + r + '_' + i;
   for (let r = 1; r <= R; r++) {
     const col = document.createElement('div');
     col.className = 'bcol';
     const h = document.createElement('div');
     h.className = 'bcol-title';
-    h.textContent = colLabel('wb', r);
+    h.textContent = colLabel('wb', r, R);
     col.appendChild(h);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
     if (r === 1) {
-      for (const pair of roundSlots) {
-        mc.appendChild(previewBox(slotLabel(pair[0]), slotLabel(pair[1]), boForRound(r)));
-      }
+      roundSlots.forEach((pair, i) => {
+        const box = previewBox(slotLabel(pair[0]), slotLabel(pair[1]), boForRound(r));
+        box.dataset.pid = idFor(r, i);
+        mc.appendChild(box);
+      });
     } else {
       const count = bracketSize / Math.pow(2, r);
       for (let i = 0; i < count; i++) {
-        mc.appendChild(previewBox({ txt: 'Winner ' + colLabel('wb', r - 1) + ' M' + (i * 2 + 1), tbd: true },
-                                  { txt: 'Winner ' + colLabel('wb', r - 1) + ' M' + (i * 2 + 2), tbd: true }, boForRound(r)));
+        const box = previewBox({ txt: 'Winner ' + colLabel('wb', r - 1, R) + ' M' + (i * 2 + 1), tbd: true },
+                               { txt: 'Winner ' + colLabel('wb', r - 1, R) + ' M' + (i * 2 + 2), tbd: true }, boForRound(r));
+        box.dataset.pid = idFor(r, i);
+        mc.appendChild(box);
       }
     }
     col.appendChild(mc);
@@ -1561,19 +1566,24 @@ function drawBracketPreview(el) {
     col.appendChild(h);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
-    mc.appendChild(previewBox({ txt: 'Winners bracket winner', tbd: true }, { txt: 'Losers bracket winner', tbd: true }, plan.gf || 5));
+    const gfbox = previewBox({ txt: 'Winners bracket winner', tbd: true }, { txt: 'Losers bracket winner', tbd: true }, plan.gf || 5);
+    gfbox.dataset.pid = 'pw_gf';
+    mc.appendChild(gfbox);
     col.appendChild(mc);
     inner.appendChild(col);
   }
   wrap.appendChild(inner);
   sec.appendChild(wrap);
   el.appendChild(sec);
+  // connectors: WB round r box i -> round r+1 box floor(i/2); WB final -> GF
+  drawPreviewConnectors(inner, (rr, ii) => idFor(rr, ii), R, 'pw_gf');
 
   // LOSERS bracket preview (structure only, all TBD)
   if (T.bracketType === 'double' && R >= 1) {
     const lbRounds = 2 * R - 2;
     if (lbRounds >= 1) {
       const { sec: lsec, wrap: lwrap, inner: linner } = buildPreviewSection('Losers bracket', 'lb');
+      const lbCounts = [];
       for (let q = 1; q <= lbRounds; q++) {
         const col = document.createElement('div');
         col.className = 'bcol';
@@ -1585,8 +1595,11 @@ function drawBracketPreview(el) {
         mc.className = 'bcol-matches';
         const k = (q % 2 === 1) ? (q + 3) / 2 : (q + 2) / 2;
         const count = bracketSize / Math.pow(2, k);
+        lbCounts.push(count);
         for (let i = 0; i < count; i++) {
-          mc.appendChild(previewBox({ txt: 'TBD', tbd: true }, { txt: 'TBD', tbd: true }, (plan.lb || 3)));
+          const box = previewBox({ txt: 'TBD', tbd: true }, { txt: 'TBD', tbd: true }, (plan.lb || 3));
+          box.dataset.pid = 'pl_' + q + '_' + i;
+          mc.appendChild(box);
         }
         col.appendChild(mc);
         linner.appendChild(col);
@@ -1594,10 +1607,81 @@ function drawBracketPreview(el) {
       lwrap.appendChild(linner);
       lsec.appendChild(lwrap);
       el.appendChild(lsec);
+      // LB connectors: minor round (odd q, same count as next) -> same index; major round (even q, halves) -> floor(i/2)
+      drawPreviewConnectorsLB(linner, lbCounts);
     }
   }
 
   alignBracketSections(el);
+  // redraw connectors after alignment settles widths
+  for (const f of connectorRedraws) f();
+}
+
+// generic preview connector: for each round r (1..R-1), link box i to next round's floor(i/2)
+function drawPreviewConnectors(inner, idFn, R, gfId) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'connectors');
+  inner.prepend(svg);
+  const draw = () => {
+    svg.setAttribute('width', inner.scrollWidth);
+    svg.setAttribute('height', inner.scrollHeight);
+    let paths = '';
+    const link = (fromId, toId) => {
+      const a = inner.querySelector('[data-pid="' + fromId + '"]');
+      const b = inner.querySelector('[data-pid="' + toId + '"]');
+      if (!a || !b) return;
+      const x1 = a.offsetLeft + a.offsetWidth, y1 = a.offsetTop + a.offsetHeight / 2;
+      const x2 = b.offsetLeft, y2 = b.offsetTop + b.offsetHeight / 2;
+      const mx = Math.round((x1 + x2) / 2);
+      paths += '<path d="M ' + x1 + ' ' + y1 + ' L ' + mx + ' ' + y1 + ' L ' + mx + ' ' + y2 + ' L ' + x2 + ' ' + y2 + '"/>';
+    };
+    for (let r = 1; r < R; r++) {
+      const cnt = Math.max(1, inner.querySelectorAll('[data-pid^="' + (idFn(r, 0).replace(/_0$/, '_')) + '"]').length);
+      // count boxes in round r by probing
+      let i = 0;
+      while (inner.querySelector('[data-pid="' + idFn(r, i) + '"]')) {
+        link(idFn(r, i), idFn(r + 1, Math.floor(i / 2)));
+        i++;
+      }
+    }
+    // WB final -> GF
+    if (gfId && inner.querySelector('[data-pid="' + gfId + '"]')) {
+      link(idFn(R, 0), gfId);
+    }
+    svg.innerHTML = paths;
+  };
+  draw();
+  connectorRedraws.push(draw);
+}
+
+function drawPreviewConnectorsLB(inner, counts) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'connectors');
+  inner.prepend(svg);
+  const draw = () => {
+    svg.setAttribute('width', inner.scrollWidth);
+    svg.setAttribute('height', inner.scrollHeight);
+    let paths = '';
+    const link = (fromId, toId) => {
+      const a = inner.querySelector('[data-pid="' + fromId + '"]');
+      const b = inner.querySelector('[data-pid="' + toId + '"]');
+      if (!a || !b) return;
+      const x1 = a.offsetLeft + a.offsetWidth, y1 = a.offsetTop + a.offsetHeight / 2;
+      const x2 = b.offsetLeft, y2 = b.offsetTop + b.offsetHeight / 2;
+      const mx = Math.round((x1 + x2) / 2);
+      paths += '<path d="M ' + x1 + ' ' + y1 + ' L ' + mx + ' ' + y1 + ' L ' + mx + ' ' + y2 + ' L ' + x2 + ' ' + y2 + '"/>';
+    };
+    for (let q = 1; q < counts.length; q++) {
+      const same = counts[q] === counts[q - 1]; // minor->minor keeps count; feeds same index
+      for (let i = 0; i < counts[q - 1]; i++) {
+        const toIdx = same ? i : Math.floor(i / 2);
+        link('pl_' + q + '_' + i, 'pl_' + (q + 1) + '_' + toIdx);
+      }
+    }
+    svg.innerHTML = paths;
+  };
+  draw();
+  connectorRedraws.push(draw);
 }
 
 function previewBox(a, b, bo) {
