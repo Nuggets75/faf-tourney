@@ -273,6 +273,7 @@ tbody tr:hover { background: #ffffff05; }
 .poolchip:hover { border-color: #3a5878; }
 .poolchip .rating { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .openslot { color: var(--muted); font-style: italic; opacity: .7; }
+.teamtotal { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-solid); font-family: var(--display); font-size: 11px; letter-spacing: 1px; color: var(--amber); }
 .pickorder { display: flex; flex-wrap: wrap; gap: 7px; }
 .po-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 11px 4px 6px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--panel2); color: var(--text); }
 .po-chip .po-num { font-family: var(--mono); font-size: 10px; color: var(--muted); background: #0c1219; border-radius: 2px; padding: 1px 5px; }
