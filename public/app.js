@@ -1069,19 +1069,30 @@ function drawTeams(el) {
 
   const tg = document.getElementById('tGrid');
   if (tg) {
+    const ratingOf = pid => { const p = T.players.find(x => x.id === pid); return p && p.rating != null ? p.rating : null; };
+    // does ANY team have a rating? if not, hide the per-player rating column and TOTAL row
+    const anyRatings = T.players.some(p => p.rating != null);
     for (const team of T.teams.slice().sort((a, b) => a.seed - b.seed)) {
       const card = document.createElement('div');
       card.className = 'teamcard' + (team.eliminated ? ' elim' : '');
+
+      // imported tournaments have no individual players/ratings — just show the team name
+      if (T.imported) {
+        card.innerHTML = `<h3><span>${esc(team.name)}</span><span class="seedtag">SEED ${team.seed}</span></h3>` +
+          (team.finalRank ? `<div class="teamtotal"><span>PLACED</span><span class="mono">#${team.finalRank}</span></div>` : '');
+        tg.appendChild(card);
+        continue;
+      }
+
       const openSlots = (T.status === 'draft' || T.status === 'signup') ? Math.max(0, T.teamSize - team.playerIds.length) : 0;
-      const ratingOf = pid => { const p = T.players.find(x => x.id === pid); return p && p.rating != null ? p.rating : null; };
       const total = team.playerIds.reduce((sum, pid) => sum + (ratingOf(pid) || 0), 0);
       card.innerHTML = `<h3><span>${esc(team.name)}</span><span class="seedtag">SEED ${team.seed}</span></h3>
         <ul>${team.playerIds.map(pid => {
           const r = ratingOf(pid);
-          return `<li style="display:flex;justify-content:space-between;gap:8px"><span>${esc(playerName(pid))}${pid === team.captainId && T.teamSize > 1 ? '<span class="captag">CAPTAIN</span>' : ''}</span><span class="mono muted">${r != null ? r : '\u2014'}</span></li>`;
+          return `<li style="display:flex;justify-content:space-between;gap:8px"><span>${esc(playerName(pid))}${pid === team.captainId && T.teamSize > 1 ? '<span class="captag">CAPTAIN</span>' : ''}</span>${anyRatings ? '<span class="mono muted">' + (r != null ? r : '\u2014') + '</span>' : ''}</li>`;
         }).join('')}${
-          Array(openSlots).fill('<li class="openslot">\u2014 open \u2014</li>').join('')}</ul>
-        <div class="teamtotal"><span>TOTAL</span><span class="mono">${total}</span></div>`;
+          Array(openSlots).fill('<li class="openslot">\u2014 open \u2014</li>').join('')}</ul>${
+        anyRatings ? '<div class="teamtotal"><span>TOTAL</span><span class="mono">' + total + '</span></div>' : ''}`;
       tg.appendChild(card);
     }
   }
