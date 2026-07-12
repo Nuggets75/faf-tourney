@@ -882,13 +882,28 @@ async function handleAPI(req, res, url) {
 
     if (sub === 'remove') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
-      if (t.status !== 'signup') return bad(res, 'Can only remove players during signups');
       const p = playerById(t, b.playerId);
-      if (p && t.formation === 'premade' && t.teamSize > 1 && p.teamName) {
-        const key = p.teamName.toLowerCase();
-        t.players = t.players.filter(x => (x.teamName || '').toLowerCase() !== key);
+      if (!p) return json(res, 200, { ok: true });
+      if (t.status === 'signup') {
+        if (t.formation === 'premade' && t.teamSize > 1 && p.teamName) {
+          const key = p.teamName.toLowerCase();
+          t.players = t.players.filter(x => (x.teamName || '').toLowerCase() !== key);
+        } else {
+          t.players = t.players.filter(x => x.id !== b.playerId);
+        }
+      } else if ((t.status === 'draft' || t.status === 'drafted') && !p.teamId) {
+        // resignation of an undrafted player mid-draft
+        t.players = t.players.filter(x => x.id !== p.id);
+        t.subs = (t.subs || []).filter(pid => pid !== p.id);
+        if (t.status === 'draft' && t.draft && !t.draft.done) {
+          // if fewer players remain than scheduled picks, trim the tail of the pick order
+          const available = t.players.filter(x => !x.teamId).length;
+          const remaining = t.draft.order.length - t.draft.current;
+          if (remaining > available) t.draft.order.length = t.draft.current + available;
+          finishDraftIfDone(t);
+        }
       } else {
-        t.players = t.players.filter(x => x.id !== b.playerId);
+        return bad(res, 'Players already on a team can\u2019t be removed \u2014 use Edit to substitute them instead');
       }
       saveDB();
       return json(res, 200, { ok: true });
