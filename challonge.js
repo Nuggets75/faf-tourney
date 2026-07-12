@@ -203,6 +203,28 @@ function convert(challongeRoot, opts) {
       winner, loser, winnerTo: null, loserTo: null,
       _cid: gfMatch.id, _identifier: gfMatch.identifier
     });
+    cidToMatchId[gfMatch.id] = matches[matches.length - 1].id;
+  }
+
+  // build forward links (winnerTo / loserTo) from Challonge's prereq structure.
+  // For each Challonge match, each slot is fed by a prereq match's winner or loser.
+  // Invert: on the feeding match, point winnerTo/loserTo at (this match, slot).
+  const matchByCid = {};
+  for (const mm of matches) matchByCid[mm._cid] = mm;
+  const allRaw = rawMatches.slice();
+  for (const cm of allRaw) {
+    const targetOur = matchByCid[cm.id];
+    if (!targetOur) continue;
+    const linkSlot = (prereqCid, isLoser, slot) => {
+      if (!prereqCid) return;
+      const feeder = matchByCid[prereqCid];
+      if (!feeder) return;
+      const ref = { id: targetOur.id, slot };
+      if (isLoser) feeder.loserTo = ref;
+      else feeder.winnerTo = ref;
+    };
+    linkSlot(cm.player1_prereq_match_id, cm.player1_is_prereq_match_loser, 1);
+    linkSlot(cm.player2_prereq_match_id, cm.player2_is_prereq_match_loser, 2);
   }
 
   // winner of the whole thing

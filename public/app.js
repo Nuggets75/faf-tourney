@@ -779,7 +779,7 @@ function fillQueue(el, matches, withReport) {
     }
     const maps = mapsFor(m.bracket, m.round);
     if (maps.length) inner += `<span class="mono small muted" title="Maps">${esc(maps.map((mp, i) => 'G' + (i + 1) + ': ' + mp).join(' · '))}</span>`;
-    const showBtn = withReport && (m.status === 'done' ? viewerIsAdmin() : canReportMatch(m));
+    const showBtn = !T.imported && withReport && (m.status === 'done' ? viewerIsAdmin() : canReportMatch(m));
     if (showBtn) inner += `<button class="btn amber small" data-m="${m.id}">Report</button>`;
     div.innerHTML = inner;
     if (showBtn) div.querySelector('[data-m]').onclick = () => reportScore(m.id);
@@ -1234,6 +1234,7 @@ function mapRows(maps) {
 }
 
 function mapsLine(bracket, round, el) {
+  if (T.imported) return;
   const admin = !!adminToken();
   const maps = mapsFor(bracket, round);
   if (!maps.length && !admin) return;
@@ -1322,8 +1323,8 @@ function matchBox(m) {
       <span class="bname ${tid && tid !== 'BYE' ? '' : 'tbd'}">${seed ? '<span class="seedtag">' + seed + '</span>' : ''}${esc(nm)}</span>
       <span class="bscore">${score != null ? score : ''}</span></div>`;
   };
-  const canReport = (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
-  const canCorrect = m.status === 'done' && viewerIsAdmin();
+  const canReport = !T.imported && (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
+  const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
   box.dataset.mid = m.id;
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
@@ -1803,7 +1804,7 @@ function drawFfaRounds(el) {
           const cls = m.status === 'done' ? (won ? 'won' : 'lost') : '';
           return `<li class="${cls}"><span>${esc(teamName(id))}</span>${won ? '<span class="mono small">' + (m.isFinal ? 'CHAMPION' : 'ADV') + '</span>' : ''}</li>`;
         }).join('')}</ul>
-        ${(m.status === 'ready' && canReportMatch(m)) || (m.status === 'done' && viewerIsAdmin()) ? `<div style="margin-top:10px;text-align:right"><button class="btn ${m.status === 'ready' ? 'amber' : 'ghost'} small">${m.status === 'ready' ? 'Report result' : 'Correct'}</button></div>` : ''}`;
+        ${!T.imported && ((m.status === 'ready' && canReportMatch(m)) || (m.status === 'done' && viewerIsAdmin())) ? `<div style="margin-top:10px;text-align:right"><button class="btn ${m.status === 'ready' ? 'amber' : 'ghost'} small">${m.status === 'ready' ? 'Report result' : 'Correct'}</button></div>` : ''}`;
       const btn = card.querySelector('button');
       if (btn) btn.onclick = () => reportFfa(m.id);
       grid.appendChild(card);
