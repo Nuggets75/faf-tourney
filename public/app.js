@@ -99,14 +99,22 @@ function roundLabel(m) {
 }
 
 function colLabel(bracket, r, totalRounds) {
+  const R = totalRounds || T.rounds || 1;
   if (bracket === 'wb') {
-    const R = totalRounds || T.rounds || 1;
-    if (r === R) return T.bracketType === 'double' ? 'WB FINAL' : 'FINAL';
-    if (r === R - 1) return 'SEMIS';
-    if (r === R - 2) return 'QUARTERS';
+    if (T.bracketType === 'double') {
+      // double elim: winners bracket rounds are just numbered; last is the WB final
+      return r === R ? 'WB FINAL' : 'ROUND ' + r;
+    }
+    // single elim: real finals nomenclature
+    if (r === R) return 'FINAL';
+    if (r === R - 1) return 'SEMI-FINAL';
     return 'ROUND ' + r;
   }
-  if (bracket === 'lb') return 'LB R' + r;
+  if (bracket === 'lb') {
+    // last LB round is the losers-bracket final (winner advances to the grand final)
+    if (totalRounds && r === totalRounds) return 'LB FINAL';
+    return 'LB ROUND ' + r;
+  }
   return 'ROUND ' + r;
 }
 
@@ -1481,6 +1489,69 @@ function seedLabelMap() {
   return m;
 }
 
+// Build the same match/link topology the server's buildDouble/buildSingle produce,
+// for a bracket of `size` (power of two). Returns { matches, feeders } where feeders is
+// keyed 'bracket:round:index:slot' -> { type:'Winner'|'Loser', bracket, round, index }.
+function virtualBracket(size, isDouble) {
+  const R = Math.round(Math.log2(size));
+  const mk = (bracket, round, index) => ({ bracket, round, index, id: bracket + ':' + round + ':' + index, winnerTo: null, loserTo: null });
+  const all = [];
+  const wb = {}, lb = {};
+  for (let r = 1; r <= R; r++) {
+    wb[r] = [];
+    const count = size / Math.pow(2, r);
+    for (let i = 0; i < count; i++) { const m = mk('wb', r, i); wb[r].push(m); all.push(m); }
+  }
+  let gf = null;
+  if (isDouble) {
+    const lbRounds = 2 * R - 2;
+    for (let q = 1; q <= lbRounds; q++) {
+      lb[q] = [];
+      const k = (q % 2 === 1) ? (q + 3) / 2 : (q + 2) / 2;
+      const count = size / Math.pow(2, k);
+      for (let i = 0; i < count; i++) { const m = mk('lb', q, i); lb[q].push(m); all.push(m); }
+    }
+    gf = mk('gf', 1, 0); all.push(gf);
+    for (let r = 1; r <= R; r++) {
+      wb[r].forEach((m, i) => {
+        if (r < R) m.winnerTo = { id: wb[r + 1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+        else m.winnerTo = { id: gf.id, slot: 1 };
+        if (r === 1) m.loserTo = { id: lb[1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+        else {
+          const q = 2 * r - 2;
+          const cnt = lb[q].length;
+          const j = (r % 2 === 0) ? (cnt - 1 - i) : i;
+          m.loserTo = { id: lb[q][j].id, slot: 1 };
+        }
+      });
+    }
+    for (let q = 1; q <= lbRounds; q++) {
+      lb[q].forEach((m, i) => {
+        if (q === lbRounds) { m.winnerTo = { id: gf.id, slot: 2 }; return; }
+        if (q % 2 === 1) m.winnerTo = { id: lb[q + 1][i].id, slot: 2 };
+        else m.winnerTo = { id: lb[q + 1][Math.floor(i / 2)].id, slot: (i % 2) + 1 };
+      });
+    }
+  } else {
+    for (let r = 1; r < R; r++) wb[r].forEach((m, i) => { m.winnerTo = { id: wb[r + 1][Math.floor(i / 2)].id, slot: (i % 2) + 1 }; });
+  }
+  // build feeders keyed by destination id:slot
+  const byId = {}; for (const m of all) byId[m.id] = m;
+  const fd = {};
+  for (const m of all) {
+    if (m.winnerTo) fd[m.winnerTo.id + ':' + m.winnerTo.slot] = { type: 'Winner', m };
+    if (m.loserTo) fd[m.loserTo.id + ':' + m.loserTo.slot] = { type: 'Loser', m };
+  }
+  return { all, byId, fd };
+}
+
+// human label for a virtual match, matching live mLabel style
+function vLabel(m, isDouble) {
+  if (m.bracket === 'gf') return 'GRAND FINAL';
+  const p = m.bracket === 'lb' ? 'LB ' : (isDouble ? 'WB ' : '');
+  return p + 'R' + m.round + ' M' + (m.index + 1);
+}
+
 function drawBracketPreview(el) {
   const n = expectedTeamCount();
 
@@ -1539,8 +1610,16 @@ function drawBracketPreview(el) {
   let roundSlots = [];
   for (let i = 0; i < bracketSize; i += 2) roundSlots.push([order[i], order[i + 1]]);
 
-  let pid = 0;
+  const isDouble = T.bracketType === 'double';
+  const VB = virtualBracket(bracketSize, isDouble);
   const idFor = (r, i) => 'pw_' + r + '_' + i;
+  const wbTag = (r, i) => (isDouble ? 'WB ' : '') + 'R' + r + ' M' + (i + 1);
+  // feeder text for a given destination match+slot, from the real topology
+  const feederText = (destId, slot, seedFallback) => {
+    const f = VB.fd[destId + ':' + slot];
+    if (!f) return seedFallback || { txt: 'TBD', tbd: true };
+    return { txt: f.type + ' of ' + vLabel(f.m, isDouble), tbd: true };
+  };
   for (let r = 1; r <= R; r++) {
     const col = document.createElement('div');
     col.className = 'bcol';
@@ -1552,15 +1631,15 @@ function drawBracketPreview(el) {
     mc.className = 'bcol-matches';
     if (r === 1) {
       roundSlots.forEach((pair, i) => {
-        const box = previewBox(slotLabel(pair[0]), slotLabel(pair[1]), boForRound(r));
+        const box = previewBox(slotLabel(pair[0]), slotLabel(pair[1]), boForRound(r), wbTag(r, i));
         box.dataset.pid = idFor(r, i);
         mc.appendChild(box);
       });
     } else {
       const count = bracketSize / Math.pow(2, r);
       for (let i = 0; i < count; i++) {
-        const box = previewBox({ txt: 'Winner ' + colLabel('wb', r - 1, R) + ' M' + (i * 2 + 1), tbd: true },
-                               { txt: 'Winner ' + colLabel('wb', r - 1, R) + ' M' + (i * 2 + 2), tbd: true }, boForRound(r));
+        const destId = 'wb:' + r + ':' + i;
+        const box = previewBox(feederText(destId, 1), feederText(destId, 2), boForRound(r), wbTag(r, i));
         box.dataset.pid = idFor(r, i);
         mc.appendChild(box);
       }
@@ -1578,7 +1657,8 @@ function drawBracketPreview(el) {
     col.appendChild(h);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
-    const gfbox = previewBox({ txt: 'Winners bracket winner', tbd: true }, { txt: 'Losers bracket winner', tbd: true }, plan.gf || 5);
+    const gfbox = previewBox(feederText('gf:1:0', 1, { txt: 'Winner of winners bracket', tbd: true }),
+                             feederText('gf:1:0', 2, { txt: 'Winner of losers bracket', tbd: true }), plan.gf || 5, 'GRAND FINAL');
     gfbox.dataset.pid = 'pw_gf';
     mc.appendChild(gfbox);
     col.appendChild(mc);
@@ -1596,20 +1676,26 @@ function drawBracketPreview(el) {
     if (lbRounds >= 1) {
       const { sec: lsec, wrap: lwrap, inner: linner } = buildPreviewSection('Losers bracket', 'lb');
       const lbCounts = [];
+      const lbCountAt = q => {
+        const k = (q % 2 === 1) ? (q + 3) / 2 : (q + 2) / 2;
+        return bracketSize / Math.pow(2, k);
+      };
+      const lbTag = (q, i) => 'LB R' + q + ' M' + (i + 1);
       for (let q = 1; q <= lbRounds; q++) {
         const col = document.createElement('div');
         col.className = 'bcol';
         const h = document.createElement('div');
         h.className = 'bcol-title';
-        h.textContent = colLabel('lb', q);
+        h.textContent = colLabel('lb', q, lbRounds);
         col.appendChild(h);
         const mc = document.createElement('div');
         mc.className = 'bcol-matches';
-        const k = (q % 2 === 1) ? (q + 3) / 2 : (q + 2) / 2;
-        const count = bracketSize / Math.pow(2, k);
+        const count = lbCountAt(q);
         lbCounts.push(count);
         for (let i = 0; i < count; i++) {
-          const box = previewBox({ txt: 'TBD', tbd: true }, { txt: 'TBD', tbd: true }, (plan.lb || 3));
+          const destId = 'lb:' + q + ':' + i;
+          const box = previewBox(feederText(destId, 1), feederText(destId, 2),
+                                 (q === lbRounds ? (plan.lbFinal || 3) : (plan.lb || 3)), lbTag(q, i));
           box.dataset.pid = 'pl_' + q + '_' + i;
           mc.appendChild(box);
         }
@@ -1693,11 +1779,11 @@ function drawPreviewConnectorsLB(inner, counts) {
   connectorRedraws.push(draw);
 }
 
-function previewBox(a, b, bo) {
+function previewBox(a, b, bo, label) {
   const box = document.createElement('div');
   box.className = 'bmatch preview';
-  const row = lbl => `<div class="brow"><span class="bname ${lbl.real ? '' : 'tbd'}">${lbl.seed && lbl.real ? '<span class="seedtag">' + lbl.seed + '</span>' : lbl.seed ? '<span class="seedtag">' + lbl.seed + '</span>' : ''}${esc(lbl.txt)}</span><span class="bscore"></span></div>`;
-  box.innerHTML = `<div class="botag">BO${bo}</div>` + row(a) + row(b);
+  const row = lbl => `<div class="brow"><span class="bname ${lbl.real ? '' : 'tbd'}">${lbl.seed ? '<span class="seedtag">' + lbl.seed + '</span>' : ''}${esc(lbl.txt)}</span><span class="bscore"></span></div>`;
+  box.innerHTML = `<div class="botag">${label ? esc(label) + ' \u00b7 ' : ''}BO${bo}</div>` + row(a) + row(b);
   return box;
 }
 
