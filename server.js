@@ -6,6 +6,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const challonge = require('./challonge');
 
 const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -38,6 +39,7 @@ function loadDB() {
     if (!t.maps) t.maps = {};
     if (t.lobbyOptions === undefined) t.lobbyOptions = '';
     if (t.mods === undefined) t.mods = '';
+    if (t.imported === undefined) t.imported = false;
     for (const m of (t.matches || [])) {
       if (!m.bracket) m.bracket = 'wb';
       if (!m.bo) m.bo = t.bestOf || 3;
@@ -103,12 +105,16 @@ function publicView(t) {
       id: x.id, name: x.name, seed: x.seed,
       captainId: x.captainId, playerIds: x.playerIds,
       eliminated: x.eliminated || false,
-      out: x.out || null
+      out: x.out || null,
+      finalRank: x.finalRank || null
     })),
     draft: t.draft,
     matches: t.matches,
     championTeamId: t.championTeamId || null,
-    subs: t.subs || []
+    subs: t.subs || [],
+    imported: t.imported || false,
+    source: t.source || null,
+    sourceUrl: t.sourceUrl || null
   };
 }
 
@@ -779,6 +785,37 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // import a completed tournament from Challonge (site admin only)
+  if (parts.length === 2 && parts[1] === 'import_challonge' && method === 'POST') {
+    const b = await readBody(req);
+    if (!GADMIN || b.admin !== GADMIN) return json(res, 403, { error: 'Site admin only' });
+    let cid = String(b.tournament || '').trim();
+    if (!cid) return bad(res, 'Enter a Challonge tournament URL or ID');
+    // accept a full URL or bare id: challonge.com/abc123 or challonge.com/subdomain/abc123
+    const m = cid.match(/challonge\.com\/([^\/?#]+(?:\/[^\/?#]+)?)/i);
+    if (m) cid = m[1];
+    cid = cid.replace(/^\/+|\/+$/g, '');
+    // subdomain tournaments use "subdomain-id" in the API
+    if (cid.indexOf('/') >= 0) { const pp = cid.split('/'); cid = pp[0] + '-' + pp[1]; }
+    const apiKey = String(b.apiKey || '').trim();
+    if (!apiKey) return bad(res, 'Enter your Challonge API key');
+    try {
+      const raw = await challonge.fetchTournament(cid, apiKey);
+      const conv = challonge.convert(raw, {});
+      // avoid duplicate import of the same Challonge URL
+      for (const ex of Object.values(db.tournaments)) {
+        if (ex.imported && ex.sourceUrl && conv.sourceUrl && ex.sourceUrl === conv.sourceUrl) {
+          return bad(res, 'That Challonge tournament has already been imported.');
+        }
+      }
+      db.tournaments[conv.id] = conv;
+      saveDB();
+      return json(res, 200, { ok: true, id: conv.id, name: conv.name });
+    } catch (e) {
+      return bad(res, e.message || 'Import failed');
+    }
+  }
+
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     const list = Object.values(db.tournaments)
       .sort((a, b) => b.createdAt - a.createdAt)
@@ -802,6 +839,11 @@ async function handleAPI(req, res, url) {
       const capTeam = teamOfCaptainToken(t, tok);
       view.viewer = { admin: isAdmin(t, tok) ? 1 : 0, teamId: capTeam ? capTeam.id : null };
       return json(res, 200, view);
+    }
+
+    // imported tournaments are display-only: only GET and site-admin delete are allowed
+    if (t.imported && method === 'POST' && sub !== 'delete') {
+      return bad(res, 'Imported tournaments are read-only.');
     }
 
     if (method === 'GET' && sub === 'secrets') {

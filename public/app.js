@@ -364,9 +364,22 @@ async function renderHome() {
 async function renderHost() {
   stopPoll();
   drawTopbar('');
+  const importPanel = siteAdmin() ? `
+      <div class="panel section">
+        <h2>Import from <span class="h2-strong">Challonge</span></h2>
+        <p class="muted small">Site admin only. Pulls a <em>completed</em> Challonge tournament and adds it to the Completed list as a read-only bracket. Single &amp; double elimination.</p>
+        <label>Challonge tournament link or ID</label>
+        <input type="text" id="impUrl" placeholder="challonge.com/abc123" autocomplete="off">
+        <label>Your Challonge API key</label>
+        <input type="password" id="impKey" placeholder="from challonge.com/settings/developer" autocomplete="off">
+        <div class="muted small" style="margin-top:6px">The key is sent once to fetch the data and is not stored.</div>
+        <div style="margin-top:14px"><button class="btn primary" id="impGo">Import tournament</button></div>
+      </div>` : '';
+
   app.innerHTML = `
     <div class="page" style="max-width:640px">
       <p style="margin:0 0 16px"><a href="/">\u2190 Back to tournaments</a></p>
+      ${importPanel}
       <div class="panel section">
         <h2>Host a <span class="h2-strong">Tournament</span></h2>
         <label>Tournament name</label>
@@ -573,6 +586,26 @@ async function renderHost() {
       toast('Tournament created — you are the organizer on this browser');
     } catch (e) { toast(e.message, true); }
   };
+
+  const impBtn = document.getElementById('impGo');
+  if (impBtn) impBtn.onclick = async () => {
+    const urlv = document.getElementById('impUrl').value.trim();
+    const keyv = document.getElementById('impKey').value.trim();
+    if (!urlv) return toast('Enter the Challonge link or ID', true);
+    if (!keyv) return toast('Enter your Challonge API key', true);
+    impBtn.disabled = true;
+    impBtn.textContent = 'Importing…';
+    try {
+      const r = await api('/api/import_challonge', { tournament: urlv, apiKey: keyv, admin: siteAdmin() });
+      toast('Imported "' + r.name + '"');
+      history.pushState(null, '', '/t/' + r.id);
+      route();
+    } catch (e) {
+      toast(e.message, true);
+      impBtn.disabled = false;
+      impBtn.textContent = 'Import tournament';
+    }
+  };
 }
 
 // ---------- tournament shell ----------
@@ -677,6 +710,13 @@ function gameInfoPanel() {
 
 function drawOverview(el) {
   let html = '';
+
+  if (T.imported) {
+    html += `<div class="panel section" style="border-left:3px solid var(--blue)">
+      <div class="mono small" style="color:var(--blue);letter-spacing:1px">IMPORTED FROM CHALLONGE</div>
+      <div class="muted small" style="margin-top:6px">This is an archived tournament imported for display. ${T.sourceUrl ? '<a href="' + esc(T.sourceUrl) + '" target="_blank" rel="noopener">View on Challonge \u2197</a>' : ''}</div>
+    </div>`;
+  }
 
   if (T.championTeamId) {
     html += `<div class="champ"><div class="champ-label">Champion</div><h1>${esc(teamName(T.championTeamId))}</h1></div>`;
@@ -1372,11 +1412,7 @@ function drawBracket(el) {
   connectorRedraws = [];
   buildFeeders();
   if (!T.matches.length) {
-    el.innerHTML = `<div class="panel section"><h2>Format</h2>
-      <p style="margin:0 0 4px">${esc(typeLine(T))}</p>
-      <p class="muted" style="margin:0">${esc(planSummary(T))}</p>
-      <p class="muted small" style="margin-top:12px">The ${T.competition === 'ffa' || T.bracketType === 'swiss' ? 'rounds' : 'bracket'} generate${T.competition === 'ffa' || T.bracketType === 'swiss' ? '' : 's'} from these settings once the organizer starts \u2014 match lengths are already locked in above.</p>
-    </div>`;
+    drawBracketPreview(el);
     return;
   }
 
@@ -1396,6 +1432,208 @@ function drawBracket(el) {
   bracketColumns(el, 'wb', '');
   alignBracketSections(el);
   for (const f of connectorRedraws) f();
+}
+
+// ---- preview (before the bracket is generated) ----
+
+function previewSeedOrder(n) {
+  let order = [1];
+  while (order.length < n) {
+    const next = [];
+    const m = order.length * 2;
+    for (const seed of order) { next.push(seed); next.push(m + 1 - seed); }
+    order = next;
+  }
+  return order;
+}
+
+// how many teams the bracket will have: locked teams if formed, else cap, else current entrant estimate
+function expectedTeamCount() {
+  if (T.teams && T.teams.length) return T.teams.length;
+  if (T.maxTeams && T.maxTeams > 0) return T.maxTeams;
+  // estimate from signups
+  if (T.competition === 'ffa' || T.teamSize === 1) return T.players.length;
+  if (T.formation === 'premade') {
+    const names = {};
+    for (const p of T.players) if (p.teamName) names[p.teamName.toLowerCase()] = 1;
+    return Object.keys(names).length;
+  }
+  // draft: one team per captain isn't known yet; fall back to players/teamSize
+  return Math.floor(T.players.length / T.teamSize);
+}
+
+function seedLabelMap() {
+  // maps seed number -> team name, when teams already exist
+  const m = {};
+  if (T.teams) for (const t of T.teams) m[t.seed] = t.name;
+  return m;
+}
+
+function drawBracketPreview(el) {
+  const n = expectedTeamCount();
+
+  // header with format + a clear "preview" note
+  const head = document.createElement('div');
+  head.className = 'panel section';
+  const capNote = T.maxTeams ? ('capped at ' + T.maxTeams + ' teams') : 'uncapped';
+  head.innerHTML = `<h2>Format <span class="h2-strong">preview</span></h2>
+    <p style="margin:0 0 4px">${esc(typeLine(T))}</p>
+    <p class="muted" style="margin:0 0 8px">${esc(planSummary(T))}</p>
+    <p class="muted small" style="margin:0">This is a preview \u2014 ${esc(capNote)}. Seeds fill in as teams are confirmed; the real bracket is generated when the organizer starts it.</p>`;
+  el.appendChild(head);
+
+  if (T.competition === 'ffa') { drawFfaPreview(el, n); return; }
+  if (T.bracketType === 'swiss') { drawSwissPreview(el, n); return; }
+  if (n < 2) {
+    const p = document.createElement('div');
+    p.className = 'panel section';
+    p.innerHTML = '<div class="empty">Not enough teams yet to preview a bracket.</div>';
+    el.appendChild(p);
+    return;
+  }
+
+  const size = 1; let pw = 1; while (pw < n) pw *= 2; // nextPow2
+  const bracketSize = pw;
+  const R = Math.log2(bracketSize);
+  const order = previewSeedOrder(bracketSize);
+  const names = seedLabelMap();
+
+  // slot label: real name if that seed is taken, "Seed N" if within team count, "bye" otherwise
+  const slotLabel = seed => {
+    if (seed > n) return { txt: 'bye', bye: true };
+    if (names[seed]) return { txt: names[seed], seed, real: true };
+    return { txt: 'Seed ' + seed, seed, tbd: true };
+  };
+
+  const plan = T.plan || {};
+  const boForRound = r => {
+    if (T.bracketType === 'double') return r === R ? (plan.wbFinal || 3) : (plan.wb || 3);
+    return r === R ? (plan.final || 5) : r === R - 1 ? (plan.semi || 3) : (plan.early || 3);
+  };
+
+  const buildPreviewSection = (title, cls) => {
+    const sec = document.createElement('div');
+    sec.className = 'bsection';
+    sec.innerHTML = title ? `<div class="bsection-title ${cls}">${esc(title)}</div>` : '';
+    const wrap = document.createElement('div');
+    wrap.className = 'bracket';
+    const inner = document.createElement('div');
+    inner.className = 'binner';
+    return { sec, wrap, inner };
+  };
+
+  // WINNERS/MAIN bracket preview
+  const { sec, wrap, inner } = buildPreviewSection(T.bracketType === 'double' ? 'Winners bracket' : '', 'wb');
+  // round 1 pairs from seed order
+  let roundSlots = [];
+  for (let i = 0; i < bracketSize; i += 2) roundSlots.push([order[i], order[i + 1]]);
+
+  for (let r = 1; r <= R; r++) {
+    const col = document.createElement('div');
+    col.className = 'bcol';
+    const h = document.createElement('div');
+    h.className = 'bcol-title';
+    h.textContent = colLabel('wb', r);
+    col.appendChild(h);
+    const mc = document.createElement('div');
+    mc.className = 'bcol-matches';
+    if (r === 1) {
+      for (const pair of roundSlots) {
+        mc.appendChild(previewBox(slotLabel(pair[0]), slotLabel(pair[1]), boForRound(r)));
+      }
+    } else {
+      const count = bracketSize / Math.pow(2, r);
+      for (let i = 0; i < count; i++) {
+        mc.appendChild(previewBox({ txt: 'Winner ' + colLabel('wb', r - 1) + ' M' + (i * 2 + 1), tbd: true },
+                                  { txt: 'Winner ' + colLabel('wb', r - 1) + ' M' + (i * 2 + 2), tbd: true }, boForRound(r)));
+      }
+    }
+    col.appendChild(mc);
+    inner.appendChild(col);
+  }
+  // grand final placeholder for double
+  if (T.bracketType === 'double') {
+    const col = document.createElement('div');
+    col.className = 'bcol';
+    const h = document.createElement('div');
+    h.className = 'bcol-title';
+    h.textContent = 'GRAND FINAL';
+    col.appendChild(h);
+    const mc = document.createElement('div');
+    mc.className = 'bcol-matches';
+    mc.appendChild(previewBox({ txt: 'Winners bracket winner', tbd: true }, { txt: 'Losers bracket winner', tbd: true }, plan.gf || 5));
+    col.appendChild(mc);
+    inner.appendChild(col);
+  }
+  wrap.appendChild(inner);
+  sec.appendChild(wrap);
+  el.appendChild(sec);
+
+  // LOSERS bracket preview (structure only, all TBD)
+  if (T.bracketType === 'double' && R >= 1) {
+    const lbRounds = 2 * R - 2;
+    if (lbRounds >= 1) {
+      const { sec: lsec, wrap: lwrap, inner: linner } = buildPreviewSection('Losers bracket', 'lb');
+      for (let q = 1; q <= lbRounds; q++) {
+        const col = document.createElement('div');
+        col.className = 'bcol';
+        const h = document.createElement('div');
+        h.className = 'bcol-title';
+        h.textContent = colLabel('lb', q);
+        col.appendChild(h);
+        const mc = document.createElement('div');
+        mc.className = 'bcol-matches';
+        const k = (q % 2 === 1) ? (q + 3) / 2 : (q + 2) / 2;
+        const count = bracketSize / Math.pow(2, k);
+        for (let i = 0; i < count; i++) {
+          mc.appendChild(previewBox({ txt: 'TBD', tbd: true }, { txt: 'TBD', tbd: true }, (plan.lb || 3)));
+        }
+        col.appendChild(mc);
+        linner.appendChild(col);
+      }
+      lwrap.appendChild(linner);
+      lsec.appendChild(lwrap);
+      el.appendChild(lsec);
+    }
+  }
+
+  alignBracketSections(el);
+}
+
+function previewBox(a, b, bo) {
+  const box = document.createElement('div');
+  box.className = 'bmatch preview';
+  const row = lbl => `<div class="brow"><span class="bname ${lbl.real ? '' : 'tbd'}">${lbl.seed && lbl.real ? '<span class="seedtag">' + lbl.seed + '</span>' : lbl.seed ? '<span class="seedtag">' + lbl.seed + '</span>' : ''}${esc(lbl.txt)}</span><span class="bscore"></span></div>`;
+  box.innerHTML = `<div class="botag">BO${bo}</div>` + row(a) + row(b);
+  return box;
+}
+
+function drawSwissPreview(el, n) {
+  const sec = document.createElement('div');
+  sec.className = 'panel section';
+  const rounds = (T.plan && T.plan.rounds) || Math.max(1, Math.ceil(Math.log2(Math.max(2, n))));
+  sec.innerHTML = `<h2>Swiss <span class="h2-strong">preview</span></h2>
+    <p class="muted small" style="margin:0">${esc(String(n))} teams expected \u00b7 pairings are generated round by round once the tournament starts. Round 1 pairs by seed; later rounds by standings.</p>`;
+  el.appendChild(sec);
+}
+
+function drawFfaPreview(el, n) {
+  const per = T.ffaCfg.perMatch;
+  const lobbies = Math.max(1, Math.ceil(n / per));
+  const sec = document.createElement('div');
+  sec.className = 'panel section';
+  sec.innerHTML = `<h2>Round 1 <span class="h2-strong">preview</span></h2>
+    <p class="muted small" style="margin:0 0 10px">${esc(String(n))} entrants expected \u2192 ${lobbies} lobb${lobbies === 1 ? 'y' : 'ies'} of up to ${per}. Exact groupings are drawn when the tournament starts.</p>`;
+  const grid = document.createElement('div');
+  grid.className = 'ffagrid';
+  for (let i = 0; i < lobbies; i++) {
+    const card = document.createElement('div');
+    card.className = 'ffacard preview';
+    card.innerHTML = `<div class="mono small muted">LOBBY ${i + 1}</div><ul><li class="muted" style="font-style:italic">entrants assigned at start</li></ul>`;
+    grid.appendChild(card);
+  }
+  sec.appendChild(grid);
+  el.appendChild(sec);
 }
 
 function drawSwissRounds(el) {
@@ -1629,6 +1867,20 @@ function drawStandings(el) {
         <td class="mono">${tot[team.id]}</td>
         <td class="small muted">${team.out ? 'Cut after round ' + team.out.round : ''}</td></tr>`).join('')}
       </tbody></table></div>`;
+    return;
+  }
+
+  // imported tournaments: use Challonge's final_rank directly (handles ties)
+  if (T.imported) {
+    const rows = T.teams.slice().sort((a, b) => (a.finalRank || 999) - (b.finalRank || 999) || a.seed - b.seed);
+    const html = rows.map(team => {
+      const rk = team.finalRank || '\u2014';
+      const cls = rk === 1 ? 'rank1' : rk === 2 ? 'rank2' : rk === 3 ? 'rank3' : '';
+      const note = team.id === T.championTeamId ? '\ud83c\udfc6 Champion' : '';
+      return `<tr class="${cls}"><td class="mono">${rk}</td><td>${esc(team.name)}</td><td class="small muted">${note}</td></tr>`;
+    }).join('');
+    el.innerHTML = `<div class="panel section"><h2>Final <span class="h2-strong">Standings</span></h2>
+      <table><thead><tr><th>Place</th><th>Team</th><th></th></tr></thead><tbody>${html}</tbody></table></div>`;
     return;
   }
 

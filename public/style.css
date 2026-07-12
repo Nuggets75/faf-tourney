@@ -210,6 +210,8 @@ svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .maprow .mapg { font-family: var(--mono); font-size: 10px; color: var(--amber); letter-spacing: 1px; white-space: nowrap; min-width: 52px; }
 .bmatch { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; overflow: hidden; transition: border-color .15s, box-shadow .15s; position: relative; z-index: 1; }
 .bmatch.ready { border-color: #ffb44766; }
+.bmatch.preview { opacity: .82; border-style: dashed; }
+.ffacard.preview { opacity: .82; border-style: dashed; }
 .bmatch.ready:hover { box-shadow: 0 0 16px #ffb44722; }
 .bmatch.live { border-color: #5c9ee877; box-shadow: 0 0 14px #5c9ee81f; }
 .botag { font-family: var(--mono); font-size: 9px; color: var(--muted); letter-spacing: 1px; padding: 3px 10px 0; }
