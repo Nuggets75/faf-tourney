@@ -39,6 +39,7 @@ a:hover { text-decoration: underline; }
 /* top bar */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
   padding: 14px 28px;
   border-bottom: 1px solid var(--line-solid);
   background: rgba(12,18,25,.92);
@@ -50,7 +51,7 @@ a:hover { text-decoration: underline; }
 .wordmark:hover { text-decoration: none; }
 .wm-faf { color: var(--amber); font-weight: 700; text-shadow: 0 0 14px #ffb44755; }
 .wm-t { font-weight: 500; margin-left: 6px; color: var(--text); }
-.topbar-right { display: flex; align-items: center; gap: 14px; font-family: var(--mono); font-size: 12px; color: var(--amber); letter-spacing: 1px; }
+.topbar-right { display: flex; align-items: center; gap: 14px; font-family: var(--mono); font-size: 12px; color: var(--amber); letter-spacing: 1px; flex-wrap: wrap; justify-content: flex-end; }
 .gearbtn {
   background: none; border: 1px solid var(--line-solid); border-radius: 4px;
   color: var(--muted); cursor: pointer; padding: 5px 9px; font-size: 15px; line-height: 1;
@@ -335,5 +336,46 @@ tbody tr:hover { background: #ffffff05; }
 
 .scale-row { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .scale-row input[type=range] { flex: 1; accent-color: var(--amber); }
+
+
+/* ---------- mobile ---------- */
+@media (max-width: 720px) {
+  main { padding: 18px 0 60px; }
+  .page { padding: 0 14px; }
+  .widepage { padding: 0 14px; }
+
+  .topbar { padding: 10px 14px; gap: 8px; }
+  .wordmark { font-size: 16px; letter-spacing: 1px; }
+  .topbar-right { gap: 8px; width: 100%; }
+  .topbar-right span { display: none; }               /* hide ORGANIZER/CAPTAIN text label */
+  .topbar-right .btn.small { padding: 6px 10px; }
+
+  h1 { font-size: 22px; }
+  h2 { font-size: 14px; }
+
+  /* stepper + tabs scroll horizontally instead of squishing */
+  .stepper { overflow-x: auto; gap: 4px; -webkit-overflow-scrolling: touch; }
+  .step { flex: 0 0 auto; padding: 7px 12px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; gap: 6px; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+  .tab { flex: 0 0 auto; padding: 8px 14px; }
+
+  .panel { padding: 14px; }
+  .grid2 { grid-template-columns: 1fr; gap: 14px; }
+  .infogrid { grid-template-columns: 1fr; }
+  .teamgrid, .ffagrid { grid-template-columns: 1fr; }
+
+  /* tables: let them scroll rather than overflow the panel */
+  .panel table { display: block; overflow-x: auto; white-space: nowrap; }
+
+  .headrow { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .copybox input { font-size: 11px; }
+  .modal { padding: 18px; }
+  .champ h1 { font-size: 30px; }
+}
+
+@media (max-width: 420px) {
+  .wordmark .wm-t { display: none; }                   /* just "FAF" on very small screens */
+  .tab { font-size: 12px; padding: 7px 11px; }
+}
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

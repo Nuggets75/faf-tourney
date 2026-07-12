@@ -806,7 +806,7 @@ function drawPlayers(el) {
       <td>${esc(p.name)}</td>
       <td class="mono">${p.rating != null ? p.rating : '<span class="muted">—</span>'}</td>
       ${T.formation === 'premade' && T.teamSize > 1 ? `<td>${esc(p.teamName || '—')}</td>` : ''}
-      <td class="small muted">${esc(inTeam)}</td>
+      <td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>
       ${admin ? `<td style="text-align:right;white-space:nowrap">
         <button class="btn ghost small" data-edit="${p.id}">Edit</button>
         ${T.status === 'signup' || ((T.status === 'draft' || T.status === 'drafted') && !p.teamId) ? `<button class="btn danger small" data-del="${p.id}">${T.status === 'signup' && T.formation === 'premade' && T.teamSize > 1 ? 'Remove team' : 'Remove'}</button>` : ''}</td>` : ''}`;
