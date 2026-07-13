@@ -315,6 +315,31 @@ tbody tr:hover { background: #ffffff05; }
 .cap-count { margin-top: 10px; font-size: 13px; color: var(--muted); }
 .cap-count .warn, .warn { color: var(--amber); }
 .signed-in-note { color: var(--green); font-size: 14px; margin: 4px 0 12px; }
+.teammates { display: flex; flex-wrap: wrap; gap: 8px; }
+.teammate { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; padding: 6px 12px; font-size: 14px; }
+.cap-tag { font-family: var(--mono); font-size: 9px; color: var(--amber); text-transform: uppercase; letter-spacing: .5px; border: 1px solid #6b5220; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
+.teamgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.teamcard { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; padding: 12px; }
+.teamcard.full { border-color: #2f6b45; }
+.teamcard.open { border-color: #6b5220; }
+.tc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.tc-name { font-weight: 600; font-size: 15px; }
+.tc-count { font-family: var(--mono); font-size: 12px; color: var(--amber); }
+.tc-count.ok { color: var(--green); }
+.tc-members { display: flex; flex-direction: column; gap: 3px; font-size: 13px; margin-bottom: 10px; }
+.tc-members > div { color: var(--text); }
+.tc-join { width: 100%; }
+.tc-admin { margin-top: 8px; border-top: 1px solid var(--line-solid); padding-top: 8px; }
+.unteamed { display: flex; flex-wrap: wrap; gap: 6px; }
+.unteamed-chip { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; padding: 4px 10px; font-size: 13px; }
+.unteamed-chip[data-assign] { cursor: pointer; }
+.unteamed-chip[data-assign]:hover { border-color: var(--amber); }
+.assign-hint { font-family: var(--mono); font-size: 9px; color: var(--amber); margin-left: 4px; }
+.divgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.divcol { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; padding: 12px; }
+.divcol h3 { margin: 0 0 10px; font-size: 14px; }
+.divteam { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: #0c1219; border: 1px solid var(--line-solid); border-radius: 4px; margin-bottom: 6px; font-size: 13px; }
+.divteam select { font-size: 12px; padding: 2px; }
 .teamtotal { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-solid); font-family: var(--display); font-size: 11px; letter-spacing: 1px; color: var(--amber); }
 .pickorder { display: flex; flex-wrap: wrap; gap: 7px; }
 .po-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 11px 4px 6px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--panel2); color: var(--text); }

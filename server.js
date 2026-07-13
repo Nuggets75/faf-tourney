@@ -67,6 +67,8 @@ function loadDB() {
     if (!t.lateToken) t.lateToken = uid(12);
     if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
     if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
+    if (t.divisions === undefined) t.divisions = 0;
+    for (const tm of (t.teams || [])) { if (tm.division === undefined) tm.division = 0; }
     for (const m of (t.matches || [])) {
       if (!m.bracket) m.bracket = 'wb';
       if (!m.bo) m.bo = t.bestOf || 3;
@@ -196,6 +198,7 @@ function publicView(t) {
     teams: t.teams.map(x => ({
       id: x.id, name: x.name, seed: x.seed,
       captainId: x.captainId, playerIds: x.playerIds,
+      division: x.division || 0,
       eliminated: x.eliminated || false,
       out: x.out || null,
       finalRank: x.finalRank || null
@@ -205,6 +208,7 @@ function publicView(t) {
     championTeamId: t.championTeamId || null,
     subs: t.subs || [],
     pendingCaptains: t.pendingCaptains || [],
+    divisions: t.divisions || 0,
     imported: t.imported || false,
     hasOrganizer: (Array.isArray(t.organizerFafIds) && t.organizerFafIds.length > 0) ? 1 : 0,
     createdByName: t.createdByName || '',
@@ -236,9 +240,11 @@ function initVeto(t, m) {
   };
 }
 
+let _buildingDivision = 0; // set while a division's bracket is being generated
 function newMatch(t, bracket, round, index, bo) {
   const m = {
     id: 'm' + uid(4), bracket, round, index, bo: bo || 3, hcap: 0,
+    division: _buildingDivision,
     team1: null, team2: null, score1: null, score2: null,
     status: 'waiting', winner: null, loser: null,
     winnerTo: null, loserTo: null
@@ -347,8 +353,10 @@ function seedOrder(n) {
 function nextPow2(n) { let p = 1; while (p < n) p *= 2; return p; }
 function log2i(n) { let r = 0; while ((1 << r) < n) r++; return r; }
 
-function seededSlots(t) {
-  const teams = t.teams.slice().sort((a, b) => a.seed - b.seed);
+function seededSlots(t, division) {
+  let teams = t.teams.slice();
+  if (division && division > 0) teams = teams.filter(x => (x.division || 0) === division);
+  teams.sort((a, b) => a.seed - b.seed);
   const size = nextPow2(teams.length);
   return seedOrder(size).map(s => (s <= teams.length ? teams[s - 1].id : 'BYE'));
 }
@@ -364,7 +372,7 @@ function cleanBoList(arr, len) {
 }
 
 function buildSingle(t, cfg) {
-  const slots = seededSlots(t);
+  const slots = seededSlots(t, _buildingDivision);
   const size = slots.length;
   const R = log2i(size);
   t.rounds = R;
@@ -386,7 +394,7 @@ function buildSingle(t, cfg) {
 }
 
 function buildDouble(t, cfg) {
-  const slots = seededSlots(t);
+  const slots = seededSlots(t, _buildingDivision);
   const size = slots.length; // >= 4 (n>=3 enforced by caller)
   const R = log2i(size);
   t.rounds = R;
@@ -842,6 +850,27 @@ function finishDraftIfDone(t) {
   }
 }
 
+// Finalize OPEN teams: only teams filled to exactly teamSize enter; incomplete teams and
+// un-teamed players become reserves (subs). Existing teams are kept and seeded by combined rating.
+function finalizeOpenTeams(t) {
+  const full = t.teams.filter(x => x.playerIds.length === t.teamSize);
+  if (full.length < 2) return 'Need at least 2 full teams (' + t.teamSize + ' players each) to start';
+  // seed the full teams
+  applySeeding(t, full, tm => tm.playerIds.reduce((s, pid) => s + ((playerById(t, pid) || {}).rating || 0), 0) / t.teamSize);
+  full.forEach((tm, i) => { tm.seed = i + 1; });
+  // players on incomplete teams -> back to pool; then those + already-unteamed become reserves
+  const fullIds = {}; full.forEach(tm => { fullIds[tm.id] = 1; });
+  for (const tm of t.teams) {
+    if (!fullIds[tm.id]) {
+      for (const pid of tm.playerIds) { const p = playerById(t, pid); if (p) p.teamId = null; }
+    }
+  }
+  t.teams = full;
+  t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
+  t.status = 'drafted';
+  return null;
+}
+
 function formTeamsGrouped(t) {
   if (t.teamSize === 1) {
     if (t.players.length < 2) return 'Need at least 2 players';
@@ -1148,7 +1177,9 @@ async function handleAPI(req, res, url) {
     const bo = (v, d) => BO_OK.indexOf(parseInt(v, 10)) >= 0 ? parseInt(v, 10) : d;
     if (competition === 'team') {
       teamSize = intIn(b.teamSize, 1, 6, 2);
-      formation = (teamSize === 1) ? 'solo' : (b.formation === 'premade' ? 'premade' : 'draft');
+      formation = (teamSize === 1) ? 'solo'
+        : (b.formation === 'premade' ? 'premade'
+        : (b.formation === 'open' ? 'open' : 'draft'));
       bracketType = ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0 ? b.bracketType : 'single';
       draftOrder = b.draftOrder === 'snake' ? 'snake' : 'linear';
       if (bracketType === 'single') {
@@ -1160,7 +1191,7 @@ async function handleAPI(req, res, url) {
       }
     } else {
       teamSize = intIn(b.teamSize, 1, 3, 1);
-      formation = (teamSize === 1) ? 'solo' : 'premade';
+      formation = (teamSize === 1) ? 'solo' : (b.formation === 'premade' ? 'premade' : 'open');
       const mode = b.mode === 'points' ? 'points' : 'elim';
       ffaCfg = {
         perMatch: intIn(b.perMatch, 2, 16, Math.min(6, Math.floor(16 / teamSize))),
@@ -1452,6 +1483,193 @@ async function handleAPI(req, res, url) {
 
     // edit player (admin, any time) — this is also the substitution mechanism:
     // rename the dropped player to the sub's FAF name and fix the rating
+    // ===== open-team management (formation === 'open') =====
+    // helper checks live here so they can reference the request session
+    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'rename_team'].indexOf(sub) >= 0) {
+      if (t.formation !== 'open') return bad(res, 'This tournament does not use open team signups');
+      if (t.status !== 'signup') return bad(res, 'Teams are locked once the tournament starts');
+    }
+
+    // the player acting (their own signed-up record), by FAF identity or explicit id for organizers
+    function actingPlayer(reqBody) {
+      const sess = currentSession(req);
+      if (sess && sess.fafId) {
+        const mine = t.players.find(p => p.fafId === sess.fafId);
+        if (mine) return mine;
+      }
+      // pre-go-live / organizer-specified fallback
+      if (reqBody && reqBody.playerId) return playerById(t, reqBody.playerId);
+      return null;
+    }
+
+    if (sub === 'create_team') {
+      const me = actingPlayer(b);
+      if (!me) return json(res, 401, { error: 'Sign up first, then create a team' });
+      if (me.teamId) return bad(res, 'Leave your current team first');
+      const name = cleanName(b.name, 30);
+      if (!name) return bad(res, 'Team name required');
+      if (t.teams.some(x => (x.name || '').toLowerCase() === name.toLowerCase())) return bad(res, 'That team name is taken');
+      const team = { id: 't' + uid(4), name, seed: 0, captainId: me.id, playerIds: [me.id], captainToken: uid(10), eliminated: false, out: null };
+      t.teams.push(team);
+      me.teamId = team.id;
+      saveDB();
+      return json(res, 200, { ok: true, teamId: team.id });
+    }
+
+    if (sub === 'join_team') {
+      const me = actingPlayer(b);
+      if (!me) return json(res, 401, { error: 'Sign up first' });
+      if (me.teamId) return bad(res, 'Leave your current team first');
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      if (team.playerIds.length >= t.teamSize) return bad(res, 'That team is full');
+      team.playerIds.push(me.id);
+      me.teamId = team.id;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'leave_team') {
+      // a player leaves their own team; an organizer may remove a specified player
+      const organizer = canOrganize(t, req, b);
+      let target = actingPlayer(b);
+      if (organizer && b.targetPlayerId) target = playerById(t, b.targetPlayerId);
+      if (!target) return json(res, 401, { error: 'Not signed in' });
+      const team = teamById(t, target.teamId);
+      if (!team) return bad(res, 'You are not on a team');
+      // remove the player
+      team.playerIds = team.playerIds.filter(id => id !== target.id);
+      target.teamId = null;
+      if (team.playerIds.length === 0) {
+        // last member left -> team dissolves
+        t.teams = t.teams.filter(x => x.id !== team.id);
+      } else if (team.captainId === target.id) {
+        // captain left -> pass captaincy to the next member; team survives
+        team.captainId = team.playerIds[0];
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'disband_team') {
+      const organizer = canOrganize(t, req, b);
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      // only the captain or an organizer can disband
+      const me = actingPlayer(b);
+      const isCap = me && team.captainId === me.id;
+      if (!isCap && !organizer) return json(res, 403, { error: 'Only the team captain or organizer can disband' });
+      for (const pid of team.playerIds) { const p = playerById(t, pid); if (p) p.teamId = null; }
+      t.teams = t.teams.filter(x => x.id !== team.id);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'rename_team') {
+      const organizer = canOrganize(t, req, b);
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      const me = actingPlayer(b);
+      const isCap = me && team.captainId === me.id;
+      if (!isCap && !organizer) return json(res, 403, { error: 'Only the captain or organizer can rename' });
+      const name = cleanName(b.name, 30);
+      if (!name) return bad(res, 'Team name required');
+      if (t.teams.some(x => x.id !== team.id && (x.name || '').toLowerCase() === name.toLowerCase())) return bad(res, 'That team name is taken');
+      team.name = name;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // organizer: move a player to a specific team (with space) or to the pool (teamId=null)
+    if (sub === 'move_player') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const p = playerById(t, b.playerId);
+      if (!p) return bad(res, 'Player not found');
+      // remove from current team first
+      if (p.teamId) {
+        const cur = teamById(t, p.teamId);
+        if (cur) {
+          cur.playerIds = cur.playerIds.filter(id => id !== p.id);
+          if (cur.playerIds.length === 0) t.teams = t.teams.filter(x => x.id !== cur.id);
+          else if (cur.captainId === p.id) cur.captainId = cur.playerIds[0];
+        }
+        p.teamId = null;
+      }
+      if (b.teamId) {
+        const dest = teamById(t, b.teamId);
+        if (!dest) return bad(res, 'Destination team not found');
+        if (dest.playerIds.length >= t.teamSize) return bad(res, 'That team is full');
+        dest.playerIds.push(p.id);
+        p.teamId = dest.id;
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // organizer: set a specific member as the team captain
+    if (sub === 'set_captain') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      if (team.playerIds.indexOf(b.playerId) < 0) return bad(res, 'That player is not on this team');
+      team.captainId = b.playerId;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Manual matchup override: put a specific team (or BYE/empty) into a match slot.
+    // Only allowed on a match that hasn't been played yet, to fix seeding/placement edge cases.
+    if (sub === 'set_match_team') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const m = matchById(t, b.matchId);
+      if (!m) return bad(res, 'Match not found');
+      if (m.status === 'done') return bad(res, 'That match is already played');
+      if (m.bracket === 'ffa') return bad(res, 'Use the FFA controls for FFA lobbies');
+      const slot = (parseInt(b.slot, 10) === 2) ? 2 : 1;
+      let val = null;
+      if (b.teamId === 'BYE') val = 'BYE';
+      else if (b.teamId) { const tm = teamById(t, b.teamId); if (!tm) return bad(res, 'Team not found'); val = tm.id; }
+      // set the slot directly and re-evaluate readiness
+      m.status = 'waiting'; m.winner = null; m.loser = null;
+      if (slot === 1) m.team1 = val; else m.team2 = val;
+      // if both slots decided, mark ready (or bye)
+      const other = slot === 1 ? m.team2 : m.team1;
+      if (val !== null && other !== null) evaluate(t, m);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // ===== divisions (King/Prince split) =====
+    // Auto-split the CURRENT full teams into N divisions by combined rating (division 1 = strongest).
+    if (sub === 'split_divisions') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.status !== 'drafted') return bad(res, 'Split into divisions after forming teams and before starting the bracket');
+      if (t.competition === 'ffa') return bad(res, 'Divisions are for bracket tournaments');
+      const n = intIn(b.divisions, 1, 6, 2);
+      if (n === 1) { for (const tm of t.teams) tm.division = 0; t.divisions = 0; saveDB(); return json(res, 200, { ok: true }); }
+      // sort teams by combined rating (desc) and slice into n roughly-equal divisions
+      const sorted = t.teams.slice().sort((a, b2) =>
+        b2.playerIds.reduce((s, pid) => s + ((playerById(t, pid) || {}).rating || 0), 0) -
+        a.playerIds.reduce((s, pid) => s + ((playerById(t, pid) || {}).rating || 0), 0)
+      );
+      const per = Math.ceil(sorted.length / n);
+      sorted.forEach((tm, i) => { tm.division = Math.min(n, Math.floor(i / per) + 1); });
+      t.divisions = n;
+      saveDB();
+      return json(res, 200, { ok: true, divisions: n });
+    }
+
+    // Manually set which division a team is in (organizer adjustment after auto-split).
+    if (sub === 'set_division') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.status !== 'drafted') return bad(res, 'Divisions are locked once the bracket starts');
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      team.division = intIn(b.division, 0, 6, 0);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     // Claim organizer rights by opening the organizer link while logged in with FAF.
     if (sub === 'claim_organizer') {
       const sess = currentSession(req);
@@ -1462,6 +1680,8 @@ async function handleAPI(req, res, url) {
       }
       if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
     if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
+    if (t.divisions === undefined) t.divisions = 0;
+    for (const tm of (t.teams || [])) { if (tm.division === undefined) tm.division = 0; }
       if (t.organizerFafIds.indexOf(sess.fafId) < 0) t.organizerFafIds.push(sess.fafId);
       saveDB();
       return json(res, 200, { ok: true });
@@ -1658,7 +1878,7 @@ async function handleAPI(req, res, url) {
       if (a === 'form_teams') {
         if (t.formation === 'draft') return bad(res, 'This tournament drafts teams');
         if (t.status !== 'signup') return bad(res, 'Teams already formed');
-        const err = formTeamsGrouped(t);
+        const err = (t.formation === 'open') ? finalizeOpenTeams(t) : formTeamsGrouped(t);
         if (err) return bad(res, err);
         saveDB();
         return json(res, 200, { ok: true });
@@ -1674,12 +1894,25 @@ async function handleAPI(req, res, url) {
           ffaCreateRound(t, 1, t.teams.map(x => x.id));
           t.status = 'running';
         } else if (t.bracketType === 'single') {
+          const divs = (t.divisions && t.divisions > 1) ? t.divisions : 0;
           const R = log2i(nextPow2(n));
           t.cfg = { rounds: cleanBoList(c.rounds, R) };
-          buildSingle(t, t.cfg);
+          if (divs) {
+            // validate each division has >= 2 teams
+            for (let d = 1; d <= divs; d++) {
+              const dn = t.teams.filter(x => (x.division || 0) === d).length;
+              if (dn < 2) return bad(res, 'Division ' + d + ' needs at least 2 teams (adjust the split)');
+            }
+            for (let d = 1; d <= divs; d++) { _buildingDivision = d; buildSingle(t, t.cfg); }
+            _buildingDivision = 0;
+          } else {
+            _buildingDivision = 0;
+            buildSingle(t, t.cfg);
+          }
           if (t.status !== 'finished') t.status = 'running';
         } else if (t.bracketType === 'double') {
           if (n < 3) return bad(res, 'Double elimination needs at least 3 teams');
+          const divs = (t.divisions && t.divisions > 1) ? t.divisions : 0;
           const R = log2i(nextPow2(n));
           t.cfg = {
             wb: cleanBoList(c.wb, R),
@@ -1687,7 +1920,17 @@ async function handleAPI(req, res, url) {
             gf: BO_OK.indexOf(parseInt(c.gf, 10)) >= 0 ? parseInt(c.gf, 10) : 5,
             lbHandicap: c.lbHandicap ? 1 : 0
           };
-          buildDouble(t, t.cfg);
+          if (divs) {
+            for (let d = 1; d <= divs; d++) {
+              const dn = t.teams.filter(x => (x.division || 0) === d).length;
+              if (dn < 3) return bad(res, 'Division ' + d + ' needs at least 3 teams for double elimination (adjust the split)');
+            }
+            for (let d = 1; d <= divs; d++) { _buildingDivision = d; buildDouble(t, t.cfg); }
+            _buildingDivision = 0;
+          } else {
+            _buildingDivision = 0;
+            buildDouble(t, t.cfg);
+          }
           if (t.status !== 'finished') t.status = 'running';
         } else { // swiss
           const defR = Math.max(1, log2i(nextPow2(n)));

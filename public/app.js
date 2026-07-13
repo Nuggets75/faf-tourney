@@ -92,6 +92,10 @@ function teamName(id) {
   const t = T.teams.find(x => x.id === id);
   return t ? t.name : '?';
 }
+function teamRating(tm) {
+  if (!tm || !tm.playerIds) return 0;
+  return tm.playerIds.reduce((s, pid) => { const p = T.players.find(x => x.id === pid); return s + (p && p.rating || 0); }, 0);
+}
 function teamSeed(id) {
   const t = T.teams.find(x => x.id === id);
   return t ? t.seed : null;
@@ -634,8 +638,9 @@ async function renderHost() {
           <div id="formationWrap">
             <label>Team formation</label>
             <select id="cFormation">
-              <option value="draft">Captains draft — captains pick from the signup pool</option>
-              <option value="premade">Premade teams — players sign up with a team name</option>
+              <option value="open">Open teams — players sign up, then form teams themselves</option>
+              <option value="draft">Captains draft — organizer picks captains, they draft the pool</option>
+              <option value="premade">Premade (legacy) — one player types the whole roster</option>
             </select>
             <div id="draftOrderWrap">
               <label>Draft pick order</label>
@@ -1368,9 +1373,147 @@ function editPlayer(p) {
 
 // ----- teams / draft -----
 
+function drawOpenTeams(el) {
+  const admin = viewerIsOrganizer();
+  const myPid = T.viewer && T.viewer.signedUpPlayerId;
+  const myPlayer = myPid ? T.players.find(p => p.id === myPid) : null;
+  const myTeam = myPlayer && myPlayer.teamId ? T.teams.find(x => x.id === myPlayer.teamId) : null;
+  const size = T.teamSize;
+  let html = '';
+
+  // ---- viewer's own status / actions ----
+  if (!viewerLoggedIn() && fafAuth.enabled) {
+    html += `<div class="panel section"><h2>Teams</h2>
+      <p class="muted small">Log in with FAF and sign up (Players tab) to create or join a team.</p>
+      <button class="btn faf" id="otLogin" style="max-width:280px">Log in with FAF</button></div>`;
+  } else if (!myPlayer) {
+    html += `<div class="panel section"><h2>Teams</h2>
+      <p class="muted small">Sign up first on the <a href="#" data-goto="players">Players</a> tab, then come back to create or join a team.</p></div>`;
+  } else if (myTeam) {
+    const mates = myTeam.playerIds.map(pid => T.players.find(p => p.id === pid)).filter(Boolean);
+    const isCap = myTeam.captainId === myPlayer.id;
+    const full = myTeam.playerIds.length >= size;
+    html += `<div class="panel section"><h2>Your team: ${esc(myTeam.name)} ${full ? '<span class="idbadge verified">full</span>' : '<span class="idbadge late">' + myTeam.playerIds.length + '/' + size + '</span>'}</h2>
+      <div class="teammates">${mates.map(m => `<div class="teammate">${esc(m.name)}${m.id === myTeam.captainId ? ' <span class="cap-tag">captain</span>' : ''}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}</div>`).join('')}</div>
+      <div style="margin-top:12px">
+        <button class="btn ghost small" id="otLeave">Leave team</button>
+        ${isCap ? '<button class="btn ghost small" id="otRename" style="margin-left:6px">Rename</button><button class="btn danger small" id="otDisband" style="margin-left:6px">Disband team</button>' : ''}
+      </div></div>`;
+  } else {
+    // signed up, no team: create or join
+    html += `<div class="panel section"><h2>Create a team</h2>
+      <div class="row" style="gap:8px;max-width:420px">
+        <input type="text" id="otNewName" maxlength="30" placeholder="Team name" autocomplete="off" style="flex:1">
+        <button class="btn primary" id="otCreate">Create</button>
+      </div>
+      <p class="muted small" style="margin-top:8px">You'll be captain. Teams need ${size} players to enter the bracket.</p></div>`;
+  }
+
+  // ---- all teams ----
+  const canJoin = myPlayer && !myTeam;
+  html += `<div class="panel section"><h2>Teams <span class="h2-strong">(${T.teams.length})</span></h2>`;
+  if (T.teams.length === 0) {
+    html += '<div class="empty">No teams yet. Be the first to create one.</div>';
+  } else {
+    html += '<div class="teamgrid">';
+    for (const tm of T.teams.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+      const mems = tm.playerIds.map(pid => T.players.find(p => p.id === pid)).filter(Boolean);
+      const full = tm.playerIds.length >= size;
+      const openSlots = size - tm.playerIds.length;
+      html += `<div class="teamcard ${full ? 'full' : 'open'}">
+        <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
+        <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${admin && !full && m.id !== tm.captainId ? '' : ''}</div>`).join('')}</div>
+        ${canJoin && !full ? `<button class="btn amber small tc-join" data-join="${tm.id}">Join (${openSlots} open)</button>` : ''}
+        ${admin ? `<div class="tc-admin"><button class="btn ghost small" data-adisband="${tm.id}">Disband</button></div>` : ''}
+      </div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // ---- unteamed players ----
+  const unteamed = T.players.filter(p => !p.teamId);
+  if (unteamed.length) {
+    html += `<div class="panel section"><h2>Not on a team yet <span class="h2-strong">(${unteamed.length})</span></h2>
+      <div class="unteamed">${unteamed.map(p => {
+        let b = '';
+        if (p.fafId) b = ' <span class="idbadge verified">\u2713</span>';
+        return `<span class="unteamed-chip" ${admin ? 'data-assign="' + p.id + '"' : ''}>${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${admin ? ' <span class="assign-hint">assign\u2192</span>' : ''}</span>`;
+      }).join('')}</div>
+      ${admin ? '<p class="muted small" style="margin-top:8px">Click a player to assign them to a team.</p>' : ''}</div>`;
+  }
+
+  // ---- organizer: form teams / divisions ----
+  if (admin) {
+    const fullCount = T.teams.filter(x => x.playerIds.length >= size).length;
+    html += `<div class="panel section"><h2>Start</h2>
+      <p class="muted small">${fullCount} full team${fullCount === 1 ? '' : 's'} ready. Only full teams (${size} players) enter the bracket; incomplete teams and un-teamed players become reserves you can sub in later.</p>
+      <button class="btn amber" id="otFormTeams">Close signups &amp; lock teams</button></div>`;
+  }
+
+  el.innerHTML = html || '<div class="panel"><div class="empty">Nothing here yet.</div></div>';
+
+  // ---- wire everything ----
+  el.querySelectorAll('[data-goto]').forEach(a => a.onclick = e => { e.preventDefault(); currentTab = a.dataset.goto; syncTabURL(); drawTournament(); });
+  const otLogin = document.getElementById('otLogin'); if (otLogin) otLogin.onclick = requireLoginThen;
+
+  const call = async (path, body, okMsg) => {
+    try { await api('/api/t/' + T.id + path, body); if (okMsg) toast(okMsg); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+
+  const otCreate = document.getElementById('otCreate');
+  if (otCreate) otCreate.onclick = () => {
+    const name = (document.getElementById('otNewName').value || '').trim();
+    if (!name) return toast('Enter a team name', true);
+    call('/create_team', { name }, 'Team created');
+  };
+  const otLeave = document.getElementById('otLeave');
+  if (otLeave) otLeave.onclick = () => { if (confirm('Leave your team?')) call('/leave_team', {}, 'Left team'); };
+  const otDisband = document.getElementById('otDisband');
+  if (otDisband) otDisband.onclick = () => { if (confirm('Disband your team? Everyone goes back to the pool.')) call('/disband_team', { teamId: myTeam.id }, 'Team disbanded'); };
+  const otRename = document.getElementById('otRename');
+  if (otRename) otRename.onclick = () => {
+    const name = prompt('New team name:', myTeam.name);
+    if (name && name.trim()) call('/rename_team', { teamId: myTeam.id, name: name.trim() }, 'Renamed');
+  };
+  el.querySelectorAll('[data-join]').forEach(b => b.onclick = () => call('/join_team', { teamId: b.dataset.join }, 'Joined team'));
+  el.querySelectorAll('[data-adisband]').forEach(b => b.onclick = () => { if (confirm('Disband this team?')) call('/disband_team', { teamId: b.dataset.adisband }, 'Team disbanded'); });
+  el.querySelectorAll('[data-assign]').forEach(c => c.onclick = () => organizerAssignPlayer(c.dataset.assign));
+  const otFormTeams = document.getElementById('otFormTeams');
+  if (otFormTeams) otFormTeams.onclick = () => call('/phase', { action: 'form_teams', admin: adminToken() });
+}
+
+// organizer: assign an unteamed player to a team (or create context)
+function organizerAssignPlayer(playerId) {
+  const size = T.teamSize;
+  const teamsWithSpace = T.teams.filter(x => x.playerIds.length < size);
+  const p = T.players.find(x => x.id === playerId);
+  if (!p) return;
+  const opts = teamsWithSpace.map(x => `<option value="${x.id}">${esc(x.name)} (${x.playerIds.length}/${size})</option>`).join('');
+  modal(`<h3>Assign ${esc(p.name)}</h3>
+    ${teamsWithSpace.length ? `<label>Add to team</label><select id="apSel" style="width:100%">${opts}</select>`
+      : '<p class="muted small">No teams have open slots. Create one first (as a player) or free up space.</p>'}
+    <div class="actions"><button class="btn ghost" id="apCancel">Cancel</button>${teamsWithSpace.length ? '<button class="btn primary" id="apGo">Assign</button>' : ''}</div>`, root => {
+    root.querySelector('#apCancel').onclick = closeModal;
+    const go = root.querySelector('#apGo');
+    if (go) go.onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/move_player', { playerId, teamId: root.querySelector('#apSel').value, admin: adminToken() });
+        closeModal(); toast('Player assigned'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
 function drawTeams(el) {
   const admin = viewerIsOrganizer();
   let html = '';
+
+  // OPEN formation during signups: players form teams themselves; organizer manages.
+  if (T.status === 'signup' && T.formation === 'open') {
+    return drawOpenTeams(el);
+  }
 
   if (T.status === 'signup') {
     if (admin) {
@@ -1418,6 +1561,36 @@ function drawTeams(el) {
   }
   if (T.subs && T.subs.length) {
     html += `<div class="panel section"><h2>Substitutes</h2><div>${T.subs.map(id => esc(playerName(id))).join(', ')}</div></div>`;
+  }
+
+  // Divisions (King/Prince) — team single/double elim only, before the bracket starts
+  if (T.status === 'drafted' && admin && T.competition === 'team' && (T.bracketType === 'single' || T.bracketType === 'double')) {
+    const divs = T.divisions || 0;
+    html += `<div class="panel section"><h2>Divisions</h2>
+      <p class="muted small">Optionally split teams into skill divisions (e.g. King &amp; Prince) \u2014 each plays its own bracket. Auto-split by combined team rating, then adjust below.</p>
+      <div class="row" style="gap:8px;align-items:center">
+        <span class="muted small">Split into</span>
+        <select id="divCount">${[1,2,3,4].map(n => '<option value="' + n + '"' + ((divs || 1) === n ? ' selected' : '') + '>' + (n === 1 ? 'One bracket (no split)' : n + ' divisions') + '</option>').join('')}</select>
+        <button class="btn ghost small" id="divApply">Apply split</button>
+      </div>`;
+    if (divs > 1) {
+      const divNames = ['', 'King', 'Prince', 'Duke', 'Baron', 'Knight', 'Squire'];
+      html += '<div class="divgrid" style="margin-top:14px">';
+      for (let d = 1; d <= divs; d++) {
+        const dteams = T.teams.filter(x => (x.division || 0) === d)
+          .sort((a, b) => teamRating(b) - teamRating(a));
+        html += `<div class="divcol"><h3>${esc(divNames[d] || ('Division ' + d))} <span class="muted mono">(${dteams.length})</span></h3>`;
+        for (const tm of dteams) {
+          const opts = [];
+          for (let dd = 1; dd <= divs; dd++) opts.push('<option value="' + dd + '"' + (dd === d ? ' selected' : '') + '>' + (divNames[dd] || ('Div ' + dd)) + '</option>');
+          html += `<div class="divteam"><span>${esc(tm.name)} <span class="muted mono">${teamRating(tm)}</span></span>
+            <select data-divteam="${tm.id}">${opts.join('')}</select></div>`;
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
   }
 
   if (T.status === 'drafted' && admin) {
@@ -1554,6 +1727,17 @@ function drawTeams(el) {
       tg.appendChild(card);
     }
   }
+
+  const divApply = document.getElementById('divApply');
+  if (divApply) divApply.onclick = async () => {
+    const n = parseInt(document.getElementById('divCount').value, 10) || 1;
+    try { await api('/api/t/' + T.id + '/split_divisions', { divisions: n, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+  document.querySelectorAll('[data-divteam]').forEach(sel => sel.onchange = async () => {
+    try { await api('/api/t/' + T.id + '/set_division', { teamId: sel.dataset.divteam, division: parseInt(sel.value, 10), admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
 
   const sb = document.getElementById('startBracket');
   if (sb) sb.onclick = openStartConfig;
@@ -1889,8 +2073,8 @@ function drawConnectors(wrap) {
   connectorRedraws.push(draw);
 }
 
-function bracketColumns(el, bracket, title, gfMatch) {
-  const ms = T.matches.filter(m => m.bracket === bracket);
+function bracketColumns(el, bracket, title, gfMatch, division) {
+  const ms = T.matches.filter(m => m.bracket === bracket && (!division || (m.division || 0) === division));
   if (!ms.length) return;
   const rounds = Math.max.apply(null, ms.map(m => m.round));
   const sec = document.createElement('div');
@@ -1961,16 +2145,40 @@ function drawBracket(el) {
 
   if (T.bracketType === 'swiss') return drawSwissRounds(el);
 
+  const divs = T.divisions || 0;
+  const divNames = ['', 'King', 'Prince', 'Duke', 'Baron', 'Knight', 'Squire'];
+
   if (T.bracketType === 'double') {
-    const gf = T.matches.find(m => m.bracket === 'gf');
-    bracketColumns(el, 'wb', 'Winners bracket', gf);
-    bracketColumns(el, 'lb', 'Losers bracket');
+    const renderDouble = (division, label) => {
+      if (label) {
+        const hdr = document.createElement('div');
+        hdr.className = 'division-header';
+        hdr.innerHTML = '<h2 style="margin:18px 0 10px">' + esc(label) + ' division</h2>';
+        el.appendChild(hdr);
+      }
+      const gf = T.matches.find(m => m.bracket === 'gf' && (!division || (m.division || 0) === division));
+      bracketColumns(el, 'wb', 'Winners bracket', gf, division);
+      bracketColumns(el, 'lb', 'Losers bracket', null, division);
+    };
+    if (divs > 1) { for (let d = 1; d <= divs; d++) renderDouble(d, divNames[d] || ('Division ' + d)); }
+    else renderDouble(0, '');
     alignBracketSections(el);
     for (const f of connectorRedraws) f();
     return;
   }
 
-  bracketColumns(el, 'wb', '');
+  // single elim
+  if (divs > 1) {
+    for (let d = 1; d <= divs; d++) {
+      const hdr = document.createElement('div');
+      hdr.className = 'division-header';
+      hdr.innerHTML = '<h2 style="margin:18px 0 10px">' + esc(divNames[d] || ('Division ' + d)) + ' division</h2>';
+      el.appendChild(hdr);
+      bracketColumns(el, 'wb', '', null, d);
+    }
+  } else {
+    bracketColumns(el, 'wb', '');
+  }
   alignBracketSections(el);
   for (const f of connectorRedraws) f();
 }
