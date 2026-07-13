@@ -1327,8 +1327,37 @@ async function handleAPI(req, res, url) {
       const team = teamById(t, turnTeamId);
       p.teamId = team.id;
       team.playerIds.push(p.id);
+      // remember the last pick so it can be undone (by that captain, if next hasn't picked; or by admin anytime)
+      d.lastPick = { playerId: p.id, teamId: team.id, atIndex: d.current };
       d.current++;
       finishDraftIfDone(t);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'undo_pick') {
+      if ((t.status !== 'draft' && t.status !== 'drafted') || !t.draft) return bad(res, 'No draft in progress');
+      const d = t.draft;
+      const lp = d.lastPick;
+      if (!lp) return bad(res, 'Nothing to undo');
+      const admin = isAdmin(t, b.token);
+      const capTeam = teamOfCaptainToken(t, b.token);
+      // a captain may undo only their own last pick, and only if no one has picked after them
+      if (!admin) {
+        if (!capTeam || capTeam.id !== lp.teamId) return json(res, 403, { error: 'You can only undo your own pick' });
+        if (d.current !== lp.atIndex + 1) return bad(res, 'Too late to undo \u2014 the next pick was already made');
+      }
+      const p = playerById(t, lp.playerId);
+      const team = teamById(t, lp.teamId);
+      if (!p || !team) { d.lastPick = null; saveDB(); return bad(res, 'Cannot undo (pick data missing)'); }
+      // reverse it
+      p.teamId = null;
+      team.playerIds = team.playerIds.filter(id => id !== p.id);
+      d.current = lp.atIndex;   // put the turn back to that pick
+      d.lastPick = null;        // only one level of undo
+      // if the draft had completed, it's active again
+      if (d.done) { d.done = false; }
+      if (t.status === 'drafted') { t.status = 'draft'; t.subs = []; }
       saveDB();
       return json(res, 200, { ok: true });
     }

@@ -1202,8 +1202,17 @@ function drawTeams(el) {
   if (T.status === 'draft' && T.draft) {
     const d = T.draft;
     const turnTeamId = d.order[d.current];
+    // can the current viewer undo the last pick?
+    const lp = d.lastPick;
+    let canUndo = false, undoName = '';
+    if (lp) {
+      undoName = teamName(lp.teamId);
+      if (admin) canUndo = true;
+      else if (T.viewer && T.viewer.teamId === lp.teamId && d.current === lp.atIndex + 1) canUndo = true;
+    }
     html += `<div class="draft-turn">Pick ${d.current + 1} of ${d.order.length} — <strong>${esc(teamName(turnTeamId))}</strong> is picking.
       ${capToken() && !admin ? '<span class="muted small"> If it\u2019s your team\u2019s turn, the pick buttons below work for you.</span>' : ''}
+      ${canUndo ? '<button class="btn ghost small" id="undoPickBtn" style="margin-left:10px">\u21b6 Undo ' + esc(undoName) + '\u2019s last pick</button>' : ''}
     </div>`;
     const orderChips = d.order.map((tid, i) => {
       const cls = i < d.current ? 'po-done' : i === d.current ? 'po-now' : '';
@@ -1221,10 +1230,12 @@ function drawTeams(el) {
   }
 
   if (T.status === 'drafted' && admin) {
+    const canUndoLast = T.draft && T.draft.lastPick;
     html += `<div class="panel section"><h2>Ready</h2>
       <p class="muted small">${T.competition === 'ffa' ? 'Starting creates the round-1 FFA lobbies.' : 'Starting opens the best-of configuration for each round.'}</p>
       <button class="btn primary" id="startBracket">Start ${T.competition === 'ffa' || T.bracketType === 'swiss' ? 'rounds' : 'bracket'}</button>
-      <button class="btn ghost" id="reopen" style="margin-left:10px">Reopen signups</button></div>`;
+      <button class="btn ghost" id="reopen" style="margin-left:10px">Reopen signups</button>
+      ${canUndoLast ? '<button class="btn ghost" id="undoLastDrafted" style="margin-left:10px">\u21b6 Undo last pick</button>' : ''}</div>`;
   }
 
   el.innerHTML = html || '<div class="panel"><div class="empty">Nothing here yet.</div></div>';
@@ -1260,6 +1271,15 @@ function drawTeams(el) {
   if (ft) ft.onclick = async () => {
     try { await api('/api/t/' + T.id + '/phase', { action: 'form_teams', admin: adminToken() }); await refresh(); }
     catch (e) { toast(e.message, true); }
+  };
+
+  const undoBtn = document.getElementById('undoPickBtn');
+  if (undoBtn) undoBtn.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/undo_pick', { token: myToken() });
+      await refresh();
+      toast('Pick undone');
+    } catch (e) { toast(e.message, true); }
   };
 
   const dp = document.getElementById('draftPool');
@@ -1321,6 +1341,11 @@ function drawTeams(el) {
 
   const sb = document.getElementById('startBracket');
   if (sb) sb.onclick = openStartConfig;
+  const undoLast = document.getElementById('undoLastDrafted');
+  if (undoLast) undoLast.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/undo_pick', { token: myToken() }); await refresh(); toast('Pick undone \u2014 draft reopened'); }
+    catch (e) { toast(e.message, true); }
+  };
   const ro = document.getElementById('reopen');
   if (ro) ro.onclick = async () => {
     try { await api('/api/t/' + T.id + '/phase', { action: 'reopen_signups', admin: adminToken() }); await refresh(); }
