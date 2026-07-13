@@ -44,6 +44,7 @@ function loadDB() {
     if (t.lobbyOptions === undefined) t.lobbyOptions = '';
     if (t.mods === undefined) t.mods = '';
     if (t.imported === undefined) t.imported = false;
+    if (t.veto === undefined) t.veto = { enabled: false, mapPool: [], banCount: 0 };
     for (const m of (t.matches || [])) {
       if (!m.bracket) m.bracket = 'wb';
       if (!m.bo) m.bo = t.bestOf || 3;
@@ -76,6 +77,21 @@ function now() { return Date.now(); }
 
 function getT(id) { return db.tournaments[id] || null; }
 function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
+function cleanVeto(v) {
+  if (!v || typeof v !== 'object') return { enabled: false, mapPool: [], banCount: 0 };
+  const pool = Array.isArray(v.mapPool)
+    ? v.mapPool.map(x => String(x || '').trim()).filter(x => x).slice(0, 64)
+    : [];
+  // dedupe preserving order
+  const seen = {}, dedup = [];
+  for (const m of pool) { const k = m.toLowerCase(); if (!seen[k]) { seen[k] = 1; dedup.push(m); } }
+  let ban = parseInt(v.banCount, 10);
+  if (!(ban >= 0)) ban = 0;
+  // can't ban more than pool-1 (must leave at least 1 map)
+  if (dedup.length > 0 && ban > dedup.length - 1) ban = dedup.length - 1;
+  return { enabled: !!v.enabled && dedup.length >= 2, mapPool: dedup, banCount: ban };
+}
+
 function cleanDate(v) {
   if (typeof v !== 'string') return null;
   const s = v.trim();
@@ -114,6 +130,7 @@ function publicView(t) {
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding,
+    veto: t.veto || { enabled: false, mapPool: [], banCount: 0 },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
     challongeDate: t.challongeDate || null,
@@ -139,6 +156,26 @@ function publicView(t) {
 
 // ---------- generic elimination engine ----------
 // slot values: null = pending, 'BYE' = confirmed empty, otherwise teamId
+
+// Initialize the veto state for a match, if the tournament has vetoes enabled.
+// remaining = the map pool; banned = []; turn = the team that bans next (higher seed first).
+function initVeto(t, m) {
+  if (!t.veto || !t.veto.enabled) return;
+  if (m.bracket === 'ffa') return; // vetoes are for head-to-head matches only
+  if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return;
+  if (t.veto.mapPool.length < 2) return;
+  // higher seed (lower seed number) bans first
+  const s1 = (teamById(t, m.team1) || {}).seed || 999;
+  const s2 = (teamById(t, m.team2) || {}).seed || 999;
+  const first = s1 <= s2 ? m.team1 : m.team2;
+  m.veto = {
+    remaining: t.veto.mapPool.slice(),
+    banned: [],           // [{ map, by }]
+    banCount: t.veto.banCount,
+    turn: first,
+    done: t.veto.banCount === 0 // if 0 bans, veto is trivially complete
+  };
+}
 
 function newMatch(t, bracket, round, index, bo) {
   const m = {
@@ -178,6 +215,7 @@ function evaluate(t, m) {
   if (real1 && real2) {
     m.status = 'ready';
     if (m.hcap) { m.score1 = 1; m.score2 = 0; }
+    initVeto(t, m);
     return;
   }
   m.status = 'bye';
@@ -856,6 +894,7 @@ async function handleAPI(req, res, url) {
       plan, maxTeams,
       cfg: null, maps: {},
       seeding: (b.seeding === 'rating') ? 'rating' : 'random',
+      veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
       players: [], teams: [], matches: [], rounds: 0, draft: null, subs: []
@@ -960,6 +999,28 @@ async function handleAPI(req, res, url) {
 
     if (method !== 'POST') return bad(res, 'Unsupported');
     const b = await readBody(req);
+
+    if (sub === 'reseed') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (t.status !== 'drafted') return bad(res, 'Seeds can only be changed after teams are formed and before the bracket starts');
+      if (!t.teams.length) return bad(res, 'No teams to seed');
+      if (b.randomize) {
+        const ids = t.teams.map(x => x.id);
+        shuffle(ids);
+        ids.forEach((id, i) => { const tm = teamById(t, id); if (tm) tm.seed = i + 1; });
+        saveDB();
+        return json(res, 200, { ok: true });
+      }
+      const order = Array.isArray(b.order) ? b.order : null;
+      if (!order) return bad(res, 'Provide an ordered list of team IDs');
+      // validate: same set of team IDs, no dupes
+      const have = t.teams.map(x => x.id).sort().join(',');
+      const got = order.slice().sort().join(',');
+      if (have !== got) return bad(res, 'Seed order must include every team exactly once');
+      order.forEach((id, i) => { const tm = teamById(t, id); if (tm) tm.seed = i + 1; });
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
 
     if (sub === 'edit_date') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
@@ -1154,6 +1215,10 @@ async function handleAPI(req, res, url) {
       if (b.description !== undefined) t.description = cleanName(b.description, 500);
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
+      if (b.veto !== undefined) {
+        if (t.status === 'running' || t.status === 'finished') return bad(res, 'Vetoes can only be changed before the bracket starts');
+        t.veto = cleanVeto(b.veto);
+      }
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -1269,6 +1334,36 @@ async function handleAPI(req, res, url) {
     }
 
     // score report — supports running (partial) scores
+    if (sub === 'veto_ban') {
+      if (!t.veto || !t.veto.enabled) return bad(res, 'Vetoes are not enabled for this tournament');
+      const m = matchById(t, b.matchId);
+      if (!m) return bad(res, 'Match not found');
+      if (!m.veto) return bad(res, 'No veto in progress for this match');
+      if (m.veto.done) return bad(res, 'Vetoes are already complete for this match');
+      const admin = isAdmin(t, b.token);
+      const capTeam = teamOfCaptainToken(t, b.token);
+      // who is allowed to ban right now: the team whose turn it is (or the organizer acting for them)
+      const actingTeam = admin ? (b.asTeam || m.veto.turn) : (capTeam && capTeam.id);
+      if (!admin && !capTeam) return json(res, 403, { error: 'Only the match captains or the organizer can ban' });
+      if (!admin && capTeam.id !== m.veto.turn) return bad(res, 'Not your turn to ban');
+      if (admin && actingTeam !== m.veto.turn) return bad(res, 'It is the other team\u2019s turn to ban');
+      const map = String(b.map || '').trim();
+      const idx = m.veto.remaining.findIndex(x => x.toLowerCase() === map.toLowerCase());
+      if (idx < 0) return bad(res, 'That map is not available to ban');
+      // perform the ban
+      const banned = m.veto.remaining.splice(idx, 1)[0];
+      m.veto.banned.push({ map: banned, by: m.veto.turn });
+      // advance turn to the other team
+      m.veto.turn = (m.veto.turn === m.team1) ? m.team2 : m.team1;
+      // complete?
+      if (m.veto.banned.length >= m.veto.banCount || m.veto.remaining.length <= 1) {
+        m.veto.done = true;
+        m.veto.turn = null;
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'report') {
       if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
       const m = matchById(t, b.matchId);

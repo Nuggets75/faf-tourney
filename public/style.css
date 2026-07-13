@@ -283,6 +283,25 @@ tbody tr:hover { background: #ffffff05; }
 .datebar .db-value { font-size: 14px; color: var(--text); }
 .datebar button { margin-left: auto; }
 .tdate { color: var(--amber); }
+.seedlist { list-style: none; margin: 0; padding: 0; }
+.seeditem { display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin-bottom: 6px; background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; cursor: grab; }
+.seeditem.dragging { opacity: .5; border-color: var(--amber); }
+.seeditem .seednum { font-family: var(--mono); font-size: 13px; color: var(--amber); min-width: 22px; text-align: center; }
+.seeditem .seedname { flex: 1; font-size: 14px; }
+.seeditem .seedbtns { display: flex; gap: 4px; }
+.seeditem .seedbtns button { background: #0c1219; border: 1px solid var(--line-solid); color: var(--muted); border-radius: 3px; width: 26px; height: 26px; cursor: pointer; font-size: 11px; line-height: 1; }
+.seeditem .seedbtns button:hover { color: var(--amber); border-color: var(--amber); }
+.vetobox { margin: 6px 8px 4px; padding: 8px; background: #0c1219; border: 1px solid var(--line-solid); border-radius: 4px; }
+.vetobox.done { background: #10261a; border-color: #2f6b45; }
+.veto-head { font-family: var(--display); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.veto-banned, .veto-remaining, .veto-final { display: flex; flex-wrap: wrap; gap: 5px; }
+.veto-banned { margin-bottom: 6px; }
+.veto-map { font-size: 12px; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--line-solid); }
+.veto-map.banned { color: var(--muted); text-decoration: line-through; opacity: .6; background: transparent; }
+.veto-map.avail { color: var(--text); background: var(--panel2); }
+.veto-map.ban { cursor: pointer; color: var(--text); background: var(--panel2); }
+.veto-map.ban:hover { border-color: var(--red); color: var(--red); }
+.veto-map.play { color: var(--green); border-color: #2f6b45; background: #12331f; font-weight: 600; }
 .teamtotal { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-solid); font-family: var(--display); font-size: 11px; letter-spacing: 1px; color: var(--amber); }
 .pickorder { display: flex; flex-wrap: wrap; gap: 7px; }
 .po-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 11px 4px 6px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--panel2); color: var(--text); }

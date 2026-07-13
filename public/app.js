@@ -53,13 +53,20 @@ function capToken() {
 }
 function myToken() { return adminToken() || capToken(); }
 
+const VALID_TABS = ['overview', 'players', 'teams', 'bracket', 'standings', 'admin'];
 function captureTokensFromURL() {
   const id = tourneyId();
   if (!id) return;
   const q = new URLSearchParams(location.search);
   if (q.get('admin')) localStorage.setItem('admin_' + id, q.get('admin'));
   if (q.get('cap')) localStorage.setItem('cap_' + id, q.get('cap'));
-  if (q.get('admin') || q.get('cap')) history.replaceState(null, '', '/t/' + id);
+  // honor ?tab=bracket etc. for shareable deep links
+  const tab = q.get('tab');
+  if (tab && VALID_TABS.indexOf(tab) >= 0) currentTab = tab;
+  // strip sensitive tokens from the URL but keep the tab for shareability
+  if (q.get('admin') || q.get('cap')) {
+    history.replaceState(null, '', '/t/' + id + (currentTab !== 'overview' ? '?tab=' + currentTab : ''));
+  }
 }
 
 function teamName(id) {
@@ -470,6 +477,7 @@ function siteAdminFlow() {
 function pv(id) { return document.getElementById(id).value; }
 
 async function renderHome() {
+  setTitle(null);
   stopPoll();
   drawTopbar('');
   let list = [];
@@ -548,6 +556,7 @@ async function renderHome() {
 }
 
 async function renderHost() {
+  setTitle('Host a tournament');
   stopPoll();
   drawTopbar('');
   app.innerHTML = `
@@ -678,12 +687,24 @@ async function renderHost() {
           <option value="rating" selected>By rating (entered at signup)</option>
           <option value="random">Random</option>
         </select>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
+          <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban maps before each match)
+        </label>
+        <div id="cVetoCfg" style="display:none;margin-top:10px;padding:12px;background:var(--panel2);border:1px solid var(--line-solid);border-radius:4px">
+          <label>Map pool <span class="muted" style="font-weight:400">(one per line)</span></label>
+          <textarea id="cVetoMaps" rows="5" placeholder="Seton's Clutch&#10;Theta Passage&#10;Twin Rivers&#10;..."></textarea>
+          <label style="margin-top:10px">Maps to ban before each match</label>
+          <input type="number" id="cVetoBan" min="0" max="20" value="2" style="width:100px">
+          <div class="muted small" style="margin-top:6px">Captains alternate banning (higher seed first). Remaining map(s) are played.</div>
+        </div>
         <div style="margin-top:20px">
           <button class="btn primary" id="cGo">Create tournament</button>
         </div>
       </div>
     </div>`;
 
+  const cVeto = document.getElementById('cVeto');
+  if (cVeto) cVeto.onchange = () => { document.getElementById('cVetoCfg').style.display = cVeto.checked ? 'block' : 'none'; };
   const comp = document.getElementById('cComp');
   const size = document.getElementById('cSize');
   const formation = document.getElementById('cFormation');
@@ -754,6 +775,13 @@ async function renderHost() {
         cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value,
+        veto: (function() {
+          const en = document.getElementById('cVeto');
+          if (!en || !en.checked) return { enabled: false, mapPool: [], banCount: 0 };
+          const maps = document.getElementById('cVetoMaps').value.split('\n').map(x => x.trim()).filter(x => x);
+          const ban = parseInt(document.getElementById('cVetoBan').value, 10) || 0;
+          return { enabled: true, mapPool: maps, banCount: ban };
+        })(),
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
@@ -806,6 +834,7 @@ async function renderTournament() {
 }
 
 function drawTournament() {
+  setTitle(T && T.name);
   const admin = !!adminToken();
   const phaseIdx = { signup: 0, draft: 1, drafted: 1, running: 2, finished: 3 }[T.status];
   const midStep = T.competition === 'ffa' ? 'Teams' : (T.formation === 'draft' ? 'Draft' : 'Teams');
@@ -840,7 +869,7 @@ function drawTournament() {
     </div>
     <div id="tabBody" class="${currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page'}"></div>`;
 
-  app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; drawTournament(); });
+  app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
 
   const body = document.getElementById('tabBody');
   if (currentTab === 'overview') drawOverview(body);
@@ -920,7 +949,7 @@ function drawOverview(el) {
   }
 
   el.querySelectorAll('[data-goto]').forEach(a => a.onclick = e => {
-    e.preventDefault(); currentTab = a.dataset.goto; drawTournament();
+    e.preventDefault(); currentTab = a.dataset.goto; syncTabURL(); drawTournament();
   });
 
   const edb = document.getElementById('editDateBtn');
@@ -1313,6 +1342,7 @@ function openStartConfig() {
       await api('/api/t/' + T.id + '/phase', { action: 'start_bracket', config, admin: adminToken() });
       closeModal();
       currentTab = 'bracket';
+      syncTabURL();
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
@@ -1521,11 +1551,63 @@ function matchBox(m) {
   box.dataset.mid = m.id;
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
+    vetoHTML(m) +
     ((canReport || canCorrect)
       ? `<div class="bfoot"><button class="btn ${canReport ? 'amber' : 'ghost'} small">${canReport ? 'Report score' : 'Correct'}</button></div>` : '');
   const btn = box.querySelector('.bfoot button');
   if (btn) btn.onclick = () => reportScore(m.id);
+  wireVeto(box, m);
   return box;
+}
+
+// veto section HTML for a match (empty string if no veto)
+function vetoHTML(m) {
+  if (!m.veto) return '';
+  const v = m.veto;
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  const isAdminV = viewerIsAdmin();
+  const banned = v.banned || [];
+  const remaining = v.remaining || [];
+
+  if (v.done) {
+    // show final map(s)
+    if (remaining.length === 0) return '';
+    const label = remaining.length === 1 ? 'Map' : 'Maps';
+    return `<div class="vetobox done"><div class="veto-head">${label}</div>
+      <div class="veto-final">${remaining.map(mp => '<span class="veto-map play">' + esc(mp) + '</span>').join('')}</div></div>`;
+  }
+
+  const myTurn = (myTeamId && v.turn === myTeamId) || (isAdminV);
+  const turnName = v.turn ? teamName(v.turn) : '';
+  const canBanNow = (myTeamId && v.turn === myTeamId) || isAdminV;
+  const left = (v.banCount || 0) - banned.length;
+
+  let h = `<div class="vetobox"><div class="veto-head">Map veto \u00b7 ${esc(turnName)} to ban <span class="muted">(${left} left)</span></div>`;
+  if (banned.length) {
+    h += '<div class="veto-banned">' + banned.map(b => '<span class="veto-map banned">' + esc(b.map) + '</span>').join('') + '</div>';
+  }
+  h += '<div class="veto-remaining">' + remaining.map(mp =>
+    canBanNow
+      ? '<button class="veto-map ban" data-veto-map="' + esc(mp) + '">' + esc(mp) + '</button>'
+      : '<span class="veto-map avail">' + esc(mp) + '</span>'
+  ).join('') + '</div></div>';
+  return h;
+}
+
+function wireVeto(box, m) {
+  if (!m.veto || m.veto.done) return;
+  box.querySelectorAll('[data-veto-map]').forEach(btn => {
+    btn.onclick = async () => {
+      const map = btn.dataset.vetoMap;
+      const body = { matchId: m.id, map: map, token: myToken() };
+      // if organizer is banning on behalf of the team whose turn it is
+      if (viewerIsAdmin() && (!T.viewer || T.viewer.teamId !== m.veto.turn)) body.asTeam = m.veto.turn;
+      try {
+        await api('/api/t/' + T.id + '/veto_ban', body);
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 let connectorRedraws = [];
@@ -2388,12 +2470,44 @@ async function drawAdmin(el) {
     </div>`;
   }
 
+  if (T.status === 'drafted' && T.competition === 'team' && (T.bracketType === 'single' || T.bracketType === 'double')) {
+    const seeded = T.teams.slice().sort((a, b) => a.seed - b.seed);
+    html += `<div class="panel section"><h2>Seeding</h2>
+      <p class="muted small">Drag to reorder, or use the arrows. Seed 1 is the top seed. This determines the bracket \u2014 fixed once you start it.</p>
+      <div style="margin:10px 0"><button class="btn ghost small" id="seedRandom">\ud83c\udfb2 Randomize</button>
+      ${T.seeding === 'rating' ? '<button class="btn ghost small" id="seedByRating" style="margin-left:8px">Reset to rating order</button>' : ''}</div>
+      <ol id="seedList" class="seedlist">
+        ${seeded.map(tm => `<li class="seeditem" draggable="true" data-tid="${tm.id}">
+          <span class="seednum"></span>
+          <span class="seedname">${esc(tm.name)}</span>
+          <span class="seedbtns"><button class="seedup" title="Move up">\u25b2</button><button class="seeddown" title="Move down">\u25bc</button></span>
+        </li>`).join('')}
+      </ol>
+      <div style="margin-top:12px"><button class="btn amber" id="seedSave">Save seeding</button> <span class="muted small" id="seedDirty"></span></div>
+    </div>`;
+  }
+
   html += `<div class="panel section"><h2>Game setup</h2>
     <label>Description</label><textarea id="aiDesc" maxlength="500">${esc(T.description || '')}</textarea>
     <label>Lobby options</label><textarea id="aiLobby" maxlength="500">${esc(T.lobbyOptions || '')}</textarea>
     <label>Mods</label><input type="text" id="aiMods" maxlength="500" value="${esc(T.mods || '')}">
     <div style="margin-top:14px"><button class="btn" id="aiSave">Save setup</button></div>
   </div>`;
+
+  if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0 && T.competition === 'team') {
+    const v = T.veto || { enabled: false, mapPool: [], banCount: 0 };
+    html += `<div class="panel section"><h2>Map vetoes</h2>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="vtEnabled" style="width:auto"${v.enabled ? ' checked' : ''}> Enable map vetoes</label>
+      <div id="vtCfg" style="${v.enabled ? '' : 'display:none;'}margin-top:10px">
+        <label>Map pool <span class="muted" style="font-weight:400">(one per line, at least 2)</span></label>
+        <textarea id="vtMaps" rows="6">${esc((v.mapPool || []).join('\n'))}</textarea>
+        <label style="margin-top:10px">Maps to ban before each match</label>
+        <input type="number" id="vtBan" min="0" max="20" value="${v.banCount || 0}" style="width:100px">
+        <div class="muted small" style="margin-top:6px">Captains alternate banning (higher seed bans first). Remaining map(s) are what they play. Editable until the bracket starts.</div>
+      </div>
+      <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
+    </div>`;
+  }
 
   if (secrets.captains.length) {
     html += `<div class="panel section"><h2>Captain links</h2>
@@ -2415,6 +2529,85 @@ async function drawAdmin(el) {
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
+
+  // ---- veto config ----
+  const vtEnabled = document.getElementById('vtEnabled');
+  if (vtEnabled) {
+    vtEnabled.onchange = () => { document.getElementById('vtCfg').style.display = vtEnabled.checked ? 'block' : 'none'; };
+    document.getElementById('vtSave').onclick = async () => {
+      const maps = document.getElementById('vtMaps').value.split('\n').map(x => x.trim()).filter(x => x);
+      const ban = parseInt(document.getElementById('vtBan').value, 10) || 0;
+      const enabled = vtEnabled.checked;
+      if (enabled && maps.length < 2) return toast('Map pool needs at least 2 maps', true);
+      try {
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mapPool: maps, banCount: ban }, admin: adminToken() });
+        await refresh();
+        toast('Vetoes saved');
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+
+  // ---- seeding editor ----
+  const seedList = document.getElementById('seedList');
+  if (seedList) {
+    const renumber = () => {
+      let i = 1;
+      seedList.querySelectorAll('.seeditem').forEach(li => { li.querySelector('.seednum').textContent = i++; });
+      const sd = document.getElementById('seedDirty'); if (sd) sd.textContent = 'unsaved changes';
+    };
+    renumber();
+    const sd0 = document.getElementById('seedDirty'); if (sd0) sd0.textContent = '';
+
+    // arrow buttons
+    seedList.querySelectorAll('.seedup').forEach(b => b.onclick = e => {
+      const li = e.target.closest('.seeditem'); const prev = li.previousElementSibling;
+      if (prev) { seedList.insertBefore(li, prev); renumber(); }
+    });
+    seedList.querySelectorAll('.seeddown').forEach(b => b.onclick = e => {
+      const li = e.target.closest('.seeditem'); const next = li.nextElementSibling;
+      if (next) { seedList.insertBefore(next, li); renumber(); }
+    });
+
+    // drag and drop
+    let dragEl = null;
+    seedList.querySelectorAll('.seeditem').forEach(li => {
+      li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
+      li.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('dragging'); dragEl = null; renumber(); });
+    });
+    seedList.addEventListener('dragover', e => {
+      e.preventDefault();
+      const after = [...seedList.querySelectorAll('.seeditem:not(.dragging)')].reduce((closest, child) => {
+        const box = child.getBoundingClientRect();
+        const offset = e.clientY - box.top - box.height / 2;
+        if (offset < 0 && offset > closest.offset) return { offset, el: child };
+        return closest;
+      }, { offset: -Infinity, el: null }).el;
+      if (!dragEl) return;
+      if (after == null) seedList.appendChild(dragEl);
+      else seedList.insertBefore(dragEl, after);
+    });
+
+    const saveOrder = async (order, randomize) => {
+      try {
+        await api('/api/t/' + T.id + '/reseed', randomize ? { randomize: 1, admin: adminToken() } : { order, admin: adminToken() });
+        await refresh();
+        toast('Seeding saved');
+      } catch (e) { toast(e.message, true); }
+    };
+    document.getElementById('seedSave').onclick = () => {
+      const order = [...seedList.querySelectorAll('.seeditem')].map(li => li.dataset.tid);
+      saveOrder(order, false);
+    };
+    const rnd = document.getElementById('seedRandom');
+    if (rnd) rnd.onclick = () => saveOrder(null, true);
+    const byr = document.getElementById('seedByRating');
+    if (byr) byr.onclick = async () => {
+      // reset: order teams by their players' avg rating (desc)
+      const withR = T.teams.map(tm => ({ id: tm.id, r: tm.playerIds.reduce((s, pid) => { const p = T.players.find(x => x.id === pid); return s + (p && p.rating || 0); }, 0) }));
+      withR.sort((a, b) => b.r - a.r);
+      saveOrder(withR.map(x => x.id), false);
+    };
+  }
 
   const afComp = document.getElementById('af_comp');
   if (afComp) {
@@ -2498,6 +2691,17 @@ async function refresh() {
   await loadTournament();
   lastSnapshot = JSON.stringify(T);
   drawTournament();
+}
+
+function syncTabURL() {
+  const id = tourneyId();
+  if (!id) return;
+  const url = '/t/' + id + (currentTab && currentTab !== 'overview' ? '?tab=' + currentTab : '');
+  history.replaceState(null, '', url);
+}
+
+function setTitle(name) {
+  document.title = name ? (name + ' \u2014 FAF Tournaments') : 'FAF Tournaments';
 }
 
 function route() {
