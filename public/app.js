@@ -67,20 +67,25 @@ function capToken() {
 function myToken() { return adminToken() || capToken(); }
 
 const VALID_TABS = ['overview', 'players', 'teams', 'bracket', 'standings', 'admin'];
+let pendingOrganizerClaim = null; // { id, token } — set when an ?admin= link is opened
 function captureTokensFromURL() {
   const id = tourneyId();
   if (!id) return;
   const q = new URLSearchParams(location.search);
-  if (q.get('admin')) localStorage.setItem('admin_' + id, q.get('admin'));
-  if (q.get('cap')) localStorage.setItem('cap_' + id, q.get('cap'));
-  // honor ?tab=bracket etc. for shareable deep links
+  if (q.get('admin')) {
+    // still store for legacy bearer-token use (pre-go-live / site-admin-less operation)
+    localStorage.setItem('admin_' + id, q.get('admin'));
+    // and queue the "claim organizer" confirmation to run once the tournament loads
+    pendingOrganizerClaim = { id, token: q.get('admin') };
+  }
+  if (q.get('late')) pendingLateSignup = { id, token: q.get('late') };
   const tab = q.get('tab');
   if (tab && VALID_TABS.indexOf(tab) >= 0) currentTab = tab;
-  // strip sensitive tokens from the URL but keep the tab for shareability
-  if (q.get('admin') || q.get('cap')) {
+  if (q.get('admin') || q.get('late') || q.get('tab')) {
     history.replaceState(null, '', '/t/' + id + (currentTab !== 'overview' ? '?tab=' + currentTab : ''));
   }
 }
+let pendingLateSignup = null; // { id, token } — set when a late-signup link is opened
 
 function teamName(id) {
   if (!id || id === 'BYE') return null;
@@ -340,11 +345,12 @@ function openSettings() {
 
 function drawTopbar(modeText) {
   const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
+  const loggedIn = isFafVerified() || !!me();
   topbarRight.innerHTML =
-    '<a class="btn amber small" href="/host">Host tournament</a>' +
+    '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
     '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' +
     (me()
-      ? '<button class="btn ghost small" id="cmdrBtn" title="Player account">' + esc(me()) + '</button>'
+      ? '<button class="btn ghost small" id="cmdrBtn" title="Player account">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
     (mode ? '<span>' + esc(mode) + '</span>' : '') +
     '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
@@ -353,6 +359,14 @@ function drawTopbar(modeText) {
   document.getElementById('lockBtn').onclick = siteAdminFlow;
   document.getElementById('cmdrBtn').onclick = loginFlow;
   document.getElementById('importBtn').onclick = importFlow;
+  document.getElementById('hostBtn').onclick = () => {
+    // hosting requires FAF login (when configured)
+    if (fafAuth.enabled && !isFafVerified()) {
+      toast('Log in with FAF to host a tournament', true);
+      return requireLoginThen();
+    }
+    history.pushState(null, '', '/host'); route();
+  };
 }
 
 let _importPw = null; // held in memory after a successful password check
@@ -840,6 +854,80 @@ async function loadTournament() {
   T = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
 }
 
+// When someone opens an organizer link (?admin=), confirm they want to become an organizer.
+function maybePromptOrganizerClaim() {
+  const claim = pendingOrganizerClaim;
+  if (!claim || claim.id !== tourneyId()) return;
+  pendingOrganizerClaim = null;
+  // already an organizer? nothing to do.
+  if (viewerIsOrganizer()) return;
+  // must be logged in to claim
+  if (fafAuth.enabled && !isFafVerified()) {
+    modal(`<h3>Organizer link</h3>
+      <p class="muted small">Log in with FAF to become an organizer of <strong>${esc(T.name)}</strong>.</p>
+      <div class="actions"><button class="btn ghost" id="ocCancel">Cancel</button><button class="btn faf" id="ocLogin">Log in with FAF</button></div>`, root => {
+      root.querySelector('#ocCancel').onclick = closeModal;
+      root.querySelector('#ocLogin').onclick = () => {
+        // preserve the admin token through the login round-trip
+        location.href = '/auth/faf/login?returnTo=' + encodeURIComponent('/t/' + claim.id + '?admin=' + claim.token);
+      };
+    });
+    return;
+  }
+  modal(`<h3>Join as organizer?</h3>
+    <p>Do you want to join <strong>${esc(T.name)}</strong> as an organizer?</p>
+    <p class="muted small">You'll be able to manage signups, teams, the bracket, and replace players.</p>
+    <div class="actions"><button class="btn ghost" id="ocNo">No thanks</button><button class="btn primary" id="ocYes">Yes, join as organizer</button></div>`, root => {
+    root.querySelector('#ocNo').onclick = closeModal;
+    root.querySelector('#ocYes').onclick = async () => {
+      try {
+        await api('/api/t/' + claim.id + '/claim_organizer', { adminToken: claim.token });
+        closeModal();
+        toast('You are now an organizer');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+// When someone opens a late-signup link (?late=), confirm they want to sign up late.
+function maybePromptLateSignup() {
+  const late = pendingLateSignup;
+  if (!late || late.id !== tourneyId()) return;
+  pendingLateSignup = null;
+  if (viewerSignedUp()) return; // already in
+  if (fafAuth.enabled && !isFafVerified()) {
+    modal(`<h3>Late signup</h3>
+      <p class="muted small">Log in with FAF to sign up to <strong>${esc(T.name)}</strong> as a late entry.</p>
+      <div class="actions"><button class="btn ghost" id="lsCancel">Cancel</button><button class="btn faf" id="lsLogin">Log in with FAF</button></div>`, root => {
+      root.querySelector('#lsCancel').onclick = closeModal;
+      root.querySelector('#lsLogin').onclick = () => {
+        location.href = '/auth/faf/login?returnTo=' + encodeURIComponent('/t/' + late.id + '?late=' + late.token);
+      };
+    });
+    return;
+  }
+  modal(`<h3>Sign up as a late entry?</h3>
+    <p>Do you want to sign up to <strong>${esc(T.name)}</strong> as a late signup?</p>
+    <p class="muted small">Signups are closed, but this link lets you join${fafAuth.enabled ? ' as <strong>' + esc(me()) + '</strong>' : ''}. Enter your rating:</p>
+    <input type="number" id="lsRating" min="0" max="4000" placeholder="e.g. 1500" style="width:140px">
+    <div class="actions"><button class="btn ghost" id="lsNo">Cancel</button><button class="btn primary" id="lsYes">Sign up</button></div>`, root => {
+    root.querySelector('#lsNo').onclick = closeModal;
+    root.querySelector('#lsYes').onclick = async () => {
+      const rating = root.querySelector('#lsRating').value;
+      if (rating === '') return toast('Enter your rating', true);
+      const body = { rating, lateToken: late.token };
+      if (!fafAuth.enabled) { const nm = prompt('Your FAF name:'); if (!nm) return; body.name = nm; }
+      try {
+        await api('/api/t/' + late.id + '/signup', body);
+        closeModal();
+        toast('Signed up as a late entry');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
 async function renderTournament() {
   captureTokensFromURL();
   try { await loadTournament(); }
@@ -847,9 +935,11 @@ async function renderTournament() {
     app.innerHTML = '<div class="page"><div class="panel"><div class="empty">Tournament not found.</div><a href="/">← Back</a></div></div>';
     return;
   }
-  drawTopbar(adminToken() ? 'ORGANIZER' : (capToken() ? 'CAPTAIN' : ''));
+  drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : '');
   lastSnapshot = JSON.stringify(T);
   drawTournament();
+  maybePromptOrganizerClaim();
+  maybePromptLateSignup();
   stopPoll();
   pollTimer = setInterval(async () => {
     if (document.getElementById('modalRoot').innerHTML) return; // modal open
@@ -868,7 +958,7 @@ async function renderTournament() {
 
 function drawTournament() {
   setTitle(T && T.name);
-  const admin = !!adminToken();
+  const admin = viewerIsOrganizer();
   const phaseIdx = { signup: 0, draft: 1, drafted: 1, running: 2, finished: 3 }[T.status];
   const midStep = T.competition === 'ffa' ? 'Teams' : (T.formation === 'draft' ? 'Draft' : 'Teams');
   const lastStep = T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
@@ -1045,7 +1135,7 @@ function fillQueue(el, matches, withReport) {
 // ----- players -----
 
 function drawPlayers(el) {
-  const admin = !!adminToken();
+  const admin = viewerIsOrganizer();
   let html = '';
 
   if (T.status === 'signup') {
@@ -1069,19 +1159,30 @@ function drawPlayers(el) {
           <div class="muted small" style="align-self:end">One player registers the whole team — nobody can join your team afterwards. The first player listed becomes captain. Need a roster change later? The organizer can edit players at any time.</div>
         </div></div>`;
     } else {
-      html += `<div class="panel section"><h2>Sign up</h2>
-      <div class="grid2">
-        <div>
-          <label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">
-          <label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
-          <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up</button></div>
-        </div>
-        <div class="muted small" style="align-self:end">
-          ${T.competition === 'ffa' && T.teamSize === 1 ? 'Every player enters solo. Lobbies are grouped automatically.'
-            : T.formation === 'draft' ? 'The organizer will pick captains once signups close, then captains draft their teams.'
-            : 'Solo bracket — every signup is an entrant.'}
-        </div>
-      </div></div>`;
+      const helpText = T.competition === 'ffa' && T.teamSize === 1 ? 'Every player enters solo. Lobbies are grouped automatically.'
+            : T.formation === 'draft' ? 'The organizer picks captains from the player list once signups close, then captains draft their teams.'
+            : 'Solo bracket — every signup is an entrant.';
+      if (viewerSignedUp()) {
+        html += `<div class="panel section"><h2>Sign up</h2>
+          <p class="signed-in-note">You're signed up as <strong>${esc(me())}</strong>. ${esc(helpText)}</p>
+          <button class="btn ghost small" id="sWithdraw">Withdraw</button></div>`;
+      } else if (viewerLoggedIn() || !fafAuth.enabled) {
+        // logged in (or pre-go-live): self-signup, name is your FAF identity
+        html += `<div class="panel section"><h2>Sign up</h2>
+          <div class="grid2">
+            <div>
+              ${fafAuth.enabled ? '<p class="muted small">Signing up as <strong>' + esc(me()) + '</strong> (your FAF account).</p>' : '<label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">'}
+              <label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
+              <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
+            </div>
+            <div class="muted small" style="align-self:end">${esc(helpText)}</div>
+          </div></div>`;
+      } else {
+        // not logged in
+        html += `<div class="panel section"><h2>Sign up</h2>
+          <p class="muted small">${esc(helpText)}</p>
+          <button class="btn faf" id="sLogin" style="max-width:280px">Log in with FAF to sign up</button></div>`;
+      }
     }
   }
 
@@ -1096,17 +1197,27 @@ function drawPlayers(el) {
   T.players.forEach((p, i) => {
     const tr = document.createElement('tr');
     const inTeam = p.teamId ? teamName(p.teamId) : (T.subs && T.subs.includes(p.id) ? 'Substitute' : '—');
+    // identity badges
+    let badge = '';
+    if (p.fafId) badge = ' <span class="idbadge verified" title="Verified FAF account">\u2713</span>';
+    else if (p.manual) badge = ' <span class="idbadge manual" title="Added manually by organizer">M</span>';
+    if (p.late) badge += ' <span class="idbadge late" title="Late signup">late</span>';
+    // replace button: for players currently IN a team (mid-tournament drop-out replacement)
+    const canReplace = admin && p.teamId;
     tr.innerHTML = `
       <td class="mono muted">${i + 1}</td>
-      <td>${esc(p.name)}</td>
+      <td>${esc(p.name)}${badge}</td>
       <td class="mono">${p.rating != null ? p.rating : '<span class="muted">—</span>'}</td>
       ${T.formation === 'premade' && T.teamSize > 1 ? `<td>${esc(p.teamName || '—')}</td>` : ''}
       <td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>
       ${admin ? `<td style="text-align:right;white-space:nowrap">
+        ${canReplace ? `<button class="btn ghost small" data-replace="${p.id}">Replace</button>` : ''}
         <button class="btn ghost small" data-edit="${p.id}">Edit</button>
         ${T.status === 'signup' || ((T.status === 'draft' || T.status === 'drafted') && !p.teamId) ? `<button class="btn danger small" data-del="${p.id}">${T.status === 'signup' && T.formation === 'premade' && T.teamSize > 1 ? 'Remove team' : 'Remove'}</button>` : ''}</td>` : ''}`;
     const eb = tr.querySelector('[data-edit]');
     if (eb) eb.onclick = () => editPlayer(p);
+    const rb = tr.querySelector('[data-replace]');
+    if (rb) rb.onclick = () => replacePlayer(p);
     const db = tr.querySelector('[data-del]');
     if (db) db.onclick = async () => {
       try { await api('/api/t/' + T.id + '/remove', { playerId: p.id, admin: adminToken() }); await refresh(); }
@@ -1164,22 +1275,68 @@ function drawPlayers(el) {
     };
   }
 
+  const sLogin = document.getElementById('sLogin');
+  if (sLogin) sLogin.onclick = requireLoginThen;
+
+  const sWithdraw = document.getElementById('sWithdraw');
+  if (sWithdraw) sWithdraw.onclick = async () => {
+    const pid = T.viewer && T.viewer.signedUpPlayerId;
+    if (!pid) return;
+    if (!confirm('Withdraw from this tournament?')) return;
+    try { await api('/api/t/' + T.id + '/remove', { playerId: pid }); toast('Withdrawn'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+
   const go = document.getElementById('sGo');
   if (go) go.onclick = async () => {
-    const name = (document.getElementById('sName').value || '').trim();
-    if (!name) return toast('Enter your FAF name', true);
+    const nameEl = document.getElementById('sName'); // only present pre-go-live (no OAuth)
+    const body = {
+      rating: document.getElementById('sRating').value,
+      teamName: document.getElementById('sTeam') ? document.getElementById('sTeam').value : ''
+    };
+    if (nameEl) {
+      const name = (nameEl.value || '').trim();
+      if (!name) return toast('Enter your FAF name', true);
+      body.name = name;
+    }
     if (document.getElementById('sRating').value === '') return toast('Enter your rating — it is used for balancing and seeding', true);
     try {
-      await api('/api/t/' + T.id + '/signup', {
-        name,
-        rating: document.getElementById('sRating').value,
-        teamName: document.getElementById('sTeam') ? document.getElementById('sTeam').value : ''
-      });
-      F.signup = { name: '', rating: '', team: '' };
+      await api('/api/t/' + T.id + '/signup', body);
       toast('Signed up — good luck, commander');
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+}
+
+function replacePlayer(outP) {
+  // eligible replacements: signed-up players not currently in a team (the pool / late signups)
+  const pool = T.players.filter(p => !p.teamId && p.id !== outP.id);
+  if (pool.length === 0) {
+    modal(`<h3>Replace ${esc(outP.name)}</h3>
+      <p class="muted small">There are no available players to swap in. Add a player (or share the late-signup link from the Admin tab), then replace.</p>
+      <div class="actions"><button class="btn ghost" id="rpClose">Close</button></div>`, root => {
+      root.querySelector('#rpClose').onclick = closeModal;
+    });
+    return;
+  }
+  const opts = pool.slice().sort((a, b) => (b.rating || 0) - (a.rating || 0))
+    .map(p => `<option value="${p.id}">${esc(p.name)}${p.rating != null ? ' (' + p.rating + ')' : ''}${p.late ? ' — late signup' : ''}</option>`).join('');
+  modal(`<h3>Replace ${esc(outP.name)}</h3>
+    <p class="muted small">The replacement takes over ${esc(outP.name)}'s exact spot — team, seed, and match results are all preserved. ${esc(outP.name)}'s current record stays with the slot.</p>
+    <label>Swap in</label>
+    <select id="rpSel" style="width:100%">${opts}</select>
+    <div class="actions"><button class="btn ghost" id="rpCancel">Cancel</button><button class="btn primary" id="rpGo">Replace</button></div>`, root => {
+    root.querySelector('#rpCancel').onclick = closeModal;
+    root.querySelector('#rpGo').onclick = async () => {
+      const replacementId = root.querySelector('#rpSel').value;
+      try {
+        await api('/api/t/' + T.id + '/replace_player', { playerId: outP.id, replacementId, admin: adminToken() });
+        closeModal();
+        toast('Player replaced');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 function editPlayer(p) {
@@ -1212,15 +1369,16 @@ function editPlayer(p) {
 // ----- teams / draft -----
 
 function drawTeams(el) {
-  const admin = !!adminToken();
+  const admin = viewerIsOrganizer();
   let html = '';
 
   if (T.status === 'signup') {
     if (admin) {
       if (T.formation === 'draft') {
-        html += `<div class="panel section"><h2>Start the draft</h2>
-          <p class="muted small">Tick the captains, then start. Pick order: ${T.draftOrder === 'snake' ? 'snake (1→N, N→1, ...)' : 'bottom seed to top seed, every round'}. Each captain fills a team of ${T.teamSize}.</p>
+        html += `<div class="panel section"><h2>Captains &amp; draft</h2>
+          <p class="muted small">Mark who the captains are in the list below. The number of captains is the number of teams. Pick order: ${T.draftOrder === 'snake' ? 'snake (1\u2192N, N\u21921, ...)' : 'bottom seed to top seed, every round'}. Each captain fills a team of ${T.teamSize}.</p>
           <div class="pool" id="capPool"></div>
+          <div id="capCount" class="cap-count"></div>
           <div style="margin-top:16px"><button class="btn amber" id="startDraft">Close signups &amp; start draft</button></div></div>`;
       } else {
         html += `<div class="panel section"><h2>Form ${T.teamSize === 1 ? 'entrants' : 'teams'}</h2>
@@ -1275,6 +1433,30 @@ function drawTeams(el) {
 
   const capPool = document.getElementById('capPool');
   if (capPool) {
+    // seed selection from the server's pendingCaptains (persisted across reloads)
+    if (Object.keys(F.capSel).length === 0 && (T.pendingCaptains || []).length) {
+      for (const id of T.pendingCaptains) F.capSel[id] = 1;
+    }
+    const nPlayers = T.players.length;
+    const updateCount = () => {
+      const n = Object.keys(F.capSel).length;
+      const el = document.getElementById('capCount');
+      if (!el) return;
+      if (n < 2) { el.innerHTML = '<span class="muted">Mark at least 2 captains.</span>'; return; }
+      const perTeam = T.teamSize;
+      const needed = n * perTeam;
+      const preview = 'Bracket preview: <strong>' + n + '</strong> team' + (n === 1 ? '' : 's') + ' (' + n + ' captain' + (n === 1 ? '' : 's') + ', ' + perTeam + ' per team = ' + needed + ' players needed).';
+      const have = nPlayers >= needed ? '' : ' <span class="warn">You have ' + nPlayers + ' signed up; ' + (needed - nPlayers) + ' more needed to fill all teams.</span>';
+      el.innerHTML = preview + have;
+    };
+    // debounced persistence of the captain set to the server
+    let capSaveTimer = null;
+    const persistCaptains = () => {
+      clearTimeout(capSaveTimer);
+      capSaveTimer = setTimeout(() => {
+        api('/api/t/' + T.id + '/phase', { action: 'set_captains', captainIds: Object.keys(F.capSel), admin: adminToken() }).catch(() => {});
+      }, 400);
+    };
     const tbl = document.createElement('table');
     tbl.innerHTML = '<thead><tr><th style="width:40px">#</th><th>Name</th><th style="width:90px">Rating</th><th style="width:90px">Captain</th></tr></thead>';
     const tb = document.createElement('tbody');
@@ -1284,14 +1466,15 @@ function drawTeams(el) {
       tr.innerHTML = `<td class="mono muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.rating != null ? p.rating : '\u2014'}</td>
         <td><input type="checkbox" value="${p.id}"${F.capSel[p.id] ? ' checked' : ''}></td>`;
       const cb = tr.querySelector('input');
-      cb.onchange = () => { if (cb.checked) F.capSel[p.id] = 1; else delete F.capSel[p.id]; };
+      cb.onchange = () => { if (cb.checked) F.capSel[p.id] = 1; else delete F.capSel[p.id]; updateCount(); persistCaptains(); };
       tb.appendChild(tr);
     });
     tbl.appendChild(tb);
     capPool.appendChild(tbl);
+    updateCount();
     document.getElementById('startDraft').onclick = async () => {
       const ids = Object.keys(F.capSel);
-      if (ids.length < 2) return toast('Pick at least 2 captains', true);
+      if (ids.length < 2) return toast('Mark at least 2 captains', true);
       try {
         await api('/api/t/' + T.id + '/phase', { action: 'start_draft', captainIds: ids, admin: adminToken() });
         F.capSel = {};
@@ -1516,7 +1699,7 @@ function mapRows(maps) {
 
 function mapsLine(bracket, round, el) {
   if (T.imported) return;
-  const admin = !!adminToken();
+  const admin = viewerIsOrganizer();
   const maps = mapsFor(bracket, round);
   if (!maps.length && !admin) return;
   const div = document.createElement('div');
@@ -1578,6 +1761,19 @@ function buildFeeders() {
 }
 
 function viewerIsAdmin() { return !!(T.viewer && T.viewer.admin); }
+// organizer = site admin OR a logged-in claimed organizer (server decides). This gates all organizer actions.
+function viewerIsOrganizer() { return !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
+function viewerLoggedIn() { return !!(T.viewer && T.viewer.loggedIn) || isFafVerified(); }
+function viewerSignedUp() { return !!(T.viewer && T.viewer.signedUpPlayerId); }
+// helper: prompt login (kicks off FAF flow if configured, else the name modal)
+function requireLoginThen() {
+  if (fafAuth.enabled) {
+    const returnTo = location.pathname + location.search;
+    location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
+  } else {
+    loginFlow();
+  }
+}
 function canReportMatch(m) {
   const v = T.viewer || {};
   if (v.admin) return true;
@@ -1587,7 +1783,7 @@ function canReportMatch(m) {
 }
 
 function matchBox(m) {
-  const admin = !!adminToken();
+  const admin = viewerIsOrganizer();
   const box = document.createElement('div');
   box.className = 'bmatch ' + m.status;
   const row = (tid, score, slot) => {
@@ -2421,7 +2617,10 @@ function drawStandings(el) {
 async function drawAdmin(el) {
   el.innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
   let secrets = null;
-  try { secrets = await api('/api/t/' + T.id + '/secrets?admin=' + encodeURIComponent(adminToken())); }
+  try {
+    const at = adminToken();
+    secrets = await api('/api/t/' + T.id + '/secrets' + (at ? '?admin=' + encodeURIComponent(at) : ''));
+  }
   catch (e) { el.innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
 
   const base = location.origin + '/t/' + T.id;
@@ -2431,7 +2630,8 @@ async function drawAdmin(el) {
 
   let html = `<div class="panel section"><h2>Share links</h2>
     ${copyRow('Public link — share with everyone', base)}
-    ${copyRow('Organizer link — KEEP PRIVATE (full control)', base + '?admin=' + secrets.adminToken)}
+    ${copyRow('Organizer link — makes whoever opens it an organizer (they must log in). KEEP PRIVATE.', base + '?admin=' + secrets.adminToken)}
+    ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
   </div>`;
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
@@ -2564,13 +2764,6 @@ async function drawAdmin(el) {
         <div class="muted small" style="margin-top:6px">Captains alternate banning (higher seed bans first). Remaining map(s) are what they play. Editable until the bracket starts.</div>
       </div>
       <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
-    </div>`;
-  }
-
-  if (secrets.captains.length) {
-    html += `<div class="panel section"><h2>Captain links</h2>
-      <p class="muted small">Send each captain their link (Discord DM works). It lets them draft on their turn and report their matches. Opening a link binds that browser as captain.</p>
-      ${secrets.captains.map(c => copyRow(c.teamName + (c.captainName && c.captainName !== c.teamName ? ' — ' + c.captainName : ''), base + '?cap=' + c.token)).join('')}
     </div>`;
   }
 

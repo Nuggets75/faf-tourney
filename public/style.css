@@ -308,6 +308,13 @@ tbody tr:hover { background: #ffffff05; }
 .or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-solid); }
 .or-divider span { padding: 0 12px; }
 .verifiedchip { display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--green); border: 1px solid #2f6b45; background: #12331f; border-radius: 3px; padding: 2px 7px; vertical-align: middle; margin-left: 6px; }
+.idbadge { display: inline-block; font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 3px; vertical-align: middle; margin-left: 4px; }
+.idbadge.verified { color: var(--green); border: 1px solid #2f6b45; background: #12331f; }
+.idbadge.manual { color: var(--muted); border: 1px solid var(--line-solid); }
+.idbadge.late { color: var(--amber); border: 1px solid #6b5220; background: #2a2110; text-transform: uppercase; letter-spacing: .5px; }
+.cap-count { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.cap-count .warn, .warn { color: var(--amber); }
+.signed-in-note { color: var(--green); font-size: 14px; margin: 4px 0 12px; }
 .teamtotal { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-solid); font-family: var(--display); font-size: 11px; letter-spacing: 1px; color: var(--amber); }
 .pickorder { display: flex; flex-wrap: wrap; gap: 7px; }
 .po-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 11px 4px 6px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--panel2); color: var(--text); }

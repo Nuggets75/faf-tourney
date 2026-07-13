@@ -64,6 +64,9 @@ function loadDB() {
     if (t.mods === undefined) t.mods = '';
     if (t.imported === undefined) t.imported = false;
     if (t.veto === undefined) t.veto = { enabled: false, mapPool: [], banCount: 0 };
+    if (!t.lateToken) t.lateToken = uid(12);
+    if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
+    if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
     for (const m of (t.matches || [])) {
       if (!m.bracket) m.bracket = 'wb';
       if (!m.bo) m.bo = t.bestOf || 3;
@@ -96,6 +99,21 @@ function now() { return Date.now(); }
 
 function getT(id) { return db.tournaments[id] || null; }
 function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
+
+// A tournament's authorized organizers: the creator's FAF id plus anyone who claimed the
+// organizer link while logged in. Site admin always counts.
+function isOrganizer(t, req) {
+  const sess = currentSession(req);
+  if (sess && Array.isArray(t.organizerFafIds) && sess.fafId && t.organizerFafIds.indexOf(sess.fafId) >= 0) return true;
+  // site admin via cookie? no — site admin is the ADMIN_PASSWORD token, checked separately per-endpoint.
+  return false;
+}
+// Combined check most mutating endpoints use: site-admin token OR a logged-in authorized organizer.
+function canOrganize(t, req, body) {
+  if (isAdmin(t, body && body.admin)) return true;   // site admin or legacy admin token
+  if (isOrganizer(t, req)) return true;              // logged-in claimed organizer
+  return false;
+}
 function cleanVeto(v) {
   if (!v || typeof v !== 'object') return { enabled: false, mapPool: [], banCount: 0 };
   const pool = Array.isArray(v.mapPool)
@@ -121,6 +139,25 @@ function cleanDate(v) {
   const d = new Date(s);
   if (isNaN(d.getTime())) return null;
   return d.toISOString(); // normalize to UTC ISO
+}
+
+// The team the logged-in viewer is the CAPTAIN of (matched by FAF identity).
+function teamOfSession(t, req) {
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return null;
+  for (const team of t.teams) {
+    const cap = playerById(t, team.captainId);
+    if (cap && cap.fafId && cap.fafId === sess.fafId) return team;
+  }
+  return null;
+}
+// The team a logged-in viewer PLAYS ON (captain or roster member), by FAF identity.
+function playerTeamOfSession(t, req) {
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return null;
+  const mine = t.players.find(p => p.fafId && p.fafId === sess.fafId);
+  if (!mine || !mine.teamId) return null;
+  return teamById(t, mine.teamId);
 }
 
 function teamOfCaptainToken(t, token) {
@@ -167,7 +204,10 @@ function publicView(t) {
     matches: t.matches,
     championTeamId: t.championTeamId || null,
     subs: t.subs || [],
+    pendingCaptains: t.pendingCaptains || [],
     imported: t.imported || false,
+    hasOrganizer: (Array.isArray(t.organizerFafIds) && t.organizerFafIds.length > 0) ? 1 : 0,
+    createdByName: t.createdByName || '',
     source: t.source || null,
     sourceUrl: t.sourceUrl || null
   };
@@ -1096,6 +1136,10 @@ async function handleAPI(req, res, url) {
 
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'POST') {
     const b = await readBody(req);
+    // Hosting requires a FAF login (unless FAF login isn't configured yet, in which case
+    // the legacy flow still applies so the site keeps working before go-live).
+    const hostSess = currentSession(req);
+    if (FAF_OAUTH_ON && !hostSess) return json(res, 401, { error: 'Log in with FAF to host a tournament' });
     const name = cleanName(b.name, 60);
     if (!name) return bad(res, 'Name required');
     const competition = b.competition === 'ffa' ? 'ffa' : 'team';
@@ -1131,7 +1175,7 @@ async function handleAPI(req, res, url) {
     }
     const maxTeams = intIn(b.maxTeams, 0, 128, 0);
     const t = {
-      id: uid(5), adminToken: uid(12),
+      id: uid(5), adminToken: uid(12), lateToken: uid(12),
       name, description: cleanName(b.description, 500),
       lobbyOptions: cleanName(b.lobbyOptions, 500),
       mods: cleanName(b.mods, 500),
@@ -1142,6 +1186,8 @@ async function handleAPI(req, res, url) {
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
+      organizerFafIds: (hostSess && hostSess.fafId) ? [hostSess.fafId] : [],
+      createdByName: (hostSess && hostSess.fafName) || '',
       players: [], teams: [], matches: [], rounds: 0, draft: null, subs: []
     };
     db.tournaments[t.id] = t;
@@ -1220,8 +1266,25 @@ async function handleAPI(req, res, url) {
     if (method === 'GET' && !sub) {
       const tok = url.searchParams.get('token');
       const view = publicView(t);
-      const capTeam = teamOfCaptainToken(t, tok);
-      view.viewer = { admin: isAdmin(t, tok) ? 1 : 0, teamId: capTeam ? capTeam.id : null };
+      const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
+      const sess = currentSession(req);
+      const organizer = isAdmin(t, tok) || isOrganizer(t, req);
+      // is the logged-in viewer already signed up (by FAF id)?
+      let signedUpId = null;
+      if (sess && sess.fafId) {
+        const mine = t.players.find(p => p.fafId === sess.fafId);
+        if (mine) signedUpId = mine.id;
+      }
+      view.viewer = {
+        admin: isAdmin(t, tok) ? 1 : 0,
+        organizer: organizer ? 1 : 0,
+        teamId: capTeam ? capTeam.id : null,
+        loggedIn: sess ? 1 : 0,
+        fafId: sess ? sess.fafId : null,
+        fafName: sess ? sess.fafName : null,
+        signedUpPlayerId: signedUpId,
+        oauthEnabled: FAF_OAUTH_ON ? 1 : 0
+      };
       return json(res, 200, view);
     }
 
@@ -1231,14 +1294,10 @@ async function handleAPI(req, res, url) {
     }
 
     if (method === 'GET' && sub === 'secrets') {
-      if (!isAdmin(t, url.searchParams.get('admin'))) return json(res, 403, { error: 'Admin token required' });
+      if (!isAdmin(t, url.searchParams.get('admin')) && !isOrganizer(t, req)) return json(res, 403, { error: 'Organizer rights required' });
       return json(res, 200, {
         adminToken: t.adminToken,
-        captains: t.teams.map(x => ({
-          teamId: x.id, teamName: x.name,
-          captainName: (playerById(t, x.captainId) || {}).name || '',
-          token: x.captainToken
-        }))
+        lateToken: t.lateToken
       });
     }
 
@@ -1246,7 +1305,7 @@ async function handleAPI(req, res, url) {
     const b = await readBody(req);
 
     if (sub === 'reseed') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (t.status !== 'drafted') return bad(res, 'Seeds can only be changed after teams are formed and before the bracket starts');
       if (!t.teams.length) return bad(res, 'No teams to seed');
       if (b.randomize) {
@@ -1268,30 +1327,53 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'edit_date') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       t.eventDate = cleanDate(b.eventDate); // null clears it
       saveDB();
       return json(res, 200, { ok: true });
     }
 
     if (sub === 'delete') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       delete db.tournaments[t.id];
       saveDB();
       return json(res, 200, { ok: true });
     }
 
     if (sub === 'signup') {
-      if (t.status !== 'signup') return bad(res, 'Signups are closed');
       if (t.formation === 'premade' && t.teamSize > 1) return bad(res, 'This tournament uses whole-team registration \u2014 one player registers the full team');
-      if (t.maxTeams > 0 && t.formation === 'solo' && t.players.length >= t.maxTeams) return bad(res, 'The tournament is full (' + t.maxTeams + ' entrants)');
-      const name = cleanName(b.name, 30);
-      if (!name) return bad(res, 'Player name required');
-      if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, 'That name is already signed up');
+
+      const sess = currentSession(req);
+      const adminAdding = isAdmin(t, b.admin) || canOrganize(t, req, b);
+      // Late signups (after signups close) require the organizer's late-signup token OR organizer rights.
+      const lateOk = (b.lateToken && b.lateToken === t.lateToken) || adminAdding;
+      if (t.status !== 'signup' && !lateOk) return bad(res, 'Signups are closed');
+
+      let name, fafId = null, manual = false;
+      if (adminAdding && b.name) {
+        // site admin / organizer adding a manual (unverified) player by name
+        name = cleanName(b.name, 30);
+        manual = true;
+      } else {
+        // self-signup: identity must come from a FAF login
+        if (FAF_OAUTH_ON && !sess) return json(res, 401, { error: 'Log in with FAF to sign up' });
+        if (sess) { name = sess.fafName; fafId = sess.fafId; }
+        else { name = cleanName(b.name, 30); } // pre-go-live fallback (no OAuth configured)
+      }
+      if (!name) return bad(res, 'Could not determine your name \u2014 please log in again');
+
+      if (t.maxTeams > 0 && t.formation === 'solo' && t.players.length >= t.maxTeams && !lateOk) {
+        return bad(res, 'The tournament is full (' + t.maxTeams + ' entrants)');
+      }
+      // no duplicates: by FAF id if we have one, else by name
+      if (fafId && t.players.some(p => p.fafId === fafId)) return bad(res, 'You are already signed up');
+      if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, manual ? 'That name is already signed up' : 'You are already signed up');
+
       const rating = parseInt(b.rating, 10);
-      if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter your FAF rating (0\u20134000)');
+      if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a FAF rating (0\u20134000)');
       const p = {
-        id: 'p' + uid(4), name, rating,
+        id: 'p' + uid(4), name, rating, fafId: fafId, manual: manual,
+        late: (t.status !== 'signup') ? 1 : 0,
         teamName: (t.formation === 'premade') ? cleanName(b.teamName, 30) : '',
         teamId: null, signedAt: now()
       };
@@ -1336,8 +1418,12 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'remove') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
-      const p = playerById(t, b.playerId);
+      const p0 = playerById(t, b.playerId);
+      // a player may withdraw themselves (by FAF id) while signups are open; organizers can remove anyone
+      const sess = currentSession(req);
+      const selfWithdraw = p0 && sess && p0.fafId && p0.fafId === sess.fafId && t.status === 'signup';
+      if (!selfWithdraw && !canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const p = p0;
       if (!p) return json(res, 200, { ok: true });
       if (t.status === 'signup') {
         if (t.formation === 'premade' && t.teamSize > 1 && p.teamName) {
@@ -1366,8 +1452,57 @@ async function handleAPI(req, res, url) {
 
     // edit player (admin, any time) — this is also the substitution mechanism:
     // rename the dropped player to the sub's FAF name and fix the rating
+    // Claim organizer rights by opening the organizer link while logged in with FAF.
+    if (sub === 'claim_organizer') {
+      const sess = currentSession(req);
+      if (!sess) return json(res, 401, { error: 'Log in with FAF first' });
+      // the link carries the admin token; that's what authorizes the claim
+      if (!isAdmin(t, b.adminToken) && !(t.adminToken && b.adminToken === t.adminToken)) {
+        return json(res, 403, { error: 'Invalid organizer link' });
+      }
+      if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
+    if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
+      if (t.organizerFafIds.indexOf(sess.fafId) < 0) t.organizerFafIds.push(sess.fafId);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Replace one player with another SIGNED-UP player, preserving their spot/results.
+    // Works at any stage. The replacement takes over the slot; they are removed from the pool.
+    if (sub === 'replace_player') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const outP = playerById(t, b.playerId);
+      if (!outP) return bad(res, 'Player to replace not found');
+      const inP = playerById(t, b.replacementId);
+      if (!inP) return bad(res, 'Replacement player not found');
+      if (inP.id === outP.id) return bad(res, 'Pick a different player');
+      // the replacement must not already be in the tournament (in a team) — they come from the pool
+      if (inP.teamId) return bad(res, 'That player is already in the tournament');
+
+      // Move the replacement's identity into the outgoing player's slot (keeps outP.id, so all
+      // team.captainId / team.playerIds / match references stay valid and results are preserved).
+      const keptId = outP.id;
+      const keptTeamId = outP.teamId;
+      const keptTeamName = outP.teamName;
+      outP.name = inP.name;
+      outP.rating = inP.rating;
+      outP.fafId = inP.fafId || null;
+      outP.manual = inP.manual || false;
+      outP.replacedFrom = (outP.replacedFrom || 0) + 1;
+      // remove the replacement's own pool record
+      t.players = t.players.filter(p => p.id !== inP.id);
+      // keep derived team names in sync (solo teams / "Team X")
+      for (const team of t.teams) {
+        if (team.captainId === keptId) {
+          team.name = (t.teamSize === 1) ? outP.name : ('Team ' + outP.name);
+        }
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'edit_player') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const p = playerById(t, b.playerId);
       if (!p) return bad(res, 'Player not found');
       const name = cleanName(b.name, 30);
@@ -1393,7 +1528,7 @@ async function handleAPI(req, res, url) {
 
     // edit format/settings (admin, before the bracket starts)
     if (sub === 'edit_format') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (['signup', 'draft', 'drafted'].indexOf(t.status) < 0) return bad(res, 'The format is locked once the bracket has started');
       const bo = (v, d) => BO_OK.indexOf(parseInt(v, 10)) >= 0 ? parseInt(v, 10) : d;
 
@@ -1456,7 +1591,7 @@ async function handleAPI(req, res, url) {
 
     // edit tournament info (admin, any time)
     if (sub === 'edit_info') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (b.description !== undefined) t.description = cleanName(b.description, 500);
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
@@ -1470,7 +1605,7 @@ async function handleAPI(req, res, url) {
 
     // set maps for a round (admin, any time)
     if (sub === 'set_maps') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const bracket = String(b.bracket || '');
       const round = parseInt(b.round, 10);
       if (['wb', 'lb', 'gf', 'sw', 'ffa'].indexOf(bracket) < 0 || !(round >= 1 && round <= 30)) return bad(res, 'Bad round');
@@ -1482,7 +1617,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'phase') {
-      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const a = b.action;
 
       if (a === 'reopen_signups') {
@@ -1494,13 +1629,28 @@ async function handleAPI(req, res, url) {
         return json(res, 200, { ok: true });
       }
 
-      if (a === 'start_draft') {
+      // set the pending captain list (organizer toggles captains from the player list before drafting)
+      if (a === 'set_captains') {
         if (t.formation !== 'draft') return bad(res, 'This tournament does not use a draft');
         if (t.status !== 'signup') return bad(res, 'Draft already started');
         const capIds = Array.isArray(b.captainIds) ? b.captainIds.filter(id => playerById(t, id)) : [];
-        if (capIds.length < 2) return bad(res, 'Pick at least 2 captains');
+        // dedupe
+        const seen = {}; t.pendingCaptains = [];
+        for (const id of capIds) { if (!seen[id]) { seen[id] = 1; t.pendingCaptains.push(id); } }
+        saveDB();
+        return json(res, 200, { ok: true, count: t.pendingCaptains.length });
+      }
+
+      if (a === 'start_draft') {
+        if (t.formation !== 'draft') return bad(res, 'This tournament does not use a draft');
+        if (t.status !== 'signup') return bad(res, 'Draft already started');
+        // captains come from the pending list (or an explicit list for backward-compat)
+        let capIds = Array.isArray(b.captainIds) ? b.captainIds : (t.pendingCaptains || []);
+        capIds = capIds.filter(id => playerById(t, id));
+        if (capIds.length < 2) return bad(res, 'Mark at least 2 captains in the player list first');
         buildDraft(t, capIds);
         finishDraftIfDone(t);
+        t.pendingCaptains = [];
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -1563,8 +1713,8 @@ async function handleAPI(req, res, url) {
       const d = t.draft;
       if (d.current >= d.order.length) return bad(res, 'Draft is complete');
       const turnTeamId = d.order[d.current];
-      const admin = isAdmin(t, b.token);
-      const capTeam = teamOfCaptainToken(t, b.token);
+      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
       if (!admin && (!capTeam || capTeam.id !== turnTeamId)) return json(res, 403, { error: 'Not your pick' });
       const p = playerById(t, b.playerId);
       if (!p) return bad(res, 'Player not found');
@@ -1594,8 +1744,8 @@ async function handleAPI(req, res, url) {
         }
       }
       if (!lp) return bad(res, 'Nothing to undo');
-      const admin = isAdmin(t, b.token);
-      const capTeam = teamOfCaptainToken(t, b.token);
+      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
       // a captain may undo only their own last pick, and only if no one has picked after them
       if (!admin) {
         if (!capTeam || capTeam.id !== lp.teamId) return json(res, 403, { error: 'You can only undo your own pick' });
@@ -1623,8 +1773,8 @@ async function handleAPI(req, res, url) {
       if (!m) return bad(res, 'Match not found');
       if (!m.veto) return bad(res, 'No veto in progress for this match');
       if (m.veto.done) return bad(res, 'Vetoes are already complete for this match');
-      const admin = isAdmin(t, b.token);
-      const capTeam = teamOfCaptainToken(t, b.token);
+      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
       // who is allowed to ban right now: the team whose turn it is (or the organizer acting for them)
       const actingTeam = admin ? (b.asTeam || m.veto.turn) : (capTeam && capTeam.id);
       if (!admin && !capTeam) return json(res, 403, { error: 'Only the match captains or the organizer can ban' });
@@ -1651,8 +1801,9 @@ async function handleAPI(req, res, url) {
       if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
       const m = matchById(t, b.matchId);
       if (!m) return bad(res, 'Match not found');
-      const admin = isAdmin(t, b.token);
-      const capTeam = teamOfCaptainToken(t, b.token);
+      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      // a captain may report their own match: by token (legacy) or by FAF identity (new)
+      const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
 
       // ---- FFA ----
       if (m.bracket === 'ffa') {
