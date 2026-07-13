@@ -1338,7 +1338,16 @@ async function handleAPI(req, res, url) {
     if (sub === 'undo_pick') {
       if ((t.status !== 'draft' && t.status !== 'drafted') || !t.draft) return bad(res, 'No draft in progress');
       const d = t.draft;
-      const lp = d.lastPick;
+      let lp = d.lastPick;
+      // reconstruct for drafts started before pick-tracking existed: the last team to pick
+      // is d.order[d.current-1], and their most recently appended player is that pick.
+      if (!lp && d.current > 0) {
+        const lastTeamId = d.order[d.current - 1];
+        const lastTeam = teamById(t, lastTeamId);
+        if (lastTeam && lastTeam.playerIds.length > 0) {
+          lp = { playerId: lastTeam.playerIds[lastTeam.playerIds.length - 1], teamId: lastTeamId, atIndex: d.current - 1 };
+        }
+      }
       if (!lp) return bad(res, 'Nothing to undo');
       const admin = isAdmin(t, b.token);
       const capTeam = teamOfCaptainToken(t, b.token);

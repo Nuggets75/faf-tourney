@@ -1202,13 +1202,13 @@ function drawTeams(el) {
   if (T.status === 'draft' && T.draft) {
     const d = T.draft;
     const turnTeamId = d.order[d.current];
-    // can the current viewer undo the last pick?
-    const lp = d.lastPick;
+    // the team that made the most recent pick (authoritative: previous slot in the pick order)
+    const lastTeamId = d.current > 0 ? d.order[d.current - 1] : null;
     let canUndo = false, undoName = '';
-    if (lp) {
-      undoName = teamName(lp.teamId);
-      if (admin) canUndo = true;
-      else if (T.viewer && T.viewer.teamId === lp.teamId && d.current === lp.atIndex + 1) canUndo = true;
+    if (lastTeamId) {
+      undoName = teamName(lastTeamId);
+      if (admin) canUndo = true;                                             // organizer: anytime
+      else if (T.viewer && T.viewer.teamId === lastTeamId) canUndo = true;   // captain: only if they were last to pick
     }
     html += `<div class="draft-turn">Pick ${d.current + 1} of ${d.order.length} — <strong>${esc(teamName(turnTeamId))}</strong> is picking.
       ${capToken() && !admin ? '<span class="muted small"> If it\u2019s your team\u2019s turn, the pick buttons below work for you.</span>' : ''}
@@ -1230,7 +1230,7 @@ function drawTeams(el) {
   }
 
   if (T.status === 'drafted' && admin) {
-    const canUndoLast = T.draft && T.draft.lastPick;
+    const canUndoLast = T.draft && T.draft.current > 0;
     html += `<div class="panel section"><h2>Ready</h2>
       <p class="muted small">${T.competition === 'ffa' ? 'Starting creates the round-1 FFA lobbies.' : 'Starting opens the best-of configuration for each round.'}</p>
       <button class="btn primary" id="startBracket">Start ${T.competition === 'ffa' || T.bracketType === 'swiss' ? 'rounds' : 'bracket'}</button>
