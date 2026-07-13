@@ -274,6 +274,7 @@ function convert(challongeRoot, opts) {
     imported: true,
     source: 'challonge',
     sourceUrl: t.full_challonge_url || ('https://challonge.com/' + t.url),
+    challongeDate: (t.completed_at || t.started_at || t.created_at || null),
     importedAt: Date.now()
   };
   return out;

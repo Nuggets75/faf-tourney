@@ -118,6 +118,27 @@ function colLabel(bracket, r, totalRounds) {
   return 'ROUND ' + r;
 }
 
+function fmtDate(v) {
+  if (!v) return '';
+  // v may be 'YYYY-MM-DD' (event date) or an ISO datetime (challonge)
+  let d;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { const p = v.split('-'); d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
+  else { d = new Date(v); }
+  if (isNaN(d.getTime())) return '';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return d.getUTCDate() + ' ' + months[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
+}
+// the date to display + sort by for a tournament (imported: challonge date; else event date)
+function tourneyDate(t) {
+  return t.imported ? (t.challongeDate || t.eventDate) : (t.eventDate || null);
+}
+function tourneyDateMs(t) {
+  const v = tourneyDate(t);
+  if (!v) return 0;
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(v + 'T00:00:00Z') : new Date(v);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
 function statusLabel(s) {
   return { signup: 'Signups open', draft: 'Drafting', drafted: 'Teams locked', running: 'In progress', finished: 'Finished' }[s] || s;
 }
@@ -206,6 +227,7 @@ function drawTopbar(modeText) {
   const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
   topbarRight.innerHTML =
     '<a class="btn amber small" href="/host">Host tournament</a>' +
+    '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' +
     (me()
       ? '<button class="btn ghost small" id="cmdrBtn" title="Player account">' + esc(me()) + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
@@ -215,6 +237,65 @@ function drawTopbar(modeText) {
   document.getElementById('gearBtn').onclick = openSettings;
   document.getElementById('lockBtn').onclick = siteAdminFlow;
   document.getElementById('cmdrBtn').onclick = loginFlow;
+  document.getElementById('importBtn').onclick = importFlow;
+}
+
+let _importPw = null; // held in memory after a successful password check
+
+function importFlow() {
+  if (siteAdmin()) return openImportWindow();
+  if (_importPw) return openImportWindow();
+  modal(`<h3>Import tournaments</h3>
+    <p class="muted small">Enter the import password to import tournaments from Challonge.</p>
+    <input type="password" id="impPw" placeholder="Import password" style="width:100%" autocomplete="off">
+    <div class="actions"><button class="btn ghost" id="impCancel">Cancel</button><button class="btn primary" id="impOk">Continue</button></div>`, root => {
+    const submit = async () => {
+      const pw = root.querySelector('#impPw').value;
+      if (!pw) return toast('Enter the password', true);
+      try {
+        await api('/api/verify_import', { password: pw });
+        _importPw = pw;
+        closeModal();
+        openImportWindow();
+      } catch (e) { toast(e.message, true); }
+    };
+    root.querySelector('#impCancel').onclick = closeModal;
+    root.querySelector('#impOk').onclick = submit;
+    root.querySelector('#impPw').onkeydown = e => { if (e.key === 'Enter') submit(); };
+    setTimeout(() => { const el = root.querySelector('#impPw'); if (el) el.focus(); }, 30);
+  });
+}
+
+function openImportWindow() {
+  modal(`<h3>Import from <span class="h2-strong">Challonge</span></h3>
+    <p class="muted small">Pulls a completed Challonge tournament and adds it to the Completed list. Single &amp; double elimination.</p>
+    <label>Challonge tournament link or ID</label>
+    <input type="text" id="impUrl" placeholder="challonge.com/abc123" autocomplete="off" style="width:100%">
+    <label>Your Challonge API key</label>
+    <input type="password" id="impKey" placeholder="from challonge.com/settings/developer" autocomplete="off" style="width:100%">
+    <div class="muted small" style="margin-top:6px">The key is sent once to fetch the data and is not stored.</div>
+    <div class="actions"><button class="btn ghost" id="impWinCancel">Cancel</button><button class="btn primary" id="impWinGo">Import</button></div>`, root => {
+    root.querySelector('#impWinCancel').onclick = closeModal;
+    root.querySelector('#impWinGo').onclick = async () => {
+      const urlv = root.querySelector('#impUrl').value.trim();
+      const keyv = root.querySelector('#impKey').value.trim();
+      if (!urlv) return toast('Enter the Challonge link or ID', true);
+      if (!keyv) return toast('Enter your Challonge API key', true);
+      const btn = root.querySelector('#impWinGo');
+      btn.disabled = true; btn.textContent = 'Importing…';
+      try {
+        const r = await api('/api/import_challonge', { tournament: urlv, apiKey: keyv, admin: siteAdmin(), importPw: _importPw });
+        closeModal();
+        toast('Imported "' + r.name + '"');
+        history.pushState(null, '', '/t/' + r.id);
+        route();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false; btn.textContent = 'Import';
+      }
+    };
+    setTimeout(() => { const el = root.querySelector('#impUrl'); if (el) el.focus(); }, 30);
+  });
 }
 
 function loginFlow() {
@@ -312,10 +393,12 @@ async function renderHome() {
       <div class="muted small" style="margin-top:10px">Your name pre-fills every signup form.</div>
     </div>`;
 
+  const completed = list.filter(t => t.status === 'finished')
+    .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
   const groups = [
     ['Open for signups', list.filter(t => t.status === 'signup'), 'Nothing open right now.'],
     ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0), 'No tournaments running.'],
-    ['Completed', list.filter(t => t.status === 'finished'), 'No finished tournaments yet.']
+    ['Completed', completed, 'No finished tournaments yet.']
   ];
 
   app.innerHTML = '<div class="page">' + loginPanel + groups.map((g, i) => `
@@ -347,7 +430,7 @@ async function renderHome() {
       div.innerHTML = `
         <div>
           <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a></div>
-          <div class="tlist-meta">${esc(kind)} \u00b7 ${t.players} signed up</div>
+          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDate(tourneyDate(t))) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px">
           <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
@@ -372,26 +455,15 @@ async function renderHome() {
 async function renderHost() {
   stopPoll();
   drawTopbar('');
-  const importPanel = siteAdmin() ? `
-      <div class="panel section">
-        <h2>Import from <span class="h2-strong">Challonge</span></h2>
-        <p class="muted small">Site admin only. Pulls a <em>completed</em> Challonge tournament and adds it to the Completed list as a read-only bracket. Single &amp; double elimination.</p>
-        <label>Challonge tournament link or ID</label>
-        <input type="text" id="impUrl" placeholder="challonge.com/abc123" autocomplete="off">
-        <label>Your Challonge API key</label>
-        <input type="password" id="impKey" placeholder="from challonge.com/settings/developer" autocomplete="off">
-        <div class="muted small" style="margin-top:6px">The key is sent once to fetch the data and is not stored.</div>
-        <div style="margin-top:14px"><button class="btn primary" id="impGo">Import tournament</button></div>
-      </div>` : '';
-
   app.innerHTML = `
     <div class="page" style="max-width:640px">
       <p style="margin:0 0 16px"><a href="/">\u2190 Back to tournaments</a></p>
-      ${importPanel}
       <div class="panel section">
         <h2>Host a <span class="h2-strong">Tournament</span></h2>
         <label>Tournament name</label>
         <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
+        <label>Event date <span class="muted" style="font-weight:400">(optional)</span></label>
+        <input type="date" id="cDate">
         <label>Description (rules, schedule)</label>
         <textarea id="cDesc" maxlength="500" placeholder="Sunday 19:00 CEST. Check-in in Discord..."></textarea>
         <label>Lobby options</label>
@@ -586,7 +658,8 @@ async function renderHost() {
         rounds: document.getElementById('cFfaRounds').value,
         cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
-        seeding: document.getElementById('cSeed').value
+        seeding: document.getElementById('cSeed').value,
+        eventDate: document.getElementById('cDate') ? document.getElementById('cDate').value : ''
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
       history.pushState(null, '', '/t/' + r.id);
@@ -595,25 +668,6 @@ async function renderHost() {
     } catch (e) { toast(e.message, true); }
   };
 
-  const impBtn = document.getElementById('impGo');
-  if (impBtn) impBtn.onclick = async () => {
-    const urlv = document.getElementById('impUrl').value.trim();
-    const keyv = document.getElementById('impKey').value.trim();
-    if (!urlv) return toast('Enter the Challonge link or ID', true);
-    if (!keyv) return toast('Enter your Challonge API key', true);
-    impBtn.disabled = true;
-    impBtn.textContent = 'Importing…';
-    try {
-      const r = await api('/api/import_challonge', { tournament: urlv, apiKey: keyv, admin: siteAdmin() });
-      toast('Imported "' + r.name + '"');
-      history.pushState(null, '', '/t/' + r.id);
-      route();
-    } catch (e) {
-      toast(e.message, true);
-      impBtn.disabled = false;
-      impBtn.textContent = 'Import tournament';
-    }
-  };
 }
 
 // ---------- tournament shell ----------
@@ -719,6 +773,17 @@ function gameInfoPanel() {
 function drawOverview(el) {
   let html = '';
 
+  const canEditDate = viewerIsAdmin() || !!adminToken();
+  const dv = tourneyDate(T);
+  const dateLabel = T.imported ? 'Played' : 'Event date';
+  if (dv || canEditDate) {
+    html += `<div class="datebar">
+      <span class="db-label">${esc(dateLabel)}</span>
+      <span class="db-value">${dv ? esc(fmtDate(dv)) : '<span class="muted">not set</span>'}</span>
+      ${canEditDate ? '<button class="btn ghost small" id="editDateBtn">' + (dv ? 'Change' : 'Set date') + '</button>' : ''}
+    </div>`;
+  }
+
   if (T.imported) {
     html += `<div class="panel section" style="border-left:3px solid var(--blue)">
       <div class="mono small" style="color:var(--blue);letter-spacing:1px">IMPORTED FROM CHALLONGE</div>
@@ -762,6 +827,26 @@ function drawOverview(el) {
   el.querySelectorAll('[data-goto]').forEach(a => a.onclick = e => {
     e.preventDefault(); currentTab = a.dataset.goto; drawTournament();
   });
+
+  const edb = document.getElementById('editDateBtn');
+  if (edb) edb.onclick = () => {
+    const cur = (!T.imported && T.eventDate) ? T.eventDate : '';
+    modal(`<h3>${T.imported ? 'Set display date' : 'Event date'}</h3>
+      <p class="muted small">${T.imported ? 'Overrides the imported date shown on the overview.' : 'Shown on the overview and used to order completed tournaments. Leave blank to clear.'}</p>
+      <input type="date" id="edDate" value="${esc(cur)}" style="width:100%">
+      <div class="actions"><button class="btn ghost" id="edCancel">Cancel</button><button class="btn primary" id="edSave">Save</button></div>`, root => {
+      root.querySelector('#edCancel').onclick = closeModal;
+      root.querySelector('#edSave').onclick = async () => {
+        const v = root.querySelector('#edDate').value;
+        try {
+          await api('/api/t/' + T.id + '/edit_date', { eventDate: v, admin: myToken() });
+          closeModal();
+          await refresh();
+          toast(v ? 'Date updated' : 'Date cleared');
+        } catch (e) { toast(e.message, true); }
+      };
+    });
+  };
 }
 
 function brOrder(m) { return { wb: 0, lb: 1, sw: 0, ffa: 0, gf: 2 }[m.bracket] || 0; }

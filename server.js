@@ -15,6 +15,9 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // Site-wide admin password. Set via ADMIN_PASSWORD environment variable in the
 // Dockhand stack — NOT in this repo, so it is never visible on GitHub.
 const GADMIN = process.env.ADMIN_PASSWORD || '';
+// Separate password that lets a trusted person use ONLY the Challonge importer,
+// without full site-admin rights. Set via IMPORT_PASSWORD env var.
+const IMPORT_PW = process.env.IMPORT_PASSWORD || '';
 const BOOT = String(Date.now()); // cache-buster, changes every container restart
 
 // ---------- storage ----------
@@ -73,6 +76,12 @@ function now() { return Date.now(); }
 
 function getT(id) { return db.tournaments[id] || null; }
 function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
+function cleanDate(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
 
 function teamOfCaptainToken(t, token) {
   if (!token) return null;
@@ -101,6 +110,8 @@ function publicView(t) {
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding,
     status: t.status, createdAt: t.createdAt,
+    eventDate: t.eventDate || null,
+    challongeDate: t.challongeDate || null,
     rounds: t.rounds || 0,
     maps: t.maps || {},
     players: t.players,
@@ -840,6 +851,7 @@ async function handleAPI(req, res, url) {
       plan, maxTeams,
       cfg: null, maps: {},
       seeding: (b.seeding === 'rating') ? 'rating' : 'random',
+      eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
       players: [], teams: [], matches: [], rounds: 0, draft: null, subs: []
     };
@@ -855,10 +867,20 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // verify the importer password (grants importer access only, not site admin)
+  if (parts.length === 2 && parts[1] === 'verify_import' && method === 'POST') {
+    const b = await readBody(req);
+    if (!IMPORT_PW && !GADMIN) return bad(res, 'Importing is not configured on the server (set IMPORT_PASSWORD).');
+    const pw = String(b.password || '');
+    if ((IMPORT_PW && pw === IMPORT_PW) || (GADMIN && pw === GADMIN)) return json(res, 200, { ok: true });
+    return json(res, 403, { error: 'Wrong password' });
+  }
+
   // import a completed tournament from Challonge (site admin only)
   if (parts.length === 2 && parts[1] === 'import_challonge' && method === 'POST') {
     const b = await readBody(req);
-    if (!GADMIN || b.admin !== GADMIN) return json(res, 403, { error: 'Site admin only' });
+    const okImport = (IMPORT_PW && b.importPw === IMPORT_PW) || (GADMIN && b.admin === GADMIN);
+    if (!okImport) return json(res, 403, { error: 'Not authorized to import' });
     let cid = String(b.tournament || '').trim();
     if (!cid) return bad(res, 'Enter a Challonge tournament URL or ID');
     // accept a full URL or bare id: challonge.com/abc123 or challonge.com/subdomain/abc123
@@ -912,7 +934,7 @@ async function handleAPI(req, res, url) {
     }
 
     // imported tournaments are display-only: only GET and site-admin delete are allowed
-    if (t.imported && method === 'POST' && sub !== 'delete') {
+    if (t.imported && method === 'POST' && sub !== 'delete' && sub !== 'edit_date') {
       return bad(res, 'Imported tournaments are read-only.');
     }
 
@@ -930,6 +952,13 @@ async function handleAPI(req, res, url) {
 
     if (method !== 'POST') return bad(res, 'Unsupported');
     const b = await readBody(req);
+
+    if (sub === 'edit_date') {
+      if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
+      t.eventDate = cleanDate(b.eventDate); // null clears it
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
 
     if (sub === 'delete') {
       if (!isAdmin(t, b.admin)) return json(res, 403, { error: 'Admin token required' });
