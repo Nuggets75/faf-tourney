@@ -118,6 +118,72 @@ function colLabel(bracket, r, totalRounds) {
   return 'ROUND ' + r;
 }
 
+// combine <input type=date> + optional <input type=time> as a UTC instant.
+// If no date, returns ''. If date but no time, returns the bare date (date-only, no tz).
+function combineDateTimeUTC(dateEl, timeEl) {
+  const dv = dateEl ? dateEl.value : '';
+  if (!dv) return '';
+  const tv = timeEl ? timeEl.value : '';
+  if (!tv) return dv; // date only
+  // dv = 'YYYY-MM-DD', tv = 'HH:MM' — treat as UTC
+  return dv + 'T' + tv + ':00Z';
+}
+// split a stored UTC ISO / date-only value back into {date, time} strings for form inputs,
+// expressed in UTC (so editing round-trips the stored UTC instant).
+function splitDateTimeUTC(v) {
+  if (!v) return { date: '', time: '' };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return { date: v, time: '' };
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return { date: '', time: '' };
+  const p = n => (n < 10 ? '0' : '') + n;
+  return {
+    date: d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()),
+    time: p(d.getUTCHours()) + ':' + p(d.getUTCMinutes())
+  };
+}
+
+// ---------- timezone ----------
+// preferred display timezone: stored IANA name, or 'auto' (browser), or 'UTC'
+function prefTZ() {
+  return localStorage.getItem('displayTZ') || 'auto';
+}
+function resolvedTZ() {
+  const p = prefTZ();
+  if (p === 'auto') { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } }
+  return p;
+}
+// short label for the currently resolved zone (e.g. "CEST", "UTC")
+function tzAbbrev(date) {
+  const tz = resolvedTZ();
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'short' }).formatToParts(date || new Date());
+    const p = parts.find(x => x.type === 'timeZoneName');
+    return p ? p.value : tz;
+  } catch (e) { return tz; }
+}
+// format a UTC ISO/date-only string into the preferred zone, with date + time (if the value has a time)
+function fmtDateTime(v, opts) {
+  if (!v) return '';
+  opts = opts || {};
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const d = dateOnly ? new Date(v + 'T00:00:00Z') : new Date(v);
+  if (isNaN(d.getTime())) return '';
+  const tz = resolvedTZ();
+  try {
+    if (dateOnly && !opts.forceTime) {
+      // no time component was set; show date only, no tz
+      return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+    }
+    const dateStr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+    const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+    return dateStr + ', ' + timeStr + ' ' + tzAbbrev(d);
+  } catch (e) {
+    return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+  }
+}
+// does this stored value carry a time component (ISO datetime) vs a bare date?
+function hasTime(v) { return !!v && !/^\d{4}-\d{2}-\d{2}$/.test(v); }
+
 function fmtDate(v) {
   if (!v) return '';
   // v may be 'YYYY-MM-DD' (event date) or an ISO datetime (challonge)
@@ -193,11 +259,36 @@ function applyScale() {
   const s = parseInt(localStorage.getItem('uiScale') || '100', 10);
   document.body.style.zoom = (s / 100);
 }
+const TZ_LIST = [
+  ['auto', 'Automatic (your device)'],
+  ['UTC', 'UTC'],
+  ['Europe/London', 'London (GMT/BST)'],
+  ['Europe/Berlin', 'Central Europe (Berlin, Paris)'],
+  ['Europe/Athens', 'Eastern Europe (Athens, Helsinki)'],
+  ['Europe/Moscow', 'Moscow'],
+  ['America/New_York', 'US Eastern (New York)'],
+  ['America/Chicago', 'US Central (Chicago)'],
+  ['America/Denver', 'US Mountain (Denver)'],
+  ['America/Los_Angeles', 'US Pacific (Los Angeles)'],
+  ['America/Sao_Paulo', 'Brazil (Sao Paulo)'],
+  ['Asia/Dubai', 'Gulf (Dubai)'],
+  ['Asia/Kolkata', 'India (Kolkata)'],
+  ['Asia/Shanghai', 'China (Shanghai)'],
+  ['Asia/Tokyo', 'Japan (Tokyo)'],
+  ['Australia/Sydney', 'Australia Eastern (Sydney)'],
+  ['Pacific/Auckland', 'New Zealand (Auckland)']
+];
+
 function openSettings() {
   const s = parseInt(localStorage.getItem('uiScale') || '100', 10);
+  const tz = prefTZ();
+  const tzOpts = TZ_LIST.map(z => `<option value="${z[0]}"${z[0] === tz ? ' selected' : ''}>${esc(z[1])}</option>`).join('');
   modal(`
     <h3>Display settings</h3>
-    <label>UI scale — <span id="scaleVal">${s}%</span></label>
+    <label>Time zone</label>
+    <select id="tzSel" style="width:100%">${tzOpts}</select>
+    <div class="muted small" style="margin-top:6px">Tournament times are stored in UTC and shown in this zone. Currently: <strong id="tzNow">${esc(resolvedTZ())} (${esc(tzAbbrev())})</strong></div>
+    <label style="margin-top:16px">UI scale — <span id="scaleVal">${s}%</span></label>
     <div class="scale-row">
       <span class="mono small">70</span>
       <input type="range" id="scaleRange" min="70" max="140" step="5" value="${s}">
@@ -213,13 +304,17 @@ function openSettings() {
       root.querySelector('#scaleVal').textContent = range.value + '%';
       applyScale();
     };
+    root.querySelector('#tzSel').onchange = e => {
+      localStorage.setItem('displayTZ', e.target.value);
+      root.querySelector('#tzNow').textContent = resolvedTZ() + ' (' + tzAbbrev() + ')';
+    };
     root.querySelector('#scaleReset').onclick = () => {
       localStorage.setItem('uiScale', '100');
       range.value = 100;
       root.querySelector('#scaleVal').textContent = '100%';
       applyScale();
     };
-    root.querySelector('#scaleDone').onclick = closeModal;
+    root.querySelector('#scaleDone').onclick = () => { closeModal(); route(); };
   });
 }
 
@@ -430,7 +525,7 @@ async function renderHome() {
       div.innerHTML = `
         <div>
           <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a></div>
-          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDate(tourneyDate(t))) + '</span>' : ''}</div>
+          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px">
           <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
@@ -462,8 +557,8 @@ async function renderHost() {
         <h2>Host a <span class="h2-strong">Tournament</span></h2>
         <label>Tournament name</label>
         <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
-        <label>Event date <span class="muted" style="font-weight:400">(optional)</span></label>
-        <input type="date" id="cDate">
+        <label>Event date &amp; time (UTC) <span class="muted" style="font-weight:400">(optional)</span></label>
+        <div style="display:flex;gap:8px"><input type="date" id="cDate" style="flex:1"><input type="time" id="cTime" style="width:130px"></div>
         <label>Description (rules, schedule)</label>
         <textarea id="cDesc" maxlength="500" placeholder="Sunday 19:00 CEST. Check-in in Discord..."></textarea>
         <label>Lobby options</label>
@@ -659,7 +754,7 @@ async function renderHost() {
         cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value,
-        eventDate: document.getElementById('cDate') ? document.getElementById('cDate').value : ''
+        eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
       history.pushState(null, '', '/t/' + r.id);
@@ -779,7 +874,7 @@ function drawOverview(el) {
   if (dv || canEditDate) {
     html += `<div class="datebar">
       <span class="db-label">${esc(dateLabel)}</span>
-      <span class="db-value">${dv ? esc(fmtDate(dv)) : '<span class="muted">not set</span>'}</span>
+      <span class="db-value">${dv ? esc(fmtDateTime(dv)) : '<span class="muted">not set</span>'}</span>
       ${canEditDate ? '<button class="btn ghost small" id="editDateBtn">' + (dv ? 'Change' : 'Set date') + '</button>' : ''}
     </div>`;
   }
@@ -830,14 +925,19 @@ function drawOverview(el) {
 
   const edb = document.getElementById('editDateBtn');
   if (edb) edb.onclick = () => {
-    const cur = (!T.imported && T.eventDate) ? T.eventDate : '';
-    modal(`<h3>${T.imported ? 'Set display date' : 'Event date'}</h3>
-      <p class="muted small">${T.imported ? 'Overrides the imported date shown on the overview.' : 'Shown on the overview and used to order completed tournaments. Leave blank to clear.'}</p>
-      <input type="date" id="edDate" value="${esc(cur)}" style="width:100%">
+    const cur = (!T.imported ? T.eventDate : (T.eventDate || '')) || '';
+    const parts = splitDateTimeUTC(cur);
+    modal(`<h3>${T.imported ? 'Set display date' : 'Event date &amp; time'}</h3>
+      <p class="muted small">Enter the time in <strong>UTC</strong>. It'll display in each viewer's chosen time zone. Leave blank to clear.</p>
+      <div style="display:flex;gap:8px">
+        <input type="date" id="edDate" value="${esc(parts.date)}" style="flex:1">
+        <input type="time" id="edTime" value="${esc(parts.time)}" style="width:130px">
+      </div>
+      <div class="muted small" style="margin-top:6px">Date only (no time) is fine — just leave the time blank.</div>
       <div class="actions"><button class="btn ghost" id="edCancel">Cancel</button><button class="btn primary" id="edSave">Save</button></div>`, root => {
       root.querySelector('#edCancel').onclick = closeModal;
       root.querySelector('#edSave').onclick = async () => {
-        const v = root.querySelector('#edDate').value;
+        const v = combineDateTimeUTC(root.querySelector('#edDate'), root.querySelector('#edTime'));
         try {
           await api('/api/t/' + T.id + '/edit_date', { eventDate: v, admin: myToken() });
           closeModal();

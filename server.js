@@ -80,7 +80,12 @@ function cleanDate(v) {
   if (typeof v !== 'string') return null;
   const s = v.trim();
   if (!s) return null;
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  // legacy date-only
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // full ISO datetime (what the client sends now) — validate by parsing
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString(); // normalize to UTC ISO
 }
 
 function teamOfCaptainToken(t, token) {
@@ -915,7 +920,10 @@ async function handleAPI(req, res, url) {
         id: t.id, name: t.name, status: t.status,
         competition: t.competition, bracketType: t.bracketType,
         teamSize: t.teamSize, players: t.players.length,
-        teams: t.teams.length, createdAt: t.createdAt
+        teams: t.teams.length, createdAt: t.createdAt,
+        imported: t.imported || false,
+        eventDate: t.eventDate || null,
+        challongeDate: t.challongeDate || null
       }));
     return json(res, 200, list);
   }
