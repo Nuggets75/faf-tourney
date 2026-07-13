@@ -18,6 +18,23 @@ const GADMIN = process.env.ADMIN_PASSWORD || '';
 // Separate password that lets a trusted person use ONLY the Challonge importer,
 // without full site-admin rights. Set via IMPORT_PASSWORD env var.
 const IMPORT_PW = process.env.IMPORT_PASSWORD || '';
+
+// ===== FAF login (OAuth2 / OpenID Connect via Ory Hydra) =====
+// All three must be set for FAF login to be active; otherwise the feature stays dormant
+// and the name-only login remains the sole option.
+//   FAF_CLIENT_ID     — the OAuth client id FAF assigns you (a UUID)
+//   FAF_CLIENT_SECRET — the client secret FAF stores for you (never in the repo)
+//   FAF_REDIRECT_URI  — must EXACTLY match what FAF registered, e.g.
+//                       https://tournaments.doodlepros.com/auth/faf/callback
+const FAF_CLIENT_ID = process.env.FAF_CLIENT_ID || '';
+const FAF_CLIENT_SECRET = process.env.FAF_CLIENT_SECRET || '';
+const FAF_REDIRECT_URI = process.env.FAF_REDIRECT_URI || '';
+const FAF_OAUTH_ON = !!(FAF_CLIENT_ID && FAF_CLIENT_SECRET && FAF_REDIRECT_URI);
+const FAF_HYDRA = 'https://hydra.faforever.com';
+const FAF_API = 'https://api.faforever.com';
+const FAF_SCOPES = 'openid offline public_profile';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const OAUTH_PENDING_TTL_MS = 10 * 60 * 1000;     // login must complete within 10 min
 const BOOT = String(Date.now()); // cache-buster, changes every container restart
 
 // ---------- storage ----------
@@ -31,6 +48,8 @@ function loadDB() {
   } catch (e) {
     db = { tournaments: {} };
   }
+  if (!db.sessions) db.sessions = {};
+  if (!db.oauthPending) db.oauthPending = {};
   // migrate v1 records so old test tournaments don't crash the client
   let changed = false;
   for (const t of Object.values(db.tournaments)) {
@@ -843,6 +862,232 @@ function intIn(v, lo, hi, dflt) {
   return (n >= lo && n <= hi) ? n : dflt;
 }
 
+// ---------- FAF OAuth helpers ----------
+
+const https = require('https');
+
+// Minimal HTTPS request helper (zero-dep, mirrors challonge.js style).
+// opts: { host, path, method, headers }, body: string|null. Resolves { status, text }.
+function httpsRequest(opts, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: opts.host, path: opts.path, method: opts.method || 'GET', headers: opts.headers || {}
+    }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, text: data }));
+    });
+    req.on('error', e => reject(new Error('Network error contacting ' + opts.host + ': ' + e.message)));
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Request to ' + opts.host + ' timed out')); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function b64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function randToken(nbytes) { return b64url(crypto.randomBytes(nbytes || 32)); }
+// PKCE: verifier is a random string; challenge is base64url(sha256(verifier)).
+function pkcePair() {
+  const verifier = randToken(48);
+  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+  return { verifier, challenge };
+}
+
+// pending logins: state -> { verifier, exp, returnTo }
+function prunePending() {
+  const now = Date.now();
+  for (const k of Object.keys(db.oauthPending)) {
+    if (!db.oauthPending[k] || db.oauthPending[k].exp < now) delete db.oauthPending[k];
+  }
+}
+
+// sessions: token -> { fafId, fafName, exp }
+function pruneSessions() {
+  const now = Date.now();
+  for (const k of Object.keys(db.sessions)) {
+    if (!db.sessions[k] || db.sessions[k].exp < now) delete db.sessions[k];
+  }
+}
+
+function parseCookies(req) {
+  const out = {};
+  const raw = req.headers.cookie;
+  if (!raw) return out;
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    const k = part.slice(0, i).trim();
+    const v = part.slice(i + 1).trim();
+    if (k) out[k] = decodeURIComponent(v);
+  }
+  return out;
+}
+const SESSION_COOKIE = 'faf_sid';
+function setSessionCookie(res, token, maxAgeMs) {
+  // httpOnly (JS can't read it -> XSS can't steal it), Secure (HTTPS only), SameSite=Lax (survives the OAuth redirect back)
+  const parts = [
+    SESSION_COOKIE + '=' + encodeURIComponent(token),
+    'Path=/', 'HttpOnly', 'Secure', 'SameSite=Lax',
+    'Max-Age=' + Math.floor((maxAgeMs || SESSION_TTL_MS) / 1000)
+  ];
+  appendHeader(res, 'Set-Cookie', parts.join('; '));
+}
+function clearSessionCookie(res) {
+  appendHeader(res, 'Set-Cookie', SESSION_COOKIE + '=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0');
+}
+// support multiple Set-Cookie headers alongside other writeHead headers
+function appendHeader(res, name, value) {
+  const existing = res.getHeader(name);
+  if (existing === undefined) res.setHeader(name, value);
+  else if (Array.isArray(existing)) res.setHeader(name, existing.concat(value));
+  else res.setHeader(name, [existing, value]);
+}
+function currentSession(req) {
+  const c = parseCookies(req);
+  const tok = c[SESSION_COOKIE];
+  if (!tok) return null;
+  const sess = db.sessions[tok];
+  if (!sess || sess.exp < Date.now()) return null;
+  return sess;
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { 'Location': location, 'Cache-Control': 'no-store' });
+  res.end();
+}
+
+// Resolve the FAF display name from an access token.
+// Hydra's /userinfo returns only { sub } (the numeric FAF id). The username comes from the
+// FAF API /me endpoint, which the `public_profile` scope grants access to. The exact JSON
+// shape is confirmed on first real login; we read the common fields defensively.
+async function fafFetchIdentity(accessToken) {
+  // 1) userinfo -> stable subject id (always present)
+  let fafId = null;
+  try {
+    const ui = await httpsRequest({
+      host: 'hydra.faforever.com', path: '/userinfo', method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' }
+    });
+    if (ui.status === 200) { const j = JSON.parse(ui.text); fafId = j.sub || null; }
+  } catch (e) { /* fall through */ }
+
+  // 2) FAF API /me -> username (+ id). JSON:API shape: { data: { id, attributes: { userName, ... } } }
+  let fafName = null;
+  try {
+    const me = await httpsRequest({
+      host: 'api.faforever.com', path: '/me', method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + accessToken, 'Accept': 'application/json' }
+    });
+    if (me.status === 200) {
+      const j = JSON.parse(me.text);
+      const a = (j && j.data && j.data.attributes) ? j.data.attributes : (j || {});
+      fafName = a.userName || a.username || a.login || a.displayName || a.name || null;
+      if (!fafId) fafId = (j && j.data && j.data.id) || a.userId || a.id || fafId;
+    }
+  } catch (e) { /* fall through */ }
+
+  return { fafId: fafId ? String(fafId) : null, fafName: fafName ? String(fafName) : null };
+}
+
+// ---------- auth routes ----------
+async function handleAuth(req, res, url) {
+  const parts = url.pathname.split('/').filter(Boolean); // ['auth','faf',...]
+  const sub = parts[2] || '';
+
+  // status endpoint always works (tells the client whether to show the FAF button + who's logged in)
+  if (sub === 'me') {
+    const sess = currentSession(req);
+    return json(res, 200, {
+      enabled: FAF_OAUTH_ON,
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName } : null
+    });
+  }
+
+  if (!FAF_OAUTH_ON) return json(res, 503, { error: 'FAF login is not configured on this server yet.' });
+
+  if (sub === 'login') {
+    prunePending();
+    const state = randToken(24);
+    const { verifier, challenge } = pkcePair();
+    const returnTo = (url.searchParams.get('returnTo') || '/').slice(0, 300);
+    db.oauthPending[state] = { verifier, exp: Date.now() + OAUTH_PENDING_TTL_MS, returnTo };
+    saveDB();
+    const auth = FAF_HYDRA + '/oauth2/auth?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: FAF_CLIENT_ID,
+      redirect_uri: FAF_REDIRECT_URI,
+      scope: FAF_SCOPES,
+      state: state,
+      code_challenge: challenge,
+      code_challenge_method: 'S256'
+    }).toString();
+    return redirect(res, auth);
+  }
+
+  if (sub === 'callback') {
+    prunePending();
+    const err = url.searchParams.get('error');
+    if (err) return redirect(res, '/?login=denied');
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    if (!code || !state) return redirect(res, '/?login=error');
+    const pending = db.oauthPending[state];
+    if (!pending) return redirect(res, '/?login=expired');
+    delete db.oauthPending[state];
+    saveDB();
+
+    // exchange the code for tokens (client_secret_post + PKCE verifier)
+    let tokenResp;
+    try {
+      const form = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: code,
+        redirect_uri: FAF_REDIRECT_URI,
+        client_id: FAF_CLIENT_ID,
+        client_secret: FAF_CLIENT_SECRET,
+        code_verifier: pending.verifier
+      }).toString();
+      tokenResp = await httpsRequest({
+        host: 'hydra.faforever.com', path: '/oauth2/token', method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }
+      }, form);
+    } catch (e) {
+      return redirect(res, '/?login=error');
+    }
+    if (tokenResp.status !== 200) return redirect(res, '/?login=error');
+    let accessToken;
+    try { accessToken = JSON.parse(tokenResp.text).access_token; } catch (e) { return redirect(res, '/?login=error'); }
+    if (!accessToken) return redirect(res, '/?login=error');
+
+    // resolve identity
+    const ident = await fafFetchIdentity(accessToken);
+    if (!ident.fafId && !ident.fafName) return redirect(res, '/?login=error');
+
+    // create a server-side session, hand the browser an httpOnly cookie
+    pruneSessions();
+    const sid = randToken(32);
+    db.sessions[sid] = { fafId: ident.fafId, fafName: ident.fafName, exp: Date.now() + SESSION_TTL_MS };
+    saveDB();
+    setSessionCookie(res, sid, SESSION_TTL_MS);
+    const dest = (pending.returnTo && pending.returnTo.charAt(0) === '/') ? pending.returnTo : '/';
+    return redirect(res, dest + (dest.indexOf('?') >= 0 ? '&' : '?') + 'login=ok');
+  }
+
+  if (sub === 'logout') {
+    const c = parseCookies(req);
+    const tok = c[SESSION_COOKIE];
+    if (tok && db.sessions[tok]) { delete db.sessions[tok]; saveDB(); }
+    clearSessionCookie(res);
+    // GET (link) redirects home; POST (fetch) gets JSON
+    if (req.method === 'POST') return json(res, 200, { ok: true });
+    return redirect(res, '/');
+  }
+
+  return json(res, 404, { error: 'Unknown auth route' });
+}
+
 // ---------- API ----------
 
 async function handleAPI(req, res, url) {
@@ -1542,6 +1787,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (url.pathname.startsWith('/api/')) return await handleAPI(req, res, url);
+    if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     console.error(e);

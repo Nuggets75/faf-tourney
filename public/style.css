@@ -302,6 +302,12 @@ tbody tr:hover { background: #ffffff05; }
 .veto-map.ban { cursor: pointer; color: var(--text); background: var(--panel2); }
 .veto-map.ban:hover { border-color: var(--red); color: var(--red); }
 .veto-map.play { color: var(--green); border-color: #2f6b45; background: #12331f; font-weight: 600; }
+.btn.faf { display: block; width: 100%; background: #2d5a9e; color: #eaf2fb; border: 1px solid #3f74c4; font-weight: 600; letter-spacing: .5px; }
+.btn.faf:hover { background: #366bbd; box-shadow: 0 0 12px #2d5a9e55; }
+.or-divider { display: flex; align-items: center; text-align: center; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin: 14px 0; }
+.or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-solid); }
+.or-divider span { padding: 0 12px; }
+.verifiedchip { display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--green); border: 1px solid #2f6b45; background: #12331f; border-radius: 3px; padding: 2px 7px; vertical-align: middle; margin-left: 6px; }
 .teamtotal { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-solid); font-family: var(--display); font-size: 11px; letter-spacing: 1px; color: var(--amber); }
 .pickorder { display: flex; flex-wrap: wrap; gap: 7px; }
 .po-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 4px 11px 4px 6px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--panel2); color: var(--text); }

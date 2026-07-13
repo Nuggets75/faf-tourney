@@ -42,7 +42,20 @@ function tourneyId() {
   return m ? m[1] : null;
 }
 function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
-function me() { return localStorage.getItem('cmdrName') || ''; }
+// FAF login state, populated by refreshFafAuth() on load. fafAuth = { enabled, user:{fafId,fafName}|null }
+let fafAuth = { enabled: false, user: null };
+// the effective logged-in name: a verified FAF session wins over the manual name
+function me() {
+  if (fafAuth.user && fafAuth.user.fafName) return fafAuth.user.fafName;
+  return localStorage.getItem('cmdrName') || '';
+}
+function isFafVerified() { return !!(fafAuth.user && fafAuth.user.fafName); }
+async function refreshFafAuth() {
+  try {
+    const r = await fetch('/auth/faf/me', { credentials: 'same-origin' });
+    if (r.ok) fafAuth = await r.json();
+  } catch (e) { /* leave defaults */ }
+}
 function adminToken() {
   const id = tourneyId();
   return (id ? localStorage.getItem('admin_' + id) : null) || siteAdmin();
@@ -401,28 +414,48 @@ function openImportWindow() {
 }
 
 function loginFlow() {
+  // Already logged in — show status and the right logout control.
   if (me()) {
+    const verified = isFafVerified();
     modal(`
-      <h3>Logged in as ${esc(me())}</h3>
-      <p class="muted small">Signup forms use this name automatically.</p>
+      <h3>Logged in as ${esc(me())}${verified ? ' <span class="verifiedchip">FAF verified</span>' : ''}</h3>
+      <p class="muted small">${verified ? 'Your FAF account is linked. Signup forms use your FAF name.' : 'Signup forms use this name automatically.'}</p>
       <div class="actions">
         <button class="btn ghost" id="lgClose">Close</button>
         <button class="btn danger" id="lgOut">Log out</button>
       </div>`, root => {
       root.querySelector('#lgClose').onclick = closeModal;
-      root.querySelector('#lgOut').onclick = () => { localStorage.removeItem('cmdrName'); closeModal(); route(); };
+      root.querySelector('#lgOut').onclick = async () => {
+        if (isFafVerified()) {
+          try { await fetch('/auth/faf/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
+          fafAuth.user = null;
+        }
+        localStorage.removeItem('cmdrName');
+        closeModal(); route();
+      };
     });
     return;
   }
+  // Not logged in — offer FAF login (if configured) and/or the manual name.
+  const fafBtn = fafAuth.enabled
+    ? `<button class="btn faf" id="lgFaf">Log in with FAF</button>
+       <div class="or-divider"><span>or</span></div>`
+    : '';
   modal(`
     <h3>Log in</h3>
-    <p class="muted small">Your name pre-fills every signup form.</p>
+    ${fafAuth.enabled ? '<p class="muted small">Log in with your FAF account to verify your identity, or just enter a name.</p>' : '<p class="muted small">Your name pre-fills every signup form.</p>'}
+    ${fafBtn}
     <label>FAF name</label>
     <input type="text" id="lgName" maxlength="30" autocomplete="off">
     <div class="actions">
       <button class="btn ghost" id="lgCancel">Cancel</button>
-      <button class="btn primary" id="lgGo">Log in</button>
+      <button class="btn primary" id="lgGo">Use this name</button>
     </div>`, root => {
+    const faf = root.querySelector('#lgFaf');
+    if (faf) faf.onclick = () => {
+      const returnTo = location.pathname + location.search;
+      location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
+    };
     const inp = root.querySelector('#lgName');
     inp.focus();
     const go = () => {
@@ -2753,5 +2786,19 @@ document.addEventListener('wheel', () => {
 }, { passive: true });
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { for (const f of connectorRedraws) f(); });
 
+// handle the ?login=... param the OAuth callback appends, then clean it from the URL
+function handleLoginParam() {
+  const q = new URLSearchParams(location.search);
+  const l = q.get('login');
+  if (!l) return;
+  q.delete('login');
+  const clean = location.pathname + (q.toString() ? '?' + q.toString() : '');
+  history.replaceState(null, '', clean);
+  if (l === 'ok') toast('Logged in with FAF' + (me() ? ' as ' + me() : ''));
+  else if (l === 'denied') toast('FAF login was cancelled', true);
+  else if (l === 'expired') toast('Login timed out, please try again', true);
+  else if (l === 'error') toast('FAF login failed, please try again', true);
+}
+
 applyScale();
-route();
+refreshFafAuth().then(() => { handleLoginParam(); route(); });
