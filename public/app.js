@@ -1667,15 +1667,23 @@ function drawTeams(el) {
       }, 400);
     };
     const tbl = document.createElement('table');
-    tbl.innerHTML = '<thead><tr><th style="width:40px">#</th><th>Name</th><th style="width:90px">Rating</th><th style="width:90px">Captain</th></tr></thead>';
+    tbl.innerHTML = '<thead><tr><th style="width:40px">#</th><th>Name</th><th style="width:90px">Rating</th><th style="width:110px">Captain</th></tr></thead>';
     const tb = document.createElement('tbody');
     const sorted = T.players.slice().sort((a, b) => (b.rating || 0) - (a.rating || 0));
     sorted.forEach((p, i) => {
       const tr = document.createElement('tr');
       tr.innerHTML = `<td class="mono muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.rating != null ? p.rating : '\u2014'}</td>
-        <td><input type="checkbox" value="${p.id}"${F.capSel[p.id] ? ' checked' : ''}></td>`;
-      const cb = tr.querySelector('input');
-      cb.onchange = () => { if (cb.checked) F.capSel[p.id] = 1; else delete F.capSel[p.id]; updateCount(); persistCaptains(); };
+        <td class="capcell"></td>`;
+      const paint = () => {
+        const on = !!F.capSel[p.id];
+        tr.className = 'pickrow' + (on ? ' on' : '');
+        tr.querySelector('.capcell').innerHTML = on ? '<span class="cap-yes">CAPTAIN</span>' : '<span class="cap-no">click to set</span>';
+      };
+      paint();
+      tr.onclick = () => {
+        if (F.capSel[p.id]) delete F.capSel[p.id]; else F.capSel[p.id] = 1;
+        paint(); updateCount(); persistCaptains();
+      };
       tb.appendChild(tr);
     });
     tbl.appendChild(tb);
@@ -2219,9 +2227,10 @@ function editPool(existing) {
     <label>Pool name</label>
     <input type="text" id="plName" maxlength="40" value="${esc(pool.name)}" placeholder="e.g. Finals pool" autocomplete="off">
     <label style="margin-top:12px">Maps in this pool</label>
-    <div class="vpool-list">
-      ${db.map(m => `<label class="vpool-item"><input type="checkbox" class="plCb" value="${m.id}"${(pool.mapIds || []).indexOf(m.id) >= 0 ? ' checked' : ''}> ${esc(m.name)}${!m.published ? ' <span class="idbadge late">hidden</span>' : ''}</label>`).join('')}
+    <div class="pick-list" id="plMaps">
+      ${db.map(m => `<button type="button" class="pick-item${(pool.mapIds || []).indexOf(m.id) >= 0 ? ' on' : ''}" data-mapid="${m.id}">${esc(m.name)}${!m.published ? ' <span class="idbadge late">hidden</span>' : ''}</button>`).join('')}
     </div>
+    <div class="pick-count" id="plCount"></div>
 
     <label style="margin-top:14px">Ban / pick order for this pool</label>
     <p class="muted small">Captains work through these steps for any match using this pool. Every map but one is banned or picked; the last one left is the decider. So the order needs exactly <strong>(maps − 1)</strong> steps.</p>
@@ -2241,7 +2250,7 @@ function editPool(existing) {
 
     <div class="actions"><button class="btn ghost" id="plCancel">Cancel</button><button class="btn primary" id="plSave">${existing ? 'Save' : 'Create pool'}</button></div>`;
   modal(body, root => {
-    const selectedIds = () => Array.from(root.querySelectorAll('.plCb')).filter(c => c.checked).map(c => c.value);
+    const selectedIds = () => Array.from(root.querySelectorAll('#plMaps .pick-item.on')).map(b => b.dataset.mapid);
 
     const renderSeq = () => {
       const host = root.querySelector('#plSeq');
@@ -2257,6 +2266,8 @@ function editPool(existing) {
           <button data-pldown="${i}" ${i === vseq.length - 1 ? 'disabled' : ''}>▼</button>
           <button data-pldel="${i}" class="vstep-del">✕</button>
         </span></div>`).join('');
+      const cnt = root.querySelector('#plCount');
+      if (cnt) cnt.textContent = nMaps ? nMaps + ' map' + (nMaps === 1 ? '' : 's') + ' selected' : 'Click maps to add them to this pool';
       const picks = vseq.filter(s => s.action === 'pick').length;
       const games = picks + 1;
       const sum = root.querySelector('#plSummary');
@@ -2269,7 +2280,10 @@ function editPool(existing) {
       host.querySelectorAll('[data-pldown]').forEach(b => b.onclick = () => { const i = +b.dataset.pldown; if (i < vseq.length - 1) { [vseq[i+1], vseq[i]] = [vseq[i], vseq[i+1]]; renderSeq(); } });
     };
 
-    root.querySelectorAll('.plCb').forEach(cb => cb.onchange = renderSeq);
+    root.querySelectorAll('#plMaps .pick-item').forEach(btn => btn.onclick = () => {
+      btn.classList.toggle('on');
+      renderSeq();
+    });
     root.querySelector('#plFillBans').onclick = () => {
       const need = Math.max(selectedIds().length - 1, 0);
       vseq = [];
@@ -2324,16 +2338,17 @@ function assignPool(pool) {
     const assignedHere = T.poolAssign[k] === pool.id;
     const assignedOther = T.poolAssign[k] && T.poolAssign[k] !== pool.id;
     const otherName = assignedOther ? ((T.mapPools.find(p => p.id === T.poolAssign[k]) || {}).name || '') : '';
-    return `<label class="pa-row"><input type="checkbox" class="paCb" value="${k}"${assignedHere ? ' checked' : ''}> ${esc(roundKeyLabel(bk, rd))}${assignedOther ? ' <span class="muted small">(currently: ' + esc(otherName) + ')</span>' : ''}</label>`;
+    return `<button type="button" class="pick-row${assignedHere ? ' on' : ''}" data-rkey="${k}">${esc(roundKeyLabel(bk, rd))}${assignedOther ? ' <span class="muted small" style="font-weight:400">(currently: ' + esc(otherName) + ')</span>' : ''}</button>`;
   }).join('');
   modal(`<h3>Assign "${esc(pool.name)}" to rounds</h3>
     <p class="muted small">Tick the rounds that use this pool. Unticking a round clears its assignment (it falls back to the default pool).</p>
-    ${rows}
+    <div class="pick-rows">${rows}</div>
     <div class="actions"><button class="btn ghost" id="paCancel">Cancel</button><button class="btn primary" id="paSave">Save</button></div>`, root => {
+    root.querySelectorAll('.pick-row').forEach(btn => btn.onclick = () => btn.classList.toggle('on'));
     root.querySelector('#paCancel').onclick = closeModal;
     root.querySelector('#paSave').onclick = async () => {
       const checked = {};
-      root.querySelectorAll('.paCb').forEach(c => { if (c.checked) checked[c.value] = 1; });
+      root.querySelectorAll('.pick-row.on').forEach(b => { checked[b.dataset.rkey] = 1; });
       try {
         // for each round key: if checked -> assign this pool; if it was this pool and now unchecked -> clear
         for (const k of roundKeys) {
@@ -3191,19 +3206,23 @@ function reportFfa(matchId) {
   modal(`
     <h3>Report result — Lobby ${m.index + 1}</h3>
     <p class="muted small">Tick the ${need === 1 ? 'winner' : 'top ' + need}.</p>
-    <div id="ffaWinners">
-      ${m.entrants.map(id => `
-        <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:14px;color:var(--text);margin:8px 0">
-          <input type="checkbox" value="${id}"${m.winners && m.winners.indexOf(id) >= 0 ? ' checked' : ''}> ${esc(teamName(id))}
-        </label>`).join('')}
+    <div class="pick-list" id="ffaWinners">
+      ${m.entrants.map(id => `<button type="button" class="pick-item${m.winners && m.winners.indexOf(id) >= 0 ? ' on' : ''}" data-tid="${id}">${esc(teamName(id))}</button>`).join('')}
     </div>
     <div class="actions">
       <button class="btn ghost" id="rCancel">Cancel</button>
       <button class="btn primary" id="rGo">Save result</button>
     </div>`, root => {
+    // clicking a name toggles it; don't allow more than the number of winners needed
+    root.querySelectorAll('#ffaWinners .pick-item').forEach(btn => btn.onclick = () => {
+      if (!btn.classList.contains('on') && root.querySelectorAll('#ffaWinners .pick-item.on').length >= need) {
+        return toast('Pick exactly ' + need + ' — unselect one first', true);
+      }
+      btn.classList.toggle('on');
+    });
     root.querySelector('#rCancel').onclick = closeModal;
     root.querySelector('#rGo').onclick = async () => {
-      const winners = Array.from(root.querySelectorAll('#ffaWinners input:checked')).map(i => i.value);
+      const winners = Array.from(root.querySelectorAll('#ffaWinners .pick-item.on')).map(b => b.dataset.tid);
       if (winners.length !== need) return toast('Select exactly ' + need, true);
       try {
         await api('/api/t/' + T.id + '/report', { matchId, winners, token: myToken() });
