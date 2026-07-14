@@ -740,14 +740,12 @@ async function renderHost() {
           <option value="random">Random</option>
         </select>
         <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
-          <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban maps before each match)
+          <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
         </label>
         <div id="cVetoCfg" style="display:none;margin-top:10px;padding:12px;background:var(--panel2);border:1px solid var(--line-solid);border-radius:4px">
           <label>Map pool <span class="muted" style="font-weight:400">(one per line)</span></label>
           <textarea id="cVetoMaps" rows="5" placeholder="Seton's Clutch&#10;Theta Passage&#10;Twin Rivers&#10;..."></textarea>
-          <label style="margin-top:10px">Maps to ban before each match</label>
-          <input type="number" id="cVetoBan" min="0" max="20" value="2" style="width:100px">
-          <div class="muted small" style="margin-top:6px">Captains alternate banning (higher seed first). Remaining map(s) are played.</div>
+          <div class="muted small" style="margin-top:8px">Enable it here with your pool, then build the exact ban/pick order (Bo1/Bo3/Bo5/Bo7 presets or your own) in the <strong>Admin → Map vetoes</strong> panel after creating. A Bo3 order is applied by default.</div>
         </div>
         <div style="margin-top:20px">
           <button class="btn primary" id="cGo">Create tournament</button>
@@ -829,10 +827,11 @@ async function renderHost() {
         seeding: document.getElementById('cSeed').value,
         veto: (function() {
           const en = document.getElementById('cVeto');
-          if (!en || !en.checked) return { enabled: false, mapPool: [], banCount: 0 };
+          if (!en || !en.checked) return { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
           const maps = document.getElementById('cVetoMaps').value.split('\n').map(x => x.trim()).filter(x => x);
-          const ban = parseInt(document.getElementById('cVetoBan').value, 10) || 0;
-          return { enabled: true, mapPool: maps, banCount: ban };
+          // default to a Bo3 order (A ban, B ban, A pick, B pick, decider); organizer refines in Admin
+          const seq = [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'A'},{action:'pick',team:'B'} ];
+          return { enabled: true, mapPool: maps, sequence: seq, mode: 'upfront' };
         })(),
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
       });
@@ -2003,49 +2002,92 @@ function vetoHTML(m) {
   if (!m.veto) return '';
   const v = m.veto;
   const myTeamId = (T.viewer && T.viewer.teamId) || null;
-  const isAdminV = viewerIsAdmin();
+  const isOrg = viewerIsOrganizer();
+  const nameA = v.teamA ? teamName(v.teamA) : 'A';
+  const nameB = v.teamB ? teamName(v.teamB) : 'B';
   const banned = v.banned || [];
-  const remaining = v.remaining || [];
+  const picks = (v.picks || []).slice().sort((a, b) => a.game - b.game);
+
+  // the full ordered game list once done: picks in order, then decider
+  const games = picks.slice();
+  if (v.decider) games.push(v.decider);
+
+  let h = '<div class="vetobox' + (v.done ? ' done' : '') + '">';
+
+  // A/B legend + organizer flip (only before the veto starts)
+  h += `<div class="veto-ab">
+    <span class="veto-abtag team-A">A: ${esc(nameA)}</span>
+    <span class="veto-abtag team-B">B: ${esc(nameB)}</span>
+    ${(isOrg && v.stepIndex === 0 && !v.done) ? '<button class="btn ghost small" data-veto-flip="' + m.id + '" style="margin-left:auto">Swap A/B</button>' : ''}
+  </div>`;
 
   if (v.done) {
-    // show final map(s)
-    if (remaining.length === 0) return '';
-    const label = remaining.length === 1 ? 'Map' : 'Maps';
-    return `<div class="vetobox done"><div class="veto-head">${label}</div>
-      <div class="veto-final">${remaining.map(mp => '<span class="veto-map play">' + esc(mp) + '</span>').join('')}</div></div>`;
+    h += '<div class="veto-head">Maps</div><div class="veto-games">';
+    h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span><span class="veto-map play">${esc(g.map)}</span>${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}</div>`).join('');
+    h += '</div></div>';
+    return h;
   }
 
-  const myTurn = (myTeamId && v.turn === myTeamId) || (isAdminV);
-  const turnName = v.turn ? teamName(v.turn) : '';
-  const canBanNow = (myTeamId && v.turn === myTeamId) || isAdminV;
-  const left = (v.banCount || 0) - banned.length;
+  // in progress: show whose turn + what action
+  const step = v.sequence[v.stepIndex];
+  const turnTeam = step ? (step.team === 'A' ? v.teamA : v.teamB) : null;
+  const turnName = turnTeam ? teamName(turnTeam) : '';
+  const actionWord = step ? (step.action === 'ban' ? 'ban' : 'pick') : '';
+  const canActNow = (myTeamId && turnTeam === myTeamId) || isOrg;
+  const stepsLeft = v.sequence.length - v.stepIndex;
 
-  let h = `<div class="vetobox"><div class="veto-head">Map veto \u00b7 ${esc(turnName)} to ban <span class="muted">(${left} left)</span></div>`;
-  if (banned.length) {
-    h += '<div class="veto-banned">' + banned.map(b => '<span class="veto-map banned">' + esc(b.map) + '</span>').join('') + '</div>';
+  h += `<div class="veto-head">Step ${v.stepIndex + 1} of ${v.sequence.length} · <strong>${esc(turnName)}</strong> to ${actionWord} <span class="muted">(${stepsLeft} left, then decider)</span></div>`;
+
+  // history so far: bans struck, picks as games
+  if (banned.length || picks.length) {
+    h += '<div class="veto-history">';
+    if (banned.length) h += '<div class="veto-banned">' + banned.map(b => '<span class="veto-map banned" title="Banned by ' + esc(teamName(b.by)) + '">' + esc(b.map) + '</span>').join('') + '</div>';
+    if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span><span class="veto-map play">' + esc(g.map) + '</span></div>').join('') + '</div>';
+    h += '</div>';
   }
-  h += '<div class="veto-remaining">' + remaining.map(mp =>
-    canBanNow
-      ? '<button class="veto-map ban" data-veto-map="' + esc(mp) + '">' + esc(mp) + '</button>'
+
+  // remaining maps: clickable if it's the viewer's turn (ban or pick)
+  const cls = step && step.action === 'pick' ? 'pick' : 'ban';
+  h += '<div class="veto-remaining">' + (v.remaining || []).map(mp =>
+    canActNow
+      ? '<button class="veto-map act-' + cls + '" data-veto-map="' + esc(mp) + '">' + esc(mp) + '</button>'
       : '<span class="veto-map avail">' + esc(mp) + '</span>'
-  ).join('') + '</div></div>';
+  ).join('') + '</div>';
+
+  // organizer undo
+  if (isOrg && v.stepIndex > 0) h += '<div style="margin-top:8px"><button class="btn ghost small" data-veto-undo="' + m.id + '">↶ Undo last step</button></div>';
+
+  h += '</div>';
   return h;
 }
 
 function wireVeto(box, m) {
-  if (!m.veto || m.veto.done) return;
+  if (!m.veto) return;
+  const v = m.veto;
+  const step = v.sequence ? v.sequence[v.stepIndex] : null;
+  const turnTeam = step ? (step.team === 'A' ? v.teamA : v.teamB) : null;
+
   box.querySelectorAll('[data-veto-map]').forEach(btn => {
     btn.onclick = async () => {
       const map = btn.dataset.vetoMap;
       const body = { matchId: m.id, map: map, token: myToken() };
-      // if organizer is banning on behalf of the team whose turn it is
-      if (viewerIsAdmin() && (!T.viewer || T.viewer.teamId !== m.veto.turn)) body.asTeam = m.veto.turn;
-      try {
-        await api('/api/t/' + T.id + '/veto_ban', body);
-        await refresh();
-      } catch (e) { toast(e.message, true); }
+      // organizer acting on behalf of the team whose turn it is
+      if (viewerIsOrganizer() && (!T.viewer || T.viewer.teamId !== turnTeam)) body.asTeam = turnTeam;
+      try { await api('/api/t/' + T.id + '/veto_action', body); await refresh(); }
+      catch (e) { toast(e.message, true); }
     };
   });
+  const flip = box.querySelector('[data-veto-flip]');
+  if (flip) flip.onclick = async () => {
+    const newA = (v.teamA === m.team1) ? m.team2 : m.team1;
+    try { await api('/api/t/' + T.id + '/veto_setab', { matchId: m.id, teamA: newA, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const undo = box.querySelector('[data-veto-undo]');
+  if (undo) undo.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/veto_undo', { matchId: m.id, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
 }
 
 let connectorRedraws = [];
@@ -2961,15 +3003,38 @@ async function drawAdmin(el) {
   </div>`;
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0 && T.competition === 'team') {
-    const v = T.veto || { enabled: false, mapPool: [], banCount: 0 };
+    const v = T.veto || { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
     html += `<div class="panel section"><h2>Map vetoes</h2>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="vtEnabled" style="width:auto"${v.enabled ? ' checked' : ''}> Enable map vetoes</label>
-      <div id="vtCfg" style="${v.enabled ? '' : 'display:none;'}margin-top:10px">
-        <label>Map pool <span class="muted" style="font-weight:400">(one per line, at least 2)</span></label>
+      <div id="vtCfg" style="${v.enabled ? '' : 'display:none;'}margin-top:12px">
+        <label>Map pool <span class="muted" style="font-weight:400">(one per line)</span></label>
         <textarea id="vtMaps" rows="6">${esc((v.mapPool || []).join('\n'))}</textarea>
-        <label style="margin-top:10px">Maps to ban before each match</label>
-        <input type="number" id="vtBan" min="0" max="20" value="${v.banCount || 0}" style="width:100px">
-        <div class="muted small" style="margin-top:6px">Captains alternate banning (higher seed bans first). Remaining map(s) are what they play. Editable until the bracket starts.</div>
+
+        <label style="margin-top:14px">Ban / pick order</label>
+        <p class="muted small">Build the exact sequence captains follow. Team A and Team B alternate however you set it. Picks become games in order (Game 1, Game 2, ...); the last map left over is the decider. Start from a preset, or build your own.</p>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">
+          <span class="muted small" style="align-self:center">Presets:</span>
+          <button class="btn ghost small" data-vpreset="bo1">Bo1</button>
+          <button class="btn ghost small" data-vpreset="bo3">Bo3</button>
+          <button class="btn ghost small" data-vpreset="bo5">Bo5</button>
+          <button class="btn ghost small" data-vpreset="bo7">Bo7</button>
+          <button class="btn ghost small" data-vpreset="clear">Clear</button>
+        </div>
+        <div id="vtSeq" class="vseq"></div>
+        <div class="row" style="gap:6px;margin-top:10px">
+          <button class="btn ghost small" data-vadd="ban:A">+ A bans</button>
+          <button class="btn ghost small" data-vadd="ban:B">+ B bans</button>
+          <button class="btn ghost small" data-vadd="pick:A">+ A picks</button>
+          <button class="btn ghost small" data-vadd="pick:B">+ B picks</button>
+        </div>
+        <div id="vtSummary" class="veto-summary"></div>
+
+        <label style="margin-top:14px">When is the veto done?</label>
+        <select id="vtMode" style="max-width:320px">
+          <option value="upfront"${v.mode !== 'continuous' ? ' selected' : ''}>All upfront — captains complete the whole veto before game 1</option>
+          <option value="continuous"${v.mode === 'continuous' ? ' selected' : ''}>Continuous — reveal steps as games are played</option>
+        </select>
+        <div class="muted small" style="margin-top:8px">Team A defaults to the higher seed; you can flip A/B per match from the bracket. Editable until the bracket starts.</div>
       </div>
       <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
     </div>`;
@@ -2989,17 +3054,80 @@ async function drawAdmin(el) {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
 
-  // ---- veto config ----
+  // ---- veto config with sequence editor ----
   const vtEnabled = document.getElementById('vtEnabled');
   if (vtEnabled) {
+    // working copy of the sequence being edited
+    let vseq = (T.veto && Array.isArray(T.veto.sequence)) ? T.veto.sequence.map(s => ({ action: s.action, team: s.team })) : [];
+
+    const renderSeq = () => {
+      const host = document.getElementById('vtSeq');
+      if (!host) return;
+      if (vseq.length === 0) { host.innerHTML = '<div class="muted small" style="padding:8px 0">No steps yet — use a preset or the buttons below.</div>'; }
+      else {
+        host.innerHTML = vseq.map((s, i) => `<div class="vstep">
+          <span class="vstep-n">${i + 1}</span>
+          <span class="vstep-team team-${s.team}">Team ${s.team}</span>
+          <span class="vstep-act ${s.action}">${s.action === 'ban' ? 'BAN' : 'PICK'}</span>
+          <span class="vstep-ctl">
+            <button data-vup="${i}" ${i === 0 ? 'disabled' : ''}>▲</button>
+            <button data-vdown="${i}" ${i === vseq.length - 1 ? 'disabled' : ''}>▼</button>
+            <button data-vdel="${i}" class="vstep-del">✕</button>
+          </span>
+        </div>`).join('');
+      }
+      // summary: how many games this produces
+      const picks = vseq.filter(s => s.action === 'pick').length;
+      const bans = vseq.filter(s => s.action === 'ban').length;
+      const maps = document.getElementById('vtMaps').value.split('\n').map(x => x.trim()).filter(x => x);
+      const games = picks + 1; // picks + decider
+      const need = vseq.length + 1; // steps consume one map each, +1 decider
+      const sumEl = document.getElementById('vtSummary');
+      if (sumEl) {
+        let msg = `${bans} ban${bans === 1 ? '' : 's'}, ${picks} pick${picks === 1 ? '' : 's'} → <strong>${games} game${games === 1 ? '' : 's'}</strong> (${picks} picked + 1 decider). Needs a pool of at least ${need} maps`;
+        if (maps.length && maps.length < need) msg += ` <span class="warn">— you have ${maps.length}</span>`;
+        sumEl.innerHTML = msg + '.';
+      }
+      // wire step controls
+      host.querySelectorAll('[data-vdel]').forEach(b => b.onclick = () => { vseq.splice(+b.dataset.vdel, 1); renderSeq(); });
+      host.querySelectorAll('[data-vup]').forEach(b => b.onclick = () => { const i = +b.dataset.vup; if (i > 0) { [vseq[i-1], vseq[i]] = [vseq[i], vseq[i-1]]; renderSeq(); } });
+      host.querySelectorAll('[data-vdown]').forEach(b => b.onclick = () => { const i = +b.dataset.vdown; if (i < vseq.length - 1) { [vseq[i+1], vseq[i]] = [vseq[i], vseq[i+1]]; renderSeq(); } });
+    };
+
+    // presets — mirror the common competitive formats (A/B alternate; picks become games)
+    const PRESETS = {
+      bo1: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'} ], // ban down to 1 (needs 5-map pool)
+      bo3: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'A'},{action:'pick',team:'B'} ], // 2 picks + decider
+      bo5: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'} ],
+      bo7: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'} ]
+    };
+
     vtEnabled.onchange = () => { document.getElementById('vtCfg').style.display = vtEnabled.checked ? 'block' : 'none'; };
+    const vtMapsEl = document.getElementById('vtMaps');
+    if (vtMapsEl) vtMapsEl.oninput = renderSeq;
+    el.querySelectorAll('[data-vpreset]').forEach(b => b.onclick = () => {
+      const p = b.dataset.vpreset;
+      vseq = (p === 'clear') ? [] : PRESETS[p].map(s => ({ action: s.action, team: s.team }));
+      renderSeq();
+    });
+    el.querySelectorAll('[data-vadd]').forEach(b => b.onclick = () => {
+      const [action, team] = b.dataset.vadd.split(':');
+      vseq.push({ action, team });
+      renderSeq();
+    });
+    renderSeq();
+
     document.getElementById('vtSave').onclick = async () => {
       const maps = document.getElementById('vtMaps').value.split('\n').map(x => x.trim()).filter(x => x);
-      const ban = parseInt(document.getElementById('vtBan').value, 10) || 0;
+      const mode = document.getElementById('vtMode').value;
       const enabled = vtEnabled.checked;
-      if (enabled && maps.length < 2) return toast('Map pool needs at least 2 maps', true);
+      if (enabled) {
+        if (maps.length < 2) return toast('Map pool needs at least 2 maps', true);
+        if (vseq.length < 1) return toast('Add at least one ban or pick step', true);
+        if (maps.length < vseq.length + 1) return toast('Pool too small for this sequence — need at least ' + (vseq.length + 1) + ' maps', true);
+      }
       try {
-        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mapPool: maps, banCount: ban }, admin: adminToken() });
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mapPool: maps, sequence: vseq, mode }, admin: adminToken() });
         await refresh();
         toast('Vetoes saved');
       } catch (e) { toast(e.message, true); }

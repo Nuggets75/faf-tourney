@@ -63,7 +63,7 @@ function loadDB() {
     if (t.lobbyOptions === undefined) t.lobbyOptions = '';
     if (t.mods === undefined) t.mods = '';
     if (t.imported === undefined) t.imported = false;
-    if (t.veto === undefined) t.veto = { enabled: false, mapPool: [], banCount: 0 };
+    if (t.veto === undefined) t.veto = { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
     if (!t.lateToken) t.lateToken = uid(12);
     if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
     if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
@@ -117,18 +117,38 @@ function canOrganize(t, req, body) {
   return false;
 }
 function cleanVeto(v) {
-  if (!v || typeof v !== 'object') return { enabled: false, mapPool: [], banCount: 0 };
+  const EMPTY = { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
+  if (!v || typeof v !== 'object') return EMPTY;
   const pool = Array.isArray(v.mapPool)
     ? v.mapPool.map(x => String(x || '').trim()).filter(x => x).slice(0, 64)
     : [];
   // dedupe preserving order
   const seen = {}, dedup = [];
   for (const m of pool) { const k = m.toLowerCase(); if (!seen[k]) { seen[k] = 1; dedup.push(m); } }
-  let ban = parseInt(v.banCount, 10);
-  if (!(ban >= 0)) ban = 0;
-  // can't ban more than pool-1 (must leave at least 1 map)
-  if (dedup.length > 0 && ban > dedup.length - 1) ban = dedup.length - 1;
-  return { enabled: !!v.enabled && dedup.length >= 2, mapPool: dedup, banCount: ban };
+
+  // sequence: ordered [{action:'ban'|'pick', team:'A'|'B'}]. The leftover map after the
+  // sequence is the auto-decider (played as the final game).
+  let seq = [];
+  if (Array.isArray(v.sequence)) {
+    for (const step of v.sequence) {
+      if (!step || typeof step !== 'object') continue;
+      const action = step.action === 'pick' ? 'pick' : (step.action === 'ban' ? 'ban' : null);
+      const team = step.team === 'B' ? 'B' : (step.team === 'A' ? 'A' : null);
+      if (action && team) seq.push({ action, team });
+    }
+  }
+  seq = seq.slice(0, 32);
+  // a sequence that removes/assigns more maps than exist is invalid; cap it so at least the
+  // decider remains. steps consume one map each; need pool > steps (leftover = decider).
+  if (dedup.length > 0 && seq.length > dedup.length - 1) seq = seq.slice(0, dedup.length - 1);
+
+  const mode = v.mode === 'continuous' ? 'continuous' : 'upfront';
+  return {
+    enabled: !!v.enabled && dedup.length >= 2 && seq.length >= 1,
+    mapPool: dedup,
+    sequence: seq,
+    mode: mode
+  };
 }
 
 function cleanDate(v) {
@@ -188,7 +208,7 @@ function publicView(t) {
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding,
-    veto: t.veto || { enabled: false, mapPool: [], banCount: 0 },
+    veto: t.veto || { enabled: false, mapPool: [], sequence: [], mode: 'upfront' },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
     challongeDate: t.challongeDate || null,
@@ -221,23 +241,53 @@ function publicView(t) {
 // slot values: null = pending, 'BYE' = confirmed empty, otherwise teamId
 
 // Initialize the veto state for a match, if the tournament has vetoes enabled.
-// remaining = the map pool; banned = []; turn = the team that bans next (higher seed first).
+// A/B default from seed (higher seed = A), organizer can reassign per match. The sequence
+// of ban/pick steps is walked one at a time; picks fill ordered game slots; leftover = decider.
 function initVeto(t, m) {
   if (!t.veto || !t.veto.enabled) return;
   if (m.bracket === 'ffa') return; // vetoes are for head-to-head matches only
   if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return;
-  if (t.veto.mapPool.length < 2) return;
-  // higher seed (lower seed number) bans first
+  if (t.veto.mapPool.length < 2 || !t.veto.sequence || !t.veto.sequence.length) return;
+  if (m.veto && m.veto.stepIndex > 0) return; // already started — don't clobber progress
+  // default: higher seed (lower seed number) is A
   const s1 = (teamById(t, m.team1) || {}).seed || 999;
   const s2 = (teamById(t, m.team2) || {}).seed || 999;
-  const first = s1 <= s2 ? m.team1 : m.team2;
+  const teamA = (m.veto && m.veto.teamA) || (s1 <= s2 ? m.team1 : m.team2);
+  const teamB = teamA === m.team1 ? m.team2 : m.team1;
   m.veto = {
     remaining: t.veto.mapPool.slice(),
-    banned: [],           // [{ map, by }]
-    banCount: t.veto.banCount,
-    turn: first,
-    done: t.veto.banCount === 0 // if 0 bans, veto is trivially complete
+    banned: [],                 // [{ map, by:teamId }]
+    picks: [],                  // [{ map, by:teamId, game:N }] ordered game slots
+    sequence: t.veto.sequence.slice(),
+    mode: t.veto.mode || 'upfront',
+    stepIndex: 0,
+    teamA: teamA,
+    teamB: teamB,
+    done: false
   };
+  // resolve the decider immediately if the sequence leaves exactly one map (handled at completion)
+}
+
+// which team's turn is it, and what action, at the current step? returns {team, action}|null
+function vetoCurrentStep(m) {
+  if (!m.veto || m.veto.done) return null;
+  const step = m.veto.sequence[m.veto.stepIndex];
+  if (!step) return null;
+  const team = step.team === 'A' ? m.veto.teamA : m.veto.teamB;
+  return { team, action: step.action, ab: step.team };
+}
+
+// advance the veto after a ban/pick; completes when the sequence is exhausted.
+function vetoAdvance(t, m) {
+  m.veto.stepIndex++;
+  if (m.veto.stepIndex >= m.veto.sequence.length || m.veto.remaining.length <= 1) {
+    // done — the single leftover (if any) becomes the decider, played as the last game
+    m.veto.done = true;
+    if (m.veto.remaining.length === 1) {
+      const gameNum = m.veto.picks.length + 1;
+      m.veto.decider = { map: m.veto.remaining[0], game: gameNum };
+    }
+  }
 }
 
 let _buildingDivision = 0; // set while a division's bracket is being generated
@@ -2009,32 +2059,69 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
-    // score report — supports running (partial) scores
-    if (sub === 'veto_ban') {
+    // Assign which team is A vs B for a match's veto (organizer only; before the veto starts).
+    if (sub === 'veto_setab') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const m = matchById(t, b.matchId);
+      if (!m || !m.veto) return bad(res, 'No veto for this match');
+      if (m.veto.stepIndex > 0) return bad(res, 'The veto has already started');
+      const aTeam = b.teamA;
+      if (aTeam !== m.team1 && aTeam !== m.team2) return bad(res, 'teamA must be one of the two teams');
+      m.veto.teamA = aTeam;
+      m.veto.teamB = aTeam === m.team1 ? m.team2 : m.team1;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Perform the next veto step (a ban or a pick, per the sequence).
+    if (sub === 'veto_action') {
       if (!t.veto || !t.veto.enabled) return bad(res, 'Vetoes are not enabled for this tournament');
       const m = matchById(t, b.matchId);
       if (!m) return bad(res, 'Match not found');
       if (!m.veto) return bad(res, 'No veto in progress for this match');
-      if (m.veto.done) return bad(res, 'Vetoes are already complete for this match');
+      if (m.veto.done) return bad(res, 'The veto is already complete for this match');
+      const cur = vetoCurrentStep(m);
+      if (!cur) return bad(res, 'No veto step pending');
+
       const admin = isAdmin(t, b.token) || isOrganizer(t, req);
       const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
-      // who is allowed to ban right now: the team whose turn it is (or the organizer acting for them)
-      const actingTeam = admin ? (b.asTeam || m.veto.turn) : (capTeam && capTeam.id);
-      if (!admin && !capTeam) return json(res, 403, { error: 'Only the match captains or the organizer can ban' });
-      if (!admin && capTeam.id !== m.veto.turn) return bad(res, 'Not your turn to ban');
-      if (admin && actingTeam !== m.veto.turn) return bad(res, 'It is the other team\u2019s turn to ban');
+      if (!admin && !capTeam) return json(res, 403, { error: 'Only the match captains or the organizer can act' });
+      // the acting team must be whoever's turn it is (organizer may act on their behalf)
+      if (!admin && capTeam.id !== cur.team) return bad(res, 'Not your turn');
+      if (admin && b.asTeam && b.asTeam !== cur.team) return bad(res, 'It is the other team\u2019s turn');
+
       const map = String(b.map || '').trim();
       const idx = m.veto.remaining.findIndex(x => x.toLowerCase() === map.toLowerCase());
-      if (idx < 0) return bad(res, 'That map is not available to ban');
-      // perform the ban
-      const banned = m.veto.remaining.splice(idx, 1)[0];
-      m.veto.banned.push({ map: banned, by: m.veto.turn });
-      // advance turn to the other team
-      m.veto.turn = (m.veto.turn === m.team1) ? m.team2 : m.team1;
-      // complete?
-      if (m.veto.banned.length >= m.veto.banCount || m.veto.remaining.length <= 1) {
-        m.veto.done = true;
-        m.veto.turn = null;
+      if (idx < 0) return bad(res, 'That map is not available');
+
+      const taken = m.veto.remaining.splice(idx, 1)[0];
+      if (cur.action === 'ban') {
+        m.veto.banned.push({ map: taken, by: cur.team });
+      } else { // pick -> next game slot
+        const gameNum = m.veto.picks.length + 1;
+        m.veto.picks.push({ map: taken, by: cur.team, game: gameNum });
+      }
+      vetoAdvance(t, m);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Undo the last veto step (organizer only) — for misclicks.
+    if (sub === 'veto_undo') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const m = matchById(t, b.matchId);
+      if (!m || !m.veto) return bad(res, 'No veto for this match');
+      if (m.veto.stepIndex === 0 && !m.veto.done) return bad(res, 'Nothing to undo');
+      // step back one
+      if (m.veto.done) { m.veto.done = false; m.veto.decider = null; }
+      if (m.veto.stepIndex > 0) m.veto.stepIndex--;
+      const step = m.veto.sequence[m.veto.stepIndex];
+      if (step) {
+        // pull the map that was banned/picked at this step back into remaining
+        let restored = null;
+        if (step.action === 'ban' && m.veto.banned.length) restored = m.veto.banned.pop().map;
+        else if (step.action === 'pick' && m.veto.picks.length) restored = m.veto.picks.pop().map;
+        if (restored) m.veto.remaining.push(restored);
       }
       saveDB();
       return json(res, 200, { ok: true });
