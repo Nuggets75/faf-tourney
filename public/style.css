@@ -340,6 +340,30 @@ tbody tr:hover { background: #ffffff05; }
 .veto-mini-link:hover { text-decoration: underline; }
 .veto-mini.done { display: flex; flex-wrap: wrap; gap: 4px; }
 .veto-mini-map { font-family: var(--mono); font-size: 11px; color: var(--green); border: 1px solid #2f6b45; background: #12331f; border-radius: 3px; padding: 1px 6px; }
+.mapdb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.mapdb-card { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+.mapdb-thumb { height: 150px; background: #0c1219; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: pointer; }
+.mapdb-thumb.noimg { cursor: default; }
+.mapdb-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.mapdb-noimg-label { color: var(--muted); font-size: 12px; }
+.mapdb-body { padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.mapdb-name { font-weight: 600; font-size: 15px; }
+.mapdb-desc { font-size: 13px; color: var(--text2, #b8c0cc); white-space: pre-wrap; }
+.mapdb-used { font-size: 11px; color: var(--amber); }
+.mapdb-used.muted { color: var(--muted); }
+.mapdb-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.me-image { display: flex; gap: 14px; align-items: flex-start; }
+.me-thumb { width: 140px; height: 100px; background: #0c1219; border: 1px solid var(--line-solid); border-radius: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
+.me-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.me-image-ctl { flex: 1; }
+.map-lightbox-img { width: 100%; max-height: 60vh; object-fit: contain; border-radius: 6px; cursor: zoom-in; margin: 6px 0; background: #0c1219; }
+.map-desc { font-size: 14px; color: var(--text2, #b8c0cc); white-space: pre-wrap; margin: 8px 0; padding: 10px; background: var(--panel2); border-radius: 4px; }
+.veto-map.has-info { cursor: pointer; }
+.veto-map.has-info:hover { border-color: var(--amber); }
+.vpool-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; border: 1px solid var(--line-solid); border-radius: 4px; padding: 8px; }
+.vpool-item { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; padding: 2px 0; }
+.vpool-item input { width: auto; }
+
 
 
 .btn.faf { display: block; width: 100%; background: #2d5a9e; color: #eaf2fb; border: 1px solid #3f74c4; font-weight: 600; letter-spacing: .5px; }

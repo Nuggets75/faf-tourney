@@ -66,7 +66,7 @@ function capToken() {
 }
 function myToken() { return adminToken() || capToken(); }
 
-const VALID_TABS = ['overview', 'players', 'teams', 'bracket', 'vetoes', 'standings', 'admin'];
+const VALID_TABS = ['overview', 'players', 'teams', 'bracket', 'maps', 'vetoes', 'standings', 'admin'];
 let pendingOrganizerClaim = null; // { id, token } — set when an ?admin= link is opened
 function captureTokensFromURL() {
   const id = tourneyId();
@@ -108,6 +108,49 @@ function playerName(id) {
 function mapsFor(bracket, round) {
   return (T.maps && T.maps[bracket + ':' + round]) || [];
 }
+// resolve a map id to its DB object (or null)
+function mapObj(id) {
+  if (!T.mapDb) return null;
+  for (const m of T.mapDb) if (m.id === id) return m;
+  return null;
+}
+// resolve a map id to its display name (falls back to the raw value for legacy string data)
+function mapName(id) {
+  const m = mapObj(id);
+  return m ? m.name : (id || '');
+}
+// a clickable map chip that opens the map's image/description (if any)
+function mapChip(id, cls) {
+  const m = mapObj(id);
+  const name = m ? m.name : (id || '');
+  const hasInfo = m && (m.image || m.description);
+  return '<span class="veto-map ' + (cls || '') + (hasInfo ? ' has-info' : '') + '"' + (hasInfo ? ' data-map-info="' + esc(id) + '"' : '') + '>' + esc(name) + '</span>';
+}
+// open a lightbox with the map's preview image (enlargeable) and description
+function showMapInfo(id) {
+  const m = mapObj(id);
+  if (!m) return;
+  const hasImg = !!m.image;
+  const body = `
+    <h3>${esc(m.name)}</h3>
+    ${hasImg ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}" class="map-lightbox-img" id="mapBig">` : ''}
+    ${m.description ? `<div class="map-desc">${esc(m.description)}</div>` : '<p class="muted small">No description.</p>'}
+    <div class="actions"><button class="btn ghost" id="miClose">Close</button></div>`;
+  modal(body, root => {
+    root.querySelector('#miClose').onclick = closeModal;
+    const big = root.querySelector('#mapBig');
+    if (big) big.onclick = () => window.open('/map-images/' + m.image, '_blank');
+  });
+}
+// delegate clicks on any [data-map-info] element to the lightbox — but NOT on the veto
+// action buttons (those perform the ban/pick; info is reachable from non-actionable chips)
+document.addEventListener('click', e => {
+  const el = e.target.closest && e.target.closest('[data-map-info]');
+  if (el && !el.hasAttribute('data-veto-map')) {
+    const id = el.getAttribute('data-map-info');
+    if (id && mapObj(id)) { e.preventDefault(); showMapInfo(id); }
+  }
+});
 
 function roundLabel(m) {
   if (m.bracket === 'gf') return T.bracketType === 'swiss' ? 'FINAL' : 'GRAND FINAL';
@@ -972,6 +1015,8 @@ function drawTournament() {
   // Vetoes tab appears once the bracket is running and vetoes are enabled
   const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
   if (vetoActive) tabs.push('vetoes');
+  // Maps tab: always available (useful overview of maps and where they're played)
+  tabs.push('maps');
   tabs.push('standings');
   if (admin) tabs.push('admin');
   if (!tabs.includes(currentTab)) currentTab = 'overview';
@@ -980,7 +1025,6 @@ function drawTournament() {
     if (tb === 'teams' && T.status === 'draft') return 'Draft';
     if (tb === 'bracket') return T.competition === 'ffa' || T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
     if (tb === 'vetoes') {
-      // badge with how many vetoes still need action
       const pending = T.matches.filter(m => m.veto && !m.veto.done).length;
       return pending > 0 ? 'Vetoes (' + pending + ')' : 'Vetoes';
     }
@@ -1013,6 +1057,7 @@ function drawTournament() {
   else if (currentTab === 'teams') drawTeams(body);
   else if (currentTab === 'bracket') drawBracket(body);
   else if (currentTab === 'vetoes') drawVetoes(body);
+  else if (currentTab === 'maps') drawMaps(body);
   else if (currentTab === 'standings') drawStandings(body);
   else if (currentTab === 'admin') drawAdmin(body);
 }
@@ -1137,7 +1182,7 @@ function fillQueue(el, matches, withReport) {
       if (m.status === 'live') inner += `<span class="livechip">LIVE</span>`;
     }
     const maps = mapsFor(m.bracket, m.round);
-    if (maps.length) inner += `<span class="mono small muted" title="Maps">${esc(maps.map((mp, i) => 'G' + (i + 1) + ': ' + mp).join(' · '))}</span>`;
+    if (maps.length) inner += `<span class="mono small muted" title="Maps">${esc(maps.map((mp, i) => 'G' + (i + 1) + ': ' + mapName(mp)).join(' · '))}</span>`;
     const showBtn = !T.imported && withReport && (m.status === 'done' ? viewerIsAdmin() : canReportMatch(m));
     if (showBtn) inner += `<button class="btn amber small" data-m="${m.id}">Report</button>`;
     div.innerHTML = inner;
@@ -1887,7 +1932,7 @@ function openStartConfig() {
 // ----- bracket / rounds -----
 
 function mapRows(maps) {
-  return maps.map((m, i) => '<div class="maprow"><span class="mapg">GAME ' + (i + 1) + '</span><span>' + esc(m) + '</span></div>').join('');
+  return maps.map((id, i) => '<div class="maprow"><span class="mapg">GAME ' + (i + 1) + '</span><span>' + esc(mapName(id)) + '</span></div>').join('');
 }
 
 function mapsLine(bracket, round, el) {
@@ -1906,25 +1951,34 @@ function mapsLine(bracket, round, el) {
 
 function editMaps(bracket, round) {
   const existing = mapsFor(bracket, round);
-  // suggest as many fields as the highest BO in that round, min existing
   const roundMatches = T.matches.filter(m => m.bracket === bracket && m.round === round);
   const maxBo = roundMatches.length ? Math.max.apply(null, roundMatches.map(m => m.bo)) : 5;
   const count = Math.max(maxBo, existing.length, 1);
-  const inputs = [];
+  const db = (T.mapDb || []);
+  if (db.length === 0) {
+    modal(`<h3>Maps — ${esc(bracket === 'gf' ? 'Grand final' : bracket.toUpperCase() + ' round ' + round)}</h3>
+      <p class="muted small">No maps in the database yet. Add maps on the <strong>Maps</strong> tab first, then assign them here.</p>
+      <div class="actions"><button class="btn ghost" id="mCancel">Close</button></div>`, root => {
+      root.querySelector('#mCancel').onclick = closeModal;
+    });
+    return;
+  }
+  const opt = (sel) => '<option value="">— none —</option>' + db.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
+  const selects = [];
   for (let i = 0; i < count; i++) {
-    inputs.push(`<input type="text" maxlength="50" class="mapInput" style="margin-bottom:7px" placeholder="Game ${i + 1} map" value="${esc(existing[i] || '')}">`);
+    selects.push(`<label style="display:block;margin-bottom:7px">Game ${i + 1} <select class="mapSel" style="width:100%">${opt(existing[i] || '')}</select></label>`);
   }
   modal(`
     <h3>Maps — ${esc(bracket === 'gf' ? 'Grand final' : bracket.toUpperCase() + ' round ' + round)}</h3>
-    <p class="muted small">One map per game of the series (Bo${maxBo}). Everyone in this round plays the same maps. Leave fields empty to skip.</p>
-    ${inputs.join('')}
+    <p class="muted small">Pick a map from the database for each game of the series (Bo${maxBo}). ${T.veto && T.veto.enabled ? 'Note: if map vetoes are enabled, captains pick the maps per match — this round pool is a fallback.' : 'Everyone in this round plays these maps.'}</p>
+    ${selects.join('')}
     <div class="actions">
       <button class="btn ghost" id="mCancel">Cancel</button>
       <button class="btn primary" id="mGo">Save maps</button>
     </div>`, root => {
     root.querySelector('#mCancel').onclick = closeModal;
     root.querySelector('#mGo').onclick = async () => {
-      const maps = Array.from(root.querySelectorAll('.mapInput')).map(i => i.value.trim()).filter(v => v);
+      const maps = Array.from(root.querySelectorAll('.mapSel')).map(s => s.value).filter(v => v);
       try {
         await api('/api/t/' + T.id + '/set_maps', { bracket, round, maps, admin: adminToken() });
         closeModal();
@@ -2019,7 +2073,160 @@ function vetoIndicator(m) {
   const games = picks.slice();
   if (v.decider) games.push(v.decider);
   if (!games.length) return '';
-  return `<div class="veto-mini done">${games.map(g => '<span class="veto-mini-map">' + esc(g.map) + '</span>').join('')}</div>`;
+  return `<div class="veto-mini done">${games.map(g => '<span class="veto-mini-map">' + esc(mapName(g.map)) + '</span>').join('')}</div>`;
+}
+
+// ---- Maps tab: the map database + where each map is played ----
+function drawMaps(el) {
+  const admin = viewerIsOrganizer();
+  const db = T.mapDb || [];
+
+  // build a "where used" index: mapId -> [round labels]
+  const usage = {};
+  for (const key of Object.keys(T.maps || {})) {
+    const [bracket, round] = key.split(':');
+    for (const id of (T.maps[key] || [])) {
+      if (!usage[id]) usage[id] = [];
+      const lbl = bracket === 'gf' ? 'Grand final' : (bracket === 'sw' ? 'Swiss R' + round : (bracket === 'ffa' ? 'FFA R' + round : (bracket === 'lb' ? 'LB R' + round : (T.bracketType === 'double' ? 'WB R' + round : 'R' + round))));
+      usage[id].push(lbl);
+    }
+  }
+  // also note maps in the veto pool
+  const inVetoPool = {};
+  if (T.veto && T.veto.enabled) for (const id of (T.veto.mapPool || [])) inVetoPool[id] = 1;
+
+  let html = '';
+
+  if (admin) {
+    const published = db.filter(m => m.published).length;
+    html += `<div class="panel section">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><h2 style="margin:0">Map database</h2><div class="muted small">${db.length} map${db.length === 1 ? '' : 's'} · ${published} published${db.length - published > 0 ? ' · ' + (db.length - published) + ' hidden (prep)' : ''}</div></div>
+        <button class="btn primary" id="mapAdd">+ Add map</button>
+      </div>
+      <p class="muted small" style="margin-top:8px">Add every map that might be played. Hidden maps are only visible to organizers — use that to prep a pool before revealing it. When map vetoes are on, captains ban/pick from this pool; you can also assign maps to specific rounds on the Bracket tab.</p>
+    </div>`;
+  }
+
+  const visible = admin ? db : db.filter(m => m.published);
+  if (visible.length === 0) {
+    html += `<div class="panel"><div class="empty">${admin ? 'No maps yet. Click "Add map" to build your pool.' : 'No maps have been published yet.'}</div></div>`;
+  } else {
+    html += '<div class="panel section"><div class="mapdb-grid">';
+    for (const m of visible) {
+      const used = usage[m.id] || [];
+      const badges = [];
+      if (admin && !m.published) badges.push('<span class="idbadge late">hidden</span>');
+      if (inVetoPool[m.id]) badges.push('<span class="idbadge verified">veto pool</span>');
+      html += `<div class="mapdb-card">
+        <div class="mapdb-thumb${m.image ? '' : ' noimg'}" ${m.image ? 'data-map-info="' + esc(m.id) + '"' : ''}>
+          ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">no image</span>'}
+        </div>
+        <div class="mapdb-body">
+          <div class="mapdb-name">${esc(m.name)} ${badges.join(' ')}</div>
+          ${m.description ? `<div class="mapdb-desc">${esc(m.description)}</div>` : ''}
+          ${used.length ? `<div class="mapdb-used">Played in: ${used.map(u => esc(u)).join(', ')}</div>` : (admin ? '<div class="mapdb-used muted">Not assigned to a round yet</div>' : '')}
+          ${admin ? `<div class="mapdb-actions">
+            <button class="btn ghost small" data-mapedit="${m.id}">Edit</button>
+            <button class="btn ghost small" data-mappub="${m.id}">${m.published ? 'Hide' : 'Publish'}</button>
+            <button class="btn danger small" data-mapdel="${m.id}">Delete</button>
+          </div>` : ''}
+        </div>
+      </div>`;
+    }
+    html += '</div></div>';
+  }
+
+  el.innerHTML = html;
+
+  const addBtn = document.getElementById('mapAdd');
+  if (addBtn) addBtn.onclick = () => editMapEntry(null);
+  el.querySelectorAll('[data-mapedit]').forEach(b => b.onclick = () => editMapEntry(mapObj(b.dataset.mapedit)));
+  el.querySelectorAll('[data-mappub]').forEach(b => b.onclick = async () => {
+    const m = mapObj(b.dataset.mappub);
+    try { await api('/api/t/' + T.id + '/map_publish', { id: m.id, published: m.published ? 0 : 1, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-mapdel]').forEach(b => b.onclick = async () => {
+    const m = mapObj(b.dataset.mapdel);
+    const used = (usage[m.id] || []).length || inVetoPool[m.id];
+    if (!confirm('Delete "' + m.name + '"?' + (used ? ' It will be removed from rounds and the veto pool too.' : ''))) return;
+    try { await api('/api/t/' + T.id + '/map_delete', { id: m.id, admin: adminToken() }); toast('Map deleted'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+// add/edit a single map (name, description, image upload + preview, publish)
+function editMapEntry(existing) {
+  const m = existing || { name: '', description: '', image: null, published: 0 };
+  const body = `
+    <h3>${existing ? 'Edit map' : 'Add map'}</h3>
+    <label>Map name</label>
+    <input type="text" id="meName" maxlength="60" value="${esc(m.name)}" placeholder="e.g. Seton's Clutch" autocomplete="off">
+    <label style="margin-top:10px">Lobby settings / description <span class="muted" style="font-weight:400">(optional)</span></label>
+    <textarea id="meDesc" rows="3" maxlength="1000" placeholder="e.g. Slots 1 &amp; 2 closed, 3 &amp; 4 mex spawns enabled, no air">${esc(m.description || '')}</textarea>
+    <label style="margin-top:10px">Preview image <span class="muted" style="font-weight:400">(optional, max 5MB)</span></label>
+    <div class="me-image">
+      <div class="me-thumb" id="meThumb">${m.image ? `<img src="/map-images/${esc(m.image)}">` : '<span class="muted small">no image</span>'}</div>
+      <div class="me-image-ctl">
+        <input type="file" id="meFile" accept="image/*" style="display:none">
+        <button class="btn ghost small" id="mePick">${m.image ? 'Replace image' : 'Upload image'}</button>
+        ${m.image ? '<button class="btn ghost small" id="meRemove">Remove image</button>' : ''}
+        <div class="muted small" id="meFileName" style="margin-top:6px"></div>
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
+      <input type="checkbox" id="mePub" style="width:auto"${m.published ? ' checked' : ''}> Published (visible to players)
+    </label>
+    <div class="actions">
+      <button class="btn ghost" id="meCancel">Cancel</button>
+      <button class="btn primary" id="meSave">${existing ? 'Save' : 'Add map'}</button>
+    </div>`;
+  modal(body, root => {
+    let imageData = null;   // new base64 to upload
+    let removeImage = false;
+    const fileInput = root.querySelector('#meFile');
+    const thumb = root.querySelector('#meThumb');
+
+    root.querySelector('#mePick').onclick = () => fileInput.click();
+    fileInput.onchange = () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { toast('Please choose an image file', true); return; }
+      if (f.size > 5 * 1024 * 1024) { toast('Image exceeds 5MB', true); return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        imageData = reader.result;   // data URL
+        removeImage = false;
+        thumb.innerHTML = '<img src="' + imageData + '">';
+        root.querySelector('#meFileName').textContent = f.name;
+      };
+      reader.readAsDataURL(f);
+    };
+    const rm = root.querySelector('#meRemove');
+    if (rm) rm.onclick = () => { imageData = null; removeImage = true; thumb.innerHTML = '<span class="muted small">image will be removed</span>'; };
+
+    root.querySelector('#meCancel').onclick = closeModal;
+    root.querySelector('#meSave').onclick = async () => {
+      const name = root.querySelector('#meName').value.trim();
+      if (!name) return toast('Map name required', true);
+      const payload = {
+        id: existing ? m.id : undefined,
+        name,
+        description: root.querySelector('#meDesc').value,
+        published: root.querySelector('#mePub').checked ? 1 : 0,
+        admin: adminToken()
+      };
+      if (imageData) payload.image = imageData;
+      else if (removeImage) payload.removeImage = 1;
+      try {
+        await api('/api/t/' + T.id + '/map_save', payload);
+        closeModal();
+        toast(existing ? 'Map saved' : 'Map added');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 // Dedicated Vetoes page — each match with a veto gets its own card with the full ban/pick UI.
@@ -2088,7 +2295,7 @@ function vetoHTML(m) {
 
   if (v.done) {
     h += '<div class="veto-head">Maps</div><div class="veto-games">';
-    h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span><span class="veto-map play">${esc(g.map)}</span>${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}</div>`).join('');
+    h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span>${mapChip(g.map, 'play')}${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}</div>`).join('');
     h += '</div></div>';
     return h;
   }
@@ -2106,8 +2313,8 @@ function vetoHTML(m) {
   // history so far: bans struck, picks as games
   if (banned.length || picks.length) {
     h += '<div class="veto-history">';
-    if (banned.length) h += '<div class="veto-banned">' + banned.map(b => '<span class="veto-map banned" title="Banned by ' + esc(teamName(b.by)) + '">' + esc(b.map) + '</span>').join('') + '</div>';
-    if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span><span class="veto-map play">' + esc(g.map) + '</span></div>').join('') + '</div>';
+    if (banned.length) h += '<div class="veto-banned">' + banned.map(b => '<span class="veto-map banned" title="Banned by ' + esc(teamName(b.by)) + '">' + esc(mapName(b.map)) + '</span>').join('') + '</div>';
+    if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span>' + mapChip(g.map, 'play') + '</div>').join('') + '</div>';
     h += '</div>';
   }
 
@@ -2115,8 +2322,8 @@ function vetoHTML(m) {
   const cls = step && step.action === 'pick' ? 'pick' : 'ban';
   h += '<div class="veto-remaining">' + (v.remaining || []).map(mp =>
     canActNow
-      ? '<button class="veto-map act-' + cls + '" data-veto-map="' + esc(mp) + '">' + esc(mp) + '</button>'
-      : '<span class="veto-map avail">' + esc(mp) + '</span>'
+      ? '<button class="veto-map act-' + cls + '" data-veto-map="' + esc(mp) + '">' + esc(mapName(mp)) + '</button>'
+      : '<span class="veto-map avail" data-map-info="' + esc(mp) + '">' + esc(mapName(mp)) + '</span>'
   ).join('') + '</div>';
 
   // organizer undo
@@ -3069,11 +3276,17 @@ async function drawAdmin(el) {
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0 && T.competition === 'team') {
     const v = T.veto || { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
+    const vpool = v.mapPool || [];
+    const vdb = T.mapDb || [];
     html += `<div class="panel section"><h2>Map vetoes</h2>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="vtEnabled" style="width:auto"${v.enabled ? ' checked' : ''}> Enable map vetoes</label>
       <div id="vtCfg" style="${v.enabled ? '' : 'display:none;'}margin-top:12px">
-        <label>Map pool <span class="muted" style="font-weight:400">(one per line)</span></label>
-        <textarea id="vtMaps" rows="6">${esc((v.mapPool || []).join('\n'))}</textarea>
+        <label>Map pool</label>
+        ${vdb.length === 0
+          ? '<p class="muted small">No maps in the database yet. Add maps on the <strong>Maps</strong> tab first, then pick which ones are in the veto pool here.</p>'
+          : '<p class="muted small">Tick the maps captains ban/pick from. Manage the maps themselves (images, descriptions, publish) on the Maps tab.</p><div class="vpool-list">' +
+            vdb.map(mp => `<label class="vpool-item"><input type="checkbox" class="vpoolCb" value="${mp.id}"${vpool.indexOf(mp.id) >= 0 ? ' checked' : ''}> ${esc(mp.name)}${!mp.published ? ' <span class="idbadge late">hidden</span>' : ''}</label>`).join('') +
+            '</div>'}
 
         <label style="margin-top:14px">Ban / pick order</label>
         <p class="muted small">Build the exact sequence captains follow. Team A and Team B alternate however you set it. Picks become games in order (Game 1, Game 2, ...); the last map left over is the decider. Start from a preset, or build your own.</p>
@@ -3144,7 +3357,7 @@ async function drawAdmin(el) {
       // summary: how many games this produces
       const picks = vseq.filter(s => s.action === 'pick').length;
       const bans = vseq.filter(s => s.action === 'ban').length;
-      const maps = document.getElementById('vtMaps').value.split('\n').map(x => x.trim()).filter(x => x);
+      const maps = Array.from(document.querySelectorAll('.vpoolCb')).filter(c => c.checked).map(c => c.value);
       const games = picks + 1; // picks + decider
       const need = vseq.length + 1; // steps consume one map each, +1 decider
       const sumEl = document.getElementById('vtSummary');
@@ -3168,8 +3381,7 @@ async function drawAdmin(el) {
     };
 
     vtEnabled.onchange = () => { document.getElementById('vtCfg').style.display = vtEnabled.checked ? 'block' : 'none'; };
-    const vtMapsEl = document.getElementById('vtMaps');
-    if (vtMapsEl) vtMapsEl.oninput = renderSeq;
+    el.querySelectorAll('.vpoolCb').forEach(cb => cb.onchange = renderSeq);
     el.querySelectorAll('[data-vpreset]').forEach(b => b.onclick = () => {
       const p = b.dataset.vpreset;
       vseq = (p === 'clear') ? [] : PRESETS[p].map(s => ({ action: s.action, team: s.team }));
@@ -3183,13 +3395,13 @@ async function drawAdmin(el) {
     renderSeq();
 
     document.getElementById('vtSave').onclick = async () => {
-      const maps = document.getElementById('vtMaps').value.split('\n').map(x => x.trim()).filter(x => x);
+      const maps = Array.from(document.querySelectorAll('.vpoolCb')).filter(c => c.checked).map(c => c.value);
       const mode = document.getElementById('vtMode').value;
       const enabled = vtEnabled.checked;
       if (enabled) {
-        if (maps.length < 2) return toast('Map pool needs at least 2 maps', true);
+        if (maps.length < 2) return toast('Pick at least 2 maps for the pool', true);
         if (vseq.length < 1) return toast('Add at least one ban or pick step', true);
-        if (maps.length < vseq.length + 1) return toast('Pool too small for this sequence — need at least ' + (vseq.length + 1) + ' maps', true);
+        if (maps.length < vseq.length + 1) return toast('Pool too small for this sequence — need at least ' + (vseq.length + 1) + ' maps in the pool', true);
       }
       try {
         await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mapPool: maps, sequence: vseq, mode }, admin: adminToken() });

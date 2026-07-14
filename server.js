@@ -11,6 +11,10 @@ const challonge = require('./challonge');
 const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
+// Map preview images live in their own directory so they can be relocated to another
+// drive later (or served from a CDN) without touching db.json, which stores only filenames.
+const MAP_IMG_DIR = process.env.MAP_IMG_DIR || path.join(DATA_DIR, 'map-images');
+const MAX_IMG_BYTES = 5 * 1024 * 1024; // 5MB per image
 const PUBLIC_DIR = path.join(__dirname, 'public');
 // Site-wide admin password. Set via ADMIN_PASSWORD environment variable in the
 // Dockhand stack — NOT in this repo, so it is never visible on GitHub.
@@ -60,6 +64,7 @@ function loadDB() {
       t.draftOrder = 'snake';
     }
     if (!t.maps) t.maps = {};
+    if (!Array.isArray(t.mapDb)) t.mapDb = [];
     if (t.lobbyOptions === undefined) t.lobbyOptions = '';
     if (t.mods === undefined) t.mods = '';
     if (t.imported === undefined) t.imported = false;
@@ -85,6 +90,7 @@ function saveDB() {
     saveTimer = null;
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.mkdirSync(MAP_IMG_DIR, { recursive: true });
       const tmp = DB_FILE + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(db));
       fs.renameSync(tmp, DB_FILE);
@@ -116,15 +122,57 @@ function canOrganize(t, req, body) {
   if (isOrganizer(t, req)) return true;              // logged-in claimed organizer
   return false;
 }
-function cleanVeto(v) {
+// ---------- map database ----------
+// Each map: { id, name, image (filename in MAP_IMG_DIR or null), description, published }
+function mapById(t, id) {
+  if (!t.mapDb) return null;
+  for (const m of t.mapDb) if (m.id === id) return m;
+  return null;
+}
+// map ids -> display objects (for serialization); unknown ids are dropped
+function resolveMaps(t, ids) {
+  if (!Array.isArray(ids)) return [];
+  const out = [];
+  for (const id of ids) { const m = mapById(t, id); if (m) out.push(m); }
+  return out;
+}
+// what maps can appear in the veto pool / round pools: published ones (organizers see all)
+function publicMapView(m) {
+  return { id: m.id, name: m.name, image: m.image || null, description: m.description || '', published: m.published ? 1 : 0 };
+}
+// validate + persist an uploaded base64 image, return the stored filename (or throw)
+const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
+function saveMapImage(dataUrl) {
+  // accepts a data URL: data:image/png;base64,....
+  const m = /^data:([^;]+);base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new Error('Invalid image data');
+  const mime = m[1].toLowerCase();
+  const ext = IMG_EXT[mime];
+  if (!ext) throw new Error('Only image files are allowed (png, jpg, gif, webp, bmp)');
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > MAX_IMG_BYTES) throw new Error('Image exceeds 5MB');
+  if (buf.length === 0) throw new Error('Empty image');
+  const fname = 'map_' + uid(10) + '.' + ext;
+  fs.mkdirSync(MAP_IMG_DIR, { recursive: true });
+  fs.writeFileSync(path.join(MAP_IMG_DIR, fname), buf);
+  return fname;
+}
+function deleteMapImage(fname) {
+  if (!fname) return;
+  try { fs.unlinkSync(path.join(MAP_IMG_DIR, path.basename(fname))); } catch (e) {}
+}
+
+function cleanVeto(v, validIds) {
   const EMPTY = { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
   if (!v || typeof v !== 'object') return EMPTY;
-  const pool = Array.isArray(v.mapPool)
+  let pool = Array.isArray(v.mapPool)
     ? v.mapPool.map(x => String(x || '').trim()).filter(x => x).slice(0, 64)
     : [];
+  // mapPool now holds map-DB IDs; if a valid-id set is supplied, keep only real ones
+  if (validIds) pool = pool.filter(id => validIds[id]);
   // dedupe preserving order
   const seen = {}, dedup = [];
-  for (const m of pool) { const k = m.toLowerCase(); if (!seen[k]) { seen[k] = 1; dedup.push(m); } }
+  for (const m of pool) { if (!seen[m]) { seen[m] = 1; dedup.push(m); } }
 
   // sequence: ordered [{action:'ban'|'pick', team:'A'|'B'}]. The leftover map after the
   // sequence is the auto-decider (played as the final game).
@@ -214,6 +262,7 @@ function publicView(t) {
     challongeDate: t.challongeDate || null,
     rounds: t.rounds || 0,
     maps: t.maps || {},
+    mapDb: (t.mapDb || []).map(publicMapView),
     players: t.players,
     teams: t.teams.map(x => ({
       id: x.id, name: x.name, seed: x.seed,
@@ -957,12 +1006,13 @@ function json(res, code, obj) {
 }
 function bad(res, msg) { json(res, 400, { error: msg }); }
 
-function readBody(req) {
+function readBody(req, maxBytes) {
+  const limit = maxBytes || 200000;
   return new Promise((resolve, reject) => {
     let data = '';
     req.on('data', c => {
       data += c;
-      if (data.length > 200000) { reject(new Error('too large')); req.destroy(); }
+      if (data.length > limit) { reject(new Error('too large')); req.destroy(); }
     });
     req.on('end', () => {
       if (!data) return resolve({});
@@ -1262,7 +1312,7 @@ async function handleAPI(req, res, url) {
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
       plan, maxTeams,
-      cfg: null, maps: {},
+      cfg: null, maps: {}, mapDb: [],
       seeding: (b.seeding === 'rating') ? 'rating' : 'random',
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
@@ -1366,6 +1416,8 @@ async function handleAPI(req, res, url) {
         signedUpPlayerId: signedUpId,
         oauthEnabled: FAF_OAUTH_ON ? 1 : 0
       };
+      // hide unpublished maps from non-organizers (TD-team prep stays private)
+      if (!organizer) view.mapDb = (view.mapDb || []).filter(m => m.published);
       return json(res, 200, view);
     }
 
@@ -1383,7 +1435,9 @@ async function handleAPI(req, res, url) {
     }
 
     if (method !== 'POST') return bad(res, 'Unsupported');
-    const b = await readBody(req);
+    // allow up to ~8MB so map image uploads (base64 of a 5MB file ≈ 6.7MB) fit; the real
+    // per-image 5MB cap is enforced when decoding in saveMapImage.
+    const b = await readBody(req, 8 * 1024 * 1024);
 
     if (sub === 'reseed') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
@@ -1867,21 +1921,87 @@ async function handleAPI(req, res, url) {
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.veto !== undefined) {
         if (t.status === 'running' || t.status === 'finished') return bad(res, 'Vetoes can only be changed before the bracket starts');
-        t.veto = cleanVeto(b.veto);
+        const validIds = {};
+        for (const mp of (t.mapDb || [])) validIds[mp.id] = 1;
+        t.veto = cleanVeto(b.veto, validIds);
       }
       saveDB();
       return json(res, 200, { ok: true });
     }
 
     // set maps for a round (admin, any time)
+    // ===== map database =====
+    // Add or update a map. Image comes as a base64 data URL (optional). Organizer only.
+    if (sub === 'map_save') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const name = cleanName(b.name, 60);
+      if (!name) return bad(res, 'Map name required');
+      const description = String(b.description || '').slice(0, 1000);
+      const published = b.published ? 1 : 0;
+
+      // validate/save the image FIRST (before mutating the DB), so a bad image can't leave an orphan
+      let newImageFile = null;
+      let doRemoveImage = false;
+      if (b.image && typeof b.image === 'string' && b.image.indexOf('data:') === 0) {
+        try { newImageFile = saveMapImage(b.image); }
+        catch (e) { return bad(res, e.message); }
+      } else if (b.removeImage) {
+        doRemoveImage = true;
+      }
+
+      let map;
+      if (b.id) {
+        map = mapById(t, b.id);
+        if (!map) { deleteMapImage(newImageFile); return bad(res, 'Map not found'); }
+      } else {
+        map = { id: 'map' + uid(5), name: '', image: null, description: '', published: 0 };
+        t.mapDb.push(map);
+      }
+      map.name = name;
+      map.description = description;
+      map.published = published;
+      if (newImageFile) { deleteMapImage(map.image); map.image = newImageFile; }
+      else if (doRemoveImage) { deleteMapImage(map.image); map.image = null; }
+      saveDB();
+      return json(res, 200, { ok: true, id: map.id });
+    }
+
+    // Toggle publish state (hide/publish for TD-team prep). Organizer only.
+    if (sub === 'map_publish') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const map = mapById(t, b.id);
+      if (!map) return bad(res, 'Map not found');
+      map.published = b.published ? 1 : 0;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Delete a map from the database. Also strips it from round pools and veto config.
+    if (sub === 'map_delete') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const map = mapById(t, b.id);
+      if (!map) return json(res, 200, { ok: true });
+      deleteMapImage(map.image);
+      t.mapDb = t.mapDb.filter(m => m.id !== b.id);
+      // remove from any round pools
+      for (const key of Object.keys(t.maps || {})) {
+        t.maps[key] = (t.maps[key] || []).filter(id => id !== b.id);
+      }
+      // remove from veto pool
+      if (t.veto && Array.isArray(t.veto.mapPool)) t.veto.mapPool = t.veto.mapPool.filter(id => id !== b.id);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'set_maps') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const bracket = String(b.bracket || '');
       const round = parseInt(b.round, 10);
       if (['wb', 'lb', 'gf', 'sw', 'ffa'].indexOf(bracket) < 0 || !(round >= 1 && round <= 30)) return bad(res, 'Bad round');
-      let maps = Array.isArray(b.maps) ? b.maps.map(m => cleanName(m, 50)).filter(m => m) : [];
-      maps = maps.slice(0, 9);
-      t.maps[bracket + ':' + round] = maps;
+      // maps are now map-DB IDs; keep only ids that exist in the database
+      let ids = Array.isArray(b.maps) ? b.maps.filter(id => mapById(t, id)) : [];
+      ids = ids.slice(0, 9);
+      t.maps[bracket + ':' + round] = ids;
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2269,11 +2389,26 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname.startsWith('/api/')) return await handleAPI(req, res, url);
     if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
+    if (url.pathname.startsWith('/map-images/')) return serveMapImage(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     console.error(e);
     return json(res, 500, { error: 'Server error: ' + e.message });
   }
 });
+
+// serve a stored map image by filename (read-only; filenames are opaque tokens we generated)
+function serveMapImage(req, res, url) {
+  const name = path.basename(decodeURIComponent(url.pathname.slice('/map-images/'.length)));
+  if (!name || name.indexOf('..') >= 0) { res.writeHead(404); return res.end('Not found'); }
+  const file = path.join(MAP_IMG_DIR, name);
+  fs.readFile(file, (err, data) => {
+    if (err) { res.writeHead(404); return res.end('Not found'); }
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=86400' });
+    res.end(data);
+  });
+}
 
 server.listen(PORT, () => console.log('FAF Tourney running on port ' + PORT));
