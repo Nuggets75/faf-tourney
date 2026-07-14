@@ -1003,11 +1003,22 @@ function myTurnInfo() {
       return { text: "It's your pick — choose a player for your team.", tab: 'teams', cta: 'Go to the draft' };
     }
   }
+  // 1b. organizer: vetoes are blocked until A/B is set (manual mode)
+  if (viewerIsOrganizer() && T.veto && T.veto.enabled && T.veto.abMode === 'manual' && T.matches) {
+    const waiting = T.matches.filter(m => m.veto && !m.veto.done && (!m.veto.teamA || !m.veto.teamB)).length;
+    if (waiting > 0) {
+      return {
+        text: waiting + ' match' + (waiting === 1 ? '' : 'es') + ' need Team A / Team B set before the captains can veto.',
+        tab: 'vetoes', cta: 'Set them now'
+      };
+    }
+  }
   // 2. map veto step
   if (myTeam && T.matches) {
     for (const m of T.matches) {
       const v = m.veto;
       if (!v || v.done) continue;
+      if (!v.teamA || !v.teamB) continue; // organizer hasn't set A/B yet
       const step = v.sequence[v.stepIndex];
       if (!step) continue;
       const turnTeam = step.team === 'A' ? v.teamA : v.teamB;
@@ -2570,18 +2581,28 @@ function vetoHTML(m) {
 
   let h = '<div class="vetobox' + (v.done ? ' done' : '') + '">';
 
-  // A/B legend. Before the veto starts, the organizer sets who is A and who is B explicitly.
+  const abSet = !!(v.teamA && v.teamB);
+
+  // A/B legend
   h += `<div class="veto-ab">
     <span class="veto-abtag team-A">A: ${esc(nameA)}</span>
     <span class="veto-abtag team-B">B: ${esc(nameB)}</span>
   </div>`;
+  // organizer picks A (required up front when the tournament is set to manual A/B)
   if (isOrg && v.stepIndex === 0 && !v.done) {
-    h += `<div class="veto-abset">
-      <span class="muted small">Set Team A (bans/picks first):</span>
+    h += `<div class="veto-abset${abSet ? '' : ' needed'}">
+      <span class="muted small">${abSet ? 'Set Team A (acts first):' : 'Pick Team A to open this veto:'}</span>
       <button class="btn ${v.teamA === m.team1 ? 'primary' : 'ghost'} small" data-veto-seta="${m.id}" data-team="${m.team1}">${esc(teamName(m.team1))}</button>
       <button class="btn ${v.teamA === m.team2 ? 'primary' : 'ghost'} small" data-veto-seta="${m.id}" data-team="${m.team2}">${esc(teamName(m.team2))}</button>
-      <span class="muted small" style="margin-left:6px">Set this before players start.</span>
     </div>`;
+  }
+  // nobody can act until A/B exists
+  if (!abSet && !v.done) {
+    h += '<div class="veto-wait">' + (isOrg
+      ? 'Choose Team A above — the captains can\'t start until you do.'
+      : 'Waiting for the organizer to set Team A / Team B for this match.') + '</div>';
+    h += '</div>';
+    return h;
   }
 
   if (v.done) {
@@ -3588,12 +3609,21 @@ async function drawAdmin(el) {
                 ' <strong>' + esc(p.name) + '</strong> <span class="muted small">' + (p.mapIds || []).length + ' maps · ' +
                 (ok ? 'Bo' + bo + ' matches' : (steps === 0 ? 'no ban/pick order set' : 'order needs ' + need + ' steps / ' + (bo - 1) + ' picks')) + '</span></div>';
             }).join('') + '</div>'}
+        <label style="margin-top:14px">Who is Team A?</label>
+        <select id="vtAb" style="max-width:420px">
+          <option value="lowerA"${(v.abMode || 'lowerA') === 'lowerA' ? ' selected' : ''}>Lower rated is Team A (acts first)</option>
+          <option value="lowerB"${v.abMode === 'lowerB' ? ' selected' : ''}>Lower rated is Team B (higher rated acts first)</option>
+          <option value="random"${v.abMode === 'random' ? ' selected' : ''}>Random per match</option>
+          <option value="manual"${v.abMode === 'manual' ? ' selected' : ''}>I set it myself for every match</option>
+        </select>
+        <div class="muted small" style="margin-top:6px" id="vtAbNote"></div>
+
         <label style="margin-top:14px">When is the veto done?</label>
-        <select id="vtMode" style="max-width:320px">
+        <select id="vtMode" style="max-width:420px">
           <option value="upfront"${v.mode !== 'continuous' ? ' selected' : ''}>All upfront — captains complete the whole veto before game 1</option>
           <option value="continuous"${v.mode === 'continuous' ? ' selected' : ''}>Continuous — reveal steps as games are played</option>
         </select>
-        <div class="muted small" style="margin-top:8px">Team A defaults to the higher seed; you set who's A/B per match on the Vetoes tab before the veto opens.</div>
+        <div class="muted small" style="margin-top:8px">Whatever the rule, you can still override A/B on any match from the Vetoes tab before it starts.</div>
       </div>
       <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
     </div>`;
@@ -3617,16 +3647,28 @@ async function drawAdmin(el) {
   const vtEnabled = document.getElementById('vtEnabled');
   if (vtEnabled) {
     vtEnabled.onchange = () => { document.getElementById('vtCfg').style.display = vtEnabled.checked ? 'block' : 'none'; };
+    const vtAb = document.getElementById('vtAb');
+    const abNote = () => {
+      const notes = {
+        lowerA: 'The lower rated captain is Team A and takes the first step. Rating comes from the captain, not the team average.',
+        lowerB: 'The lower rated captain is Team B, so the higher rated captain takes the first step. Rating comes from the captain, not the team average.',
+        random: 'A coin flip per match, decided when the match is ready.',
+        manual: 'Nobody can start their veto until you set Team A on that match (Vetoes tab). Use this when you want full control.'
+      };
+      document.getElementById('vtAbNote').textContent = notes[vtAb.value] || '';
+    };
+    if (vtAb) { vtAb.onchange = abNote; abNote(); }
     document.getElementById('vtSave').onclick = async () => {
       const enabled = vtEnabled.checked;
       const mode = document.getElementById('vtMode').value;
+      const abMode = vtAb ? vtAb.value : 'lowerA';
       if (enabled) {
         const pools = T.mapPools || [];
         const ready = pools.filter(p => (p.sequence || []).length && (p.sequence || []).length === (p.mapIds || []).length - 1);
         if (ready.length === 0) return toast('No pool has a valid ban/pick order yet — set one up on the Maps tab first', true);
       }
       try {
-        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode }, admin: adminToken() });
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode }, admin: adminToken() });
         await refresh();
         toast('Vetoes saved');
       } catch (e) { toast(e.message, true); }

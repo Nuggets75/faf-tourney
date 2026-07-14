@@ -204,11 +204,48 @@ function cleanSequence(arr) {
 // lives on each map pool (its length is tied to that pool's size), so pools of different
 // sizes can each have their own order even at the same best-of.
 function cleanVeto(v) {
-  if (!v || typeof v !== 'object') return { enabled: false, mode: 'upfront' };
+  if (!v || typeof v !== 'object') return { enabled: false, mode: 'upfront', abMode: 'lowerA' };
+  const AB_OK = ['random', 'lowerA', 'lowerB', 'manual'];
   return {
     enabled: !!v.enabled,
-    mode: v.mode === 'continuous' ? 'continuous' : 'upfront'
+    mode: v.mode === 'continuous' ? 'continuous' : 'upfront',
+    // how Team A / Team B are decided per match
+    abMode: AB_OK.indexOf(v.abMode) >= 0 ? v.abMode : 'lowerA'
   };
+}
+
+// The rating that decides A/B for a team. For team tournaments this is the CAPTAIN's rating,
+// not the team average — the captain is the one doing the banning and picking.
+function abRating(t, teamId) {
+  const team = teamById(t, teamId);
+  if (!team) return null;
+  if (team.captainId) {
+    const cap = playerById(t, team.captainId);
+    if (cap && cap.rating != null) return cap.rating;
+  }
+  // solo brackets have no separate captain: the single member is the player
+  const pid = (team.playerIds || [])[0];
+  const p = pid ? playerById(t, pid) : null;
+  return (p && p.rating != null) ? p.rating : null;
+}
+
+// Decide Team A for a match under the tournament's A/B rule. Returns null when the organizer
+// must set it by hand ('manual'), which holds the veto until they do.
+function decideTeamA(t, m) {
+  const mode = (t.veto && t.veto.abMode) || 'lowerA';
+  if (mode === 'manual') return null;
+  if (mode === 'random') return Math.random() < 0.5 ? m.team1 : m.team2;
+  const r1 = abRating(t, m.team1);
+  const r2 = abRating(t, m.team2);
+  // unrated players can't be compared — fall back to seed (higher seed acts first)
+  if (r1 == null || r2 == null || r1 === r2) {
+    const s1 = (teamById(t, m.team1) || {}).seed || 999;
+    const s2 = (teamById(t, m.team2) || {}).seed || 999;
+    return s1 <= s2 ? m.team1 : m.team2;
+  }
+  const lower = r1 < r2 ? m.team1 : m.team2;
+  const higher = lower === m.team1 ? m.team2 : m.team1;
+  return mode === 'lowerA' ? lower : higher;
 }
 
 function cleanDate(v) {
@@ -324,11 +361,10 @@ function initVeto(t, m) {
   const poolBo = BO_OK.indexOf(parseInt(pool.bo, 10)) >= 0 ? parseInt(pool.bo, 10) : (seq.filter(x => x.action === 'pick').length + 1);
   if (poolBo !== m.bo) { m.veto = null; return; }
 
-  // default: higher seed (lower seed number) is A
-  const s1 = (teamById(t, m.team1) || {}).seed || 999;
-  const s2 = (teamById(t, m.team2) || {}).seed || 999;
-  const teamA = (m.veto && m.veto.teamA) || (s1 <= s2 ? m.team1 : m.team2);
-  const teamB = teamA === m.team1 ? m.team2 : m.team1;
+  // Team A per the tournament's rule. In 'manual' mode this stays null until the organizer
+  // sets it, and the veto can't be acted on before then.
+  const teamA = (m.veto && m.veto.teamA) || decideTeamA(t, m);
+  const teamB = teamA ? (teamA === m.team1 ? m.team2 : m.team1) : null;
   m.veto = {
     remaining: poolIds,
     banned: [],                 // [{ map, by:teamId }]
@@ -346,6 +382,7 @@ function initVeto(t, m) {
 // which team's turn is it, and what action, at the current step? returns {team, action}|null
 function vetoCurrentStep(m) {
   if (!m.veto || m.veto.done) return null;
+  if (!m.veto.teamA || !m.veto.teamB) return null; // organizer hasn't set A/B yet
   const step = m.veto.sequence[m.veto.stepIndex];
   if (!step) return null;
   const team = step.team === 'A' ? m.veto.teamA : m.veto.teamB;
@@ -2332,6 +2369,7 @@ async function handleAPI(req, res, url) {
       if (!m) return bad(res, 'Match not found');
       if (!m.veto) return bad(res, 'No veto in progress for this match');
       if (m.veto.done) return bad(res, 'The veto is already complete for this match');
+      if (!m.veto.teamA || !m.veto.teamB) return bad(res, 'The organizer has not set Team A / Team B for this match yet');
       const cur = vetoCurrentStep(m);
       if (!cur) return bad(res, 'No veto step pending');
 
