@@ -534,3 +534,6 @@ tbody tr:hover { background: #ffffff05; }
 .pool-card-actions { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--line-solid); padding-top: 8px; }
 .pa-row { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 4px 0; cursor: pointer; }
 .pa-row input { width: auto; }
+
+.pool-status { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.pool-status-row { padding: 6px 10px; background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; font-size: 13px; }

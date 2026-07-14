@@ -70,7 +70,7 @@ function loadDB() {
     if (t.lobbyOptions === undefined) t.lobbyOptions = '';
     if (t.mods === undefined) t.mods = '';
     if (t.imported === undefined) t.imported = false;
-    if (t.veto === undefined) t.veto = { enabled: false, mode: 'upfront', sequences: {} };
+    if (t.veto === undefined) t.veto = { enabled: false, mode: 'upfront' };
     if (!t.lateToken) t.lateToken = uid(12);
     if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
     if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
@@ -200,29 +200,14 @@ function cleanSequence(arr) {
   return seq.slice(0, 32);
 }
 
-// Veto config. Now holds a sequence PER series length (Bo1/Bo3/Bo5/Bo7); each match uses the
-// sequence matching its own BO. Maps come from the match's assigned pool (see poolForMatch).
+// Veto config: just the on/off switch and when the veto is resolved. The ban/pick ORDER
+// lives on each map pool (its length is tied to that pool's size), so pools of different
+// sizes can each have their own order even at the same best-of.
 function cleanVeto(v) {
-  const EMPTY = { enabled: false, mode: 'upfront', sequences: {} };
-  if (!v || typeof v !== 'object') return EMPTY;
-  const mode = v.mode === 'continuous' ? 'continuous' : 'upfront';
-  const sequences = {};
-  const src = (v.sequences && typeof v.sequences === 'object') ? v.sequences : {};
-  for (const bo of [1, 3, 5, 7]) {
-    const seq = cleanSequence(src[bo] || src[String(bo)]);
-    if (seq.length) sequences[bo] = seq;
-  }
-  // legacy single-sequence configs: treat as the Bo-appropriate default if present
-  if (Object.keys(sequences).length === 0 && Array.isArray(v.sequence) && v.sequence.length) {
-    const legacy = cleanSequence(v.sequence);
-    const picks = legacy.filter(s => s.action === 'pick').length;
-    const bo = picks >= 3 ? 7 : picks === 2 ? 5 : picks === 1 ? 3 : 1;
-    sequences[bo] = legacy;
-  }
+  if (!v || typeof v !== 'object') return { enabled: false, mode: 'upfront' };
   return {
-    enabled: !!v.enabled && Object.keys(sequences).length >= 1,
-    mode: mode,
-    sequences: sequences
+    enabled: !!v.enabled,
+    mode: v.mode === 'continuous' ? 'continuous' : 'upfront'
   };
 }
 
@@ -283,14 +268,14 @@ function publicView(t) {
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding,
-    veto: t.veto || { enabled: false, mode: 'upfront', sequences: {} },
+    veto: t.veto || { enabled: false, mode: 'upfront' },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
     challongeDate: t.challongeDate || null,
     rounds: t.rounds || 0,
     maps: t.maps || {},
     mapDb: (t.mapDb || []).map(publicMapView),
-    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice() })),
+    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice() })),
     poolAssign: t.poolAssign || {},
     players: t.players,
     teams: t.teams.map(x => ({
@@ -327,15 +312,14 @@ function initVeto(t, m) {
   if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return;
   if (m.veto && m.veto.stepIndex > 0) return; // already started — don't clobber progress
 
-  const seq = (t.veto.sequences && (t.veto.sequences[m.bo] || t.veto.sequences[String(m.bo)])) || null;
-  let poolIds = poolMapIds(t, m); // maps in this match's pool
-  // need a sequence for this BO and enough maps (steps consume 1 each, +1 decider)
-  if (!seq || !seq.length) { m.veto = null; return; }
-  const need = seq.length + 1;
-  if (poolIds.length < need) { m.veto = null; return; }
-  // if the pool is larger than the sequence needs, use the first `need` maps so exactly one
-  // map is left as the decider (a sequence resolves to a single leftover by construction).
-  if (poolIds.length > need) poolIds = poolIds.slice(0, need);
+  // The ban/pick order comes from the match's assigned pool. Its length is tied to the pool
+  // size (steps = pool - 1), so exactly one map is left as the decider.
+  const pool = poolForMatch(t, m);
+  if (!pool) { m.veto = null; return; }
+  const poolIds = (pool.mapIds || []).slice();
+  const seq = cleanSequence(pool.sequence);
+  if (!seq.length) { m.veto = null; return; }
+  if (poolIds.length !== seq.length + 1) { m.veto = null; return; }
 
   // default: higher seed (lower seed number) is A
   const s1 = (teamById(t, m.team1) || {}).seed || 999;
@@ -1975,14 +1959,21 @@ async function handleAPI(req, res, url) {
       const name = cleanName(b.name, 40);
       if (!name) return bad(res, 'Pool name required');
       const ids = Array.isArray(b.mapIds) ? b.mapIds.filter(id => mapById(t, id)) : [];
+      // The ban/pick order lives on the pool: its length is tied to the pool size, since the
+      // sequence must consume every map but one (the leftover is the decider).
+      const seq = cleanSequence(b.sequence);
+      if (seq.length && ids.length && seq.length !== ids.length - 1) {
+        return bad(res, 'This pool has ' + ids.length + ' maps, so its order needs exactly ' + (ids.length - 1) + ' steps (leaving 1 as the decider). It has ' + seq.length + '.');
+      }
       let pool;
       if (b.id) {
         pool = poolById(t, b.id);
         if (!pool) return bad(res, 'Pool not found');
         pool.name = name;
         pool.mapIds = ids;
+        pool.sequence = seq;
       } else {
-        pool = { id: 'pool' + uid(5), name, mapIds: ids };
+        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq };
         t.mapPools.push(pool);
       }
       saveDB();
