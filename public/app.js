@@ -990,8 +990,52 @@ async function renderTournament() {
   }, 4000);
 }
 
+// ---- "it's your turn" banner ----
+// Surfaces the two things a player can be on the clock for: a draft pick, or a veto step.
+// Returns { text, tab, cta } or null.
+function myTurnInfo() {
+  const me = T.viewer || {};
+  const myTeam = me.teamId || null;
+  // 1. captain's draft pick
+  if (T.status === 'draft' && T.draft && T.draft.order) {
+    const turnTeam = T.draft.order[T.draft.current];
+    if (turnTeam && myTeam && turnTeam === myTeam) {
+      return { text: "It's your pick — choose a player for your team.", tab: 'teams', cta: 'Go to the draft' };
+    }
+  }
+  // 2. map veto step
+  if (myTeam && T.matches) {
+    for (const m of T.matches) {
+      const v = m.veto;
+      if (!v || v.done) continue;
+      const step = v.sequence[v.stepIndex];
+      if (!step) continue;
+      const turnTeam = step.team === 'A' ? v.teamA : v.teamB;
+      if (turnTeam !== myTeam) continue;
+      const opp = teamName(m.team1 === myTeam ? m.team2 : m.team1);
+      return {
+        text: "It's your turn to " + (step.action === 'ban' ? 'ban' : 'pick') + ' a map vs ' + opp + '.',
+        tab: 'vetoes', cta: 'Go to the veto'
+      };
+    }
+  }
+  return null;
+}
+
+function turnBannerHTML() {
+  const info = myTurnInfo();
+  if (!info) return '';
+  return `<div class="turn-banner" id="turnBanner">
+    <span class="turn-dot"></span>
+    <span class="turn-text">${esc(info.text)}</span>
+    <button class="btn primary small" data-turn-tab="${info.tab}">${esc(info.cta)}</button>
+  </div>`;
+}
+
 function drawTournament() {
   setTitle(T && T.name);
+  // flag the browser tab too, so it's noticeable when the site isn't in focus
+  if (T && myTurnInfo()) document.title = '\u25cf ' + document.title;
   const admin = viewerIsOrganizer();
   const phaseIdx = { signup: 0, draft: 1, drafted: 1, running: 2, finished: 3 }[T.status];
   const midStep = T.competition === 'ffa' ? 'Teams' : (T.formation === 'draft' ? 'Draft' : 'Teams');
@@ -1037,6 +1081,19 @@ function drawTournament() {
     <div id="tabBody" class="${currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page'}"></div>`;
 
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
+
+  // "your turn" banner, above whatever tab is open
+  const banner = turnBannerHTML();
+  if (banner) {
+    const host = document.createElement('div');
+    host.className = currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page';
+    host.style.paddingBottom = '0';
+    host.innerHTML = banner;
+    const tb = app.querySelector('#tabBody');
+    tb.parentNode.insertBefore(host, tb);
+    const go = host.querySelector('[data-turn-tab]');
+    if (go) go.onclick = () => { currentTab = go.dataset.turnTab; syncTabURL(); drawTournament(); };
+  }
 
   const body = document.getElementById('tabBody');
   if (currentTab === 'overview') drawOverview(body);
@@ -2134,13 +2191,15 @@ function drawMaps(el) {
     html += '</div></div>';
   }
 
-  // ---- map pools (organizer only) ----
-  if (admin) {
+  // ---- map pools (players see published ones; organizers see all + controls) ----
+  {
     const pools = T.mapPools || [];
+    const showPools = admin || pools.length > 0;
+    if (showPools) {
     html += `<div class="panel section">
       <div class="row" style="justify-content:space-between;align-items:center">
-        <div><h2 style="margin:0">Map pools</h2><div class="muted small">Group maps into pools, then assign each pool to rounds or matches. A match's veto draws from its assigned pool.</div></div>
-        <button class="btn primary" id="poolAdd"${db.length === 0 ? ' disabled title="Add maps first"' : ''}>+ New pool</button>
+        <div><h2 style="margin:0">Map pools</h2><div class="muted small">${admin ? 'Group maps into pools, then assign each pool to rounds or matches. A match\'s veto draws from its assigned pool.' : 'The maps in play for each stage of the tournament.'}</div></div>
+        ${admin ? `<button class="btn primary" id="poolAdd"${db.length === 0 ? ' disabled title="Add maps first"' : ''}>+ New pool</button>` : ''}
       </div>`;
     if (pools.length === 0) {
       html += '<div class="empty" style="margin-top:12px">No pools yet.' + (db.length === 0 ? ' Add maps first.' : ' Create one to group maps.') + '</div>';
@@ -2158,27 +2217,29 @@ function drawMaps(el) {
           }
         }
         html += `<div class="pool-card">
-          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
-          <div class="pool-card-maps">${names.length ? names.map(n => '<span class="pool-map-chip">' + esc(n) + '</span>').join('') : '<span class="muted small">no maps</span>'}</div>
-          ${(function(){
+          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}${(admin && !pool.published) ? ' <span class="idbadge late">hidden</span>' : ''}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
+          <div class="pool-card-maps">${names.length ? (pool.mapIds || []).map(id => mapChip(id, 'pool-map-chip')).join('') : '<span class="muted small">no maps</span>'}</div>
+          ${admin ? (function(){
             const steps = (pool.sequence || []).length, need = names.length - 1;
             const picks = (pool.sequence || []).filter(x => x.action === 'pick').length;
             const bo = pool.bo || 1;
             if (!steps) return '<div class="pool-card-warn">No ban/pick order set — vetoes won\'t run</div>';
             if (steps !== need || picks !== bo - 1) return '<div class="pool-card-warn">Order doesn\'t match (needs ' + need + ' steps, ' + (bo - 1) + ' picks)</div>';
             return '';
-          })()}
-          ${assignedTo.length ? '<div class="pool-card-assign">Used for: ' + assignedTo.map(a => esc(a)).join(', ') + '</div>' : '<div class="pool-card-assign muted">Not assigned yet' + (pools.length === 1 ? ' (used as default)' : '') + '</div>'}
-          <div class="pool-card-actions">
-            <button class="btn ghost small" data-pooledit="${pool.id}">Edit maps</button>
+          })() : ''}
+          ${assignedTo.length ? '<div class="pool-card-assign">Used for: ' + assignedTo.map(a => esc(a)).join(', ') + '</div>' : (admin ? '<div class="pool-card-assign muted">Not assigned yet' + (pools.length === 1 ? ' (used as default)' : '') + '</div>' : '')}
+          ${admin ? `<div class="pool-card-actions">
+            <button class="btn ghost small" data-pooledit="${pool.id}">Edit</button>
             <button class="btn ghost small" data-poolassign="${pool.id}">Assign to rounds</button>
+            <button class="btn ghost small" data-poolpub="${pool.id}">${pool.published ? 'Hide' : 'Publish'}</button>
             <button class="btn danger small" data-pooldel="${pool.id}">Delete</button>
-          </div>
+          </div>` : ''}
         </div>`;
       }
       html += '</div>';
     }
     html += '</div>';
+    }
   }
 
   el.innerHTML = html;
@@ -2203,6 +2264,11 @@ function drawMaps(el) {
   if (poolAdd) poolAdd.onclick = () => editPool(null);
   el.querySelectorAll('[data-pooledit]').forEach(b => b.onclick = () => editPool((T.mapPools || []).find(p => p.id === b.dataset.pooledit)));
   el.querySelectorAll('[data-poolassign]').forEach(b => b.onclick = () => assignPool((T.mapPools || []).find(p => p.id === b.dataset.poolassign)));
+  el.querySelectorAll('[data-poolpub]').forEach(b => b.onclick = async () => {
+    const pool = (T.mapPools || []).find(p => p.id === b.dataset.poolpub);
+    try { await api('/api/t/' + T.id + '/pool_publish', { id: pool.id, published: pool.published ? 0 : 1, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-pooldel]').forEach(b => b.onclick = async () => {
     const pool = (T.mapPools || []).find(p => p.id === b.dataset.pooldel);
     if (!confirm('Delete pool "' + pool.name + '"? Round/match assignments to it are cleared.')) return;
@@ -2211,14 +2277,62 @@ function drawMaps(el) {
   });
 }
 
+// How many teams the bracket will likely have, before it's generated.
+function projectedTeamCount() {
+  if (T.teams && T.teams.length) return T.teams.length;
+  if (T.maxTeams) return T.maxTeams;
+  const size = (T.competition === 'ffa') ? 1 : (T.teamSize || 1);
+  return Math.floor((T.players || []).length / Math.max(size, 1));
+}
+
+// The round keys this bracket will have. Uses real matches once generated, otherwise
+// projects them from the expected team count so pools can be assigned during signups.
+function projectedRoundKeys() {
+  // real bracket wins
+  const real = [], seen = {};
+  for (const m of (T.matches || [])) {
+    if (m.bracket === 'ffa') continue;
+    const k = m.bracket + ':' + m.round;
+    if (!seen[k]) { seen[k] = 1; real.push(k); }
+  }
+  if (real.length) return { keys: real, projected: false, teams: T.teams.length };
+
+  const n = projectedTeamCount();
+  if (n < 2 || T.competition === 'ffa') return { keys: [], projected: true, teams: n };
+  const keys = [];
+  if (T.bracketType === 'swiss') {
+    // swiss round count is chosen at start; ceil(log2(teams)) is the usual default
+    const r = Math.max(log2i(nextPow2(n)), 1);
+    for (let i = 1; i <= r; i++) keys.push('sw:' + i);
+    if (!T.plan || T.plan.final !== 0) keys.push('gf:1');
+  } else {
+    const R = log2i(nextPow2(n));
+    for (let i = 1; i <= R; i++) keys.push('wb:' + i);
+    if (T.bracketType === 'double') {
+      const lbR = Math.max(2 * R - 2, 0);
+      for (let i = 1; i <= lbR; i++) keys.push('lb:' + i);
+      keys.push('gf:1');
+    }
+  }
+  return { keys, projected: true, teams: n };
+}
+
 // a readable label for a round-assignment key — matches the names used in the bracket
 function roundKeyLabel(bracket, round) {
   round = parseInt(round, 10);
   if (bracket === 'gf') return 'Grand final';
   if (bracket === 'sw') return 'Swiss round ' + round;
   if (bracket === 'ffa') return 'FFA round ' + round;
+  // deepest round in this bracket — from real matches, or projected during signups
   let maxR = 0;
-  for (const m of T.matches) if (m.bracket === bracket && m.round > maxR) maxR = m.round;
+  for (const m of (T.matches || [])) if (m.bracket === bracket && m.round > maxR) maxR = m.round;
+  if (!maxR) {
+    const n = projectedTeamCount();
+    if (n >= 2) {
+      const R = log2i(nextPow2(n));
+      maxR = (bracket === 'lb') ? Math.max(2 * R - 2, 0) : R;
+    }
+  }
   if (bracket === 'lb') return round === maxR ? 'Losers final' : 'Losers round ' + round;
   if (bracket === 'wb') {
     if (T.bracketType === 'double') return round === maxR ? 'Winners final' : 'Winners round ' + round;
@@ -2346,20 +2460,16 @@ function editPool(existing) {
   });
 }
 
-// assign a pool to rounds (and clear). Lists the rounds present in the bracket.
+// Assign a pool to rounds. Works before the bracket is generated by projecting the rounds
+// from the expected team count, so organizers can prep everything during signups.
 function assignPool(pool) {
-  // collect the distinct (bracket:round) keys that exist as matches, plus the current assignment
-  const roundKeys = [];
-  const seen = {};
-  for (const m of T.matches) {
-    if (m.bracket === 'ffa') continue;
-    const k = m.bracket + ':' + m.round;
-    if (!seen[k]) { seen[k] = 1; roundKeys.push(k); }
-  }
-  // if the bracket isn't generated yet, offer generic round slots based on plan? Keep it simple:
+  const proj = projectedRoundKeys();
+  const roundKeys = proj.keys;
   if (roundKeys.length === 0) {
     modal(`<h3>Assign "${esc(pool.name)}"</h3>
-      <p class="muted small">Round assignment becomes available once the bracket is generated (each round then appears here). Until then, a single pool is used as the default for all matches.</p>
+      <p class="muted small">${T.competition === 'ffa'
+        ? 'FFA rounds don\'t use map vetoes.'
+        : 'Not enough signups yet to work out how many rounds there will be. Add players (or set a team cap on the Admin tab) and this will fill in.'}</p>
       <div class="actions"><button class="btn ghost" id="paClose">Close</button></div>`, root => {
       root.querySelector('#paClose').onclick = closeModal;
     });
@@ -2372,13 +2482,14 @@ function assignPool(pool) {
     const otherName = assignedOther ? ((T.mapPools.find(p => p.id === T.poolAssign[k]) || {}).name || '') : '';
     // the pool is built for one series length; flag rounds that don't match
     const rbos = {};
-    for (const mm of T.matches) if (mm.bracket === bk && mm.round === parseInt(rd, 10)) rbos[mm.bo] = 1;
+    for (const mm of (T.matches || [])) if (mm.bracket === bk && mm.round === parseInt(rd, 10)) rbos[mm.bo] = 1;
     const boList = Object.keys(rbos).map(x => parseInt(x, 10));
     const mismatch = boList.length && boList.indexOf(pool.bo || 1) < 0;
-    return `<button type="button" class="pick-row${assignedHere ? ' on' : ''}" data-rkey="${k}">${esc(roundKeyLabel(bk, rd))}${boList.length ? ' <span class="muted small" style="font-weight:400">Bo' + boList.join('/') + '</span>' : ''}${mismatch ? ' <span class="warn small">pool is Bo' + (pool.bo || 1) + '</span>' : ''}${assignedOther ? ' <span class="muted small" style="font-weight:400">(currently: ' + esc(otherName) + ')</span>' : ''}</button>`;
+    return `<button type="button" class="pick-row${assignedHere ? ' on' : ''}" data-rkey="${k}"><span class="pr-name">${esc(roundKeyLabel(bk, rd))}</span>${boList.length ? '<span class="muted small">Bo' + boList.join('/') + '</span>' : ''}${mismatch ? '<span class="warn small">pool is Bo' + (pool.bo || 1) + '</span>' : ''}${assignedOther ? '<span class="muted small">(currently: ' + esc(otherName) + ')</span>' : ''}<span class="pr-tick"></span></button>`;
   }).join('');
   modal(`<h3>Assign "${esc(pool.name)}" to rounds</h3>
-    <p class="muted small">Tick the rounds that use this pool. Unticking a round clears its assignment (it falls back to the default pool).</p>
+    <p class="muted small">Tick the rounds that use this pool. Unticking clears it (that round falls back to the default pool).</p>
+    ${proj.projected ? '<p class="muted small">Planning ahead for <strong>' + proj.teams + ' teams</strong> — these are the rounds you\'ll get. If the entry count changes the bracket may gain or lose a round, so check back before you generate it.</p>' : ''}
     <div class="pick-rows">${rows}</div>
     <div class="actions"><button class="btn ghost" id="paCancel">Cancel</button><button class="btn primary" id="paSave">Save</button></div>`, root => {
     root.querySelectorAll('.pick-row').forEach(btn => btn.onclick = () => btn.classList.toggle('on'));
@@ -2387,7 +2498,6 @@ function assignPool(pool) {
       const checked = {};
       root.querySelectorAll('.pick-row.on').forEach(b => { checked[b.dataset.rkey] = 1; });
       try {
-        // for each round key: if checked -> assign this pool; if it was this pool and now unchecked -> clear
         for (const k of roundKeys) {
           const want = !!checked[k];
           const isThis = T.poolAssign[k] === pool.id;
@@ -2395,79 +2505,6 @@ function assignPool(pool) {
           else if (!want && isThis) await api('/api/t/' + T.id + '/pool_assign', { key: k, poolId: '', admin: adminToken() });
         }
         closeModal(); toast('Assignments saved'); await refresh();
-      } catch (e) { toast(e.message, true); }
-    };
-  });
-}
-
-// add/edit a single map (name, description, image upload + preview, publish)
-function editMapEntry(existing) {
-  const m = existing || { name: '', description: '', image: null, published: 0 };
-  const body = `
-    <h3>${existing ? 'Edit map' : 'Add map'}</h3>
-    <label>Map name</label>
-    <input type="text" id="meName" maxlength="60" value="${esc(m.name)}" placeholder="e.g. Seton's Clutch" autocomplete="off">
-    <label style="margin-top:10px">Lobby settings / description <span class="muted" style="font-weight:400">(optional)</span></label>
-    <textarea id="meDesc" rows="3" maxlength="1000" placeholder="e.g. Slots 1 &amp; 2 closed, 3 &amp; 4 mex spawns enabled, no air">${esc(m.description || '')}</textarea>
-    <label style="margin-top:10px">Preview image <span class="muted" style="font-weight:400">(optional, max 5MB)</span></label>
-    <div class="me-image">
-      <div class="me-thumb" id="meThumb">${m.image ? `<img src="/map-images/${esc(m.image)}">` : '<span class="muted small">no image</span>'}</div>
-      <div class="me-image-ctl">
-        <input type="file" id="meFile" accept="image/*" style="display:none">
-        <button class="btn ghost small" id="mePick">${m.image ? 'Replace image' : 'Upload image'}</button>
-        ${m.image ? '<button class="btn ghost small" id="meRemove">Remove image</button>' : ''}
-        <div class="muted small" id="meFileName" style="margin-top:6px"></div>
-      </div>
-    </div>
-    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer">
-      <input type="checkbox" id="mePub" style="width:auto"${m.published ? ' checked' : ''}> Published (visible to players)
-    </label>
-    <div class="actions">
-      <button class="btn ghost" id="meCancel">Cancel</button>
-      <button class="btn primary" id="meSave">${existing ? 'Save' : 'Add map'}</button>
-    </div>`;
-  modal(body, root => {
-    let imageData = null;   // new base64 to upload
-    let removeImage = false;
-    const fileInput = root.querySelector('#meFile');
-    const thumb = root.querySelector('#meThumb');
-
-    root.querySelector('#mePick').onclick = () => fileInput.click();
-    fileInput.onchange = () => {
-      const f = fileInput.files[0];
-      if (!f) return;
-      if (!f.type.startsWith('image/')) { toast('Please choose an image file', true); return; }
-      if (f.size > 5 * 1024 * 1024) { toast('Image exceeds 5MB', true); return; }
-      const reader = new FileReader();
-      reader.onload = () => {
-        imageData = reader.result;   // data URL
-        removeImage = false;
-        thumb.innerHTML = '<img src="' + imageData + '">';
-        root.querySelector('#meFileName').textContent = f.name;
-      };
-      reader.readAsDataURL(f);
-    };
-    const rm = root.querySelector('#meRemove');
-    if (rm) rm.onclick = () => { imageData = null; removeImage = true; thumb.innerHTML = '<span class="muted small">image will be removed</span>'; };
-
-    root.querySelector('#meCancel').onclick = closeModal;
-    root.querySelector('#meSave').onclick = async () => {
-      const name = root.querySelector('#meName').value.trim();
-      if (!name) return toast('Map name required', true);
-      const payload = {
-        id: existing ? m.id : undefined,
-        name,
-        description: root.querySelector('#meDesc').value,
-        published: root.querySelector('#mePub').checked ? 1 : 0,
-        admin: adminToken()
-      };
-      if (imageData) payload.image = imageData;
-      else if (removeImage) payload.removeImage = 1;
-      try {
-        await api('/api/t/' + T.id + '/map_save', payload);
-        closeModal();
-        toast(existing ? 'Map saved' : 'Map added');
-        await refresh();
       } catch (e) { toast(e.message, true); }
     };
   });

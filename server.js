@@ -275,7 +275,7 @@ function publicView(t) {
     rounds: t.rounds || 0,
     maps: t.maps || {},
     mapDb: (t.mapDb || []).map(publicMapView),
-    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice(), bo: p.bo || ((p.sequence || []).filter(x => x.action === 'pick').length + 1) })),
+    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice(), bo: p.bo || ((p.sequence || []).filter(x => x.action === 'pick').length + 1), published: p.published ? 1 : 0 })),
     poolAssign: t.poolAssign || {},
     players: t.players,
     teams: t.teams.map(x => ({
@@ -1444,8 +1444,28 @@ async function handleAPI(req, res, url) {
         signedUpPlayerId: signedUpId,
         oauthEnabled: FAF_OAUTH_ON ? 1 : 0
       };
-      // hide unpublished maps from non-organizers (TD-team prep stays private)
-      if (!organizer) view.mapDb = (view.mapDb || []).filter(m => m.published);
+      // Hide prep from non-organizers: unpublished maps and unpublished pools.
+      // Exception: a map that's already on screen somewhere (in a live veto or a round's
+      // map pool) must keep its name, or players would see a raw id.
+      if (!organizer) {
+        const inPlay = {};
+        for (const m of (view.matches || [])) {
+          if (!m.veto) continue;
+          for (const id of (m.veto.remaining || [])) inPlay[id] = 1;
+          for (const x of (m.veto.banned || [])) inPlay[x.map] = 1;
+          for (const g of (m.veto.picks || [])) inPlay[g.map] = 1;
+          if (m.veto.decider) inPlay[m.veto.decider.map] = 1;
+        }
+        for (const key of Object.keys(view.maps || {})) {
+          for (const id of (view.maps[key] || [])) inPlay[id] = 1;
+        }
+        // maps inside a published pool are public by definition
+        for (const p of (view.mapPools || [])) {
+          if (p.published) for (const id of (p.mapIds || [])) inPlay[id] = 1;
+        }
+        view.mapDb = (view.mapDb || []).filter(m => m.published || inPlay[m.id]);
+        view.mapPools = (view.mapPools || []).filter(p => p.published);
+      }
       return json(res, 200, view);
     }
 
@@ -1994,12 +2014,22 @@ async function handleAPI(req, res, url) {
         pool.mapIds = ids;
         pool.sequence = seq;
         pool.bo = bo;
+        if (b.published !== undefined) pool.published = b.published ? 1 : 0;
       } else {
-        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo };
+        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo, published: b.published ? 1 : 0 };
         t.mapPools.push(pool);
       }
       saveDB();
       return json(res, 200, { ok: true, id: pool.id });
+    }
+
+    if (sub === 'pool_publish') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const pool = poolById(t, b.id);
+      if (!pool) return bad(res, 'Pool not found');
+      pool.published = b.published ? 1 : 0;
+      saveDB();
+      return json(res, 200, { ok: true });
     }
 
     if (sub === 'pool_delete') {
