@@ -65,10 +65,12 @@ function loadDB() {
     }
     if (!t.maps) t.maps = {};
     if (!Array.isArray(t.mapDb)) t.mapDb = [];
+    if (!Array.isArray(t.mapPools)) t.mapPools = [];
+    if (!t.poolAssign || typeof t.poolAssign !== 'object') t.poolAssign = {};
     if (t.lobbyOptions === undefined) t.lobbyOptions = '';
     if (t.mods === undefined) t.mods = '';
     if (t.imported === undefined) t.imported = false;
-    if (t.veto === undefined) t.veto = { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
+    if (t.veto === undefined) t.veto = { enabled: false, mode: 'upfront', sequences: {} };
     if (!t.lateToken) t.lateToken = uid(12);
     if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
     if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
@@ -162,40 +164,65 @@ function deleteMapImage(fname) {
   try { fs.unlinkSync(path.join(MAP_IMG_DIR, path.basename(fname))); } catch (e) {}
 }
 
-function cleanVeto(v, validIds) {
-  const EMPTY = { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
-  if (!v || typeof v !== 'object') return EMPTY;
-  let pool = Array.isArray(v.mapPool)
-    ? v.mapPool.map(x => String(x || '').trim()).filter(x => x).slice(0, 64)
-    : [];
-  // mapPool now holds map-DB IDs; if a valid-id set is supplied, keep only real ones
-  if (validIds) pool = pool.filter(id => validIds[id]);
-  // dedupe preserving order
-  const seen = {}, dedup = [];
-  for (const m of pool) { if (!seen[m]) { seen[m] = 1; dedup.push(m); } }
+// find the pool object by id
+function poolById(t, id) {
+  if (!t.mapPools) return null;
+  for (const p of t.mapPools) if (p.id === id) return p;
+  return null;
+}
+// resolve which pool a match should use: match-specific → round → tournament default (first pool)
+function poolForMatch(t, m) {
+  if (!t.mapPools || !t.mapPools.length) return null;
+  const a = t.poolAssign || {};
+  let pid = a['match:' + m.id];
+  if (!pid) pid = a[m.bracket + ':' + m.round];
+  let pool = pid ? poolById(t, pid) : null;
+  if (!pool) pool = t.mapPools[0]; // default to the first pool
+  return pool;
+}
+// the map ids available for a match's veto (its pool's maps)
+function poolMapIds(t, m) {
+  const pool = poolForMatch(t, m);
+  return pool ? (pool.mapIds || []).slice() : [];
+}
 
-  // sequence: ordered [{action:'ban'|'pick', team:'A'|'B'}]. The leftover map after the
-  // sequence is the auto-decider (played as the final game).
-  let seq = [];
-  if (Array.isArray(v.sequence)) {
-    for (const step of v.sequence) {
+// Sanitize an ordered ban/pick step list.
+function cleanSequence(arr) {
+  const seq = [];
+  if (Array.isArray(arr)) {
+    for (const step of arr) {
       if (!step || typeof step !== 'object') continue;
       const action = step.action === 'pick' ? 'pick' : (step.action === 'ban' ? 'ban' : null);
       const team = step.team === 'B' ? 'B' : (step.team === 'A' ? 'A' : null);
       if (action && team) seq.push({ action, team });
     }
   }
-  seq = seq.slice(0, 32);
-  // a sequence that removes/assigns more maps than exist is invalid; cap it so at least the
-  // decider remains. steps consume one map each; need pool > steps (leftover = decider).
-  if (dedup.length > 0 && seq.length > dedup.length - 1) seq = seq.slice(0, dedup.length - 1);
+  return seq.slice(0, 32);
+}
 
+// Veto config. Now holds a sequence PER series length (Bo1/Bo3/Bo5/Bo7); each match uses the
+// sequence matching its own BO. Maps come from the match's assigned pool (see poolForMatch).
+function cleanVeto(v) {
+  const EMPTY = { enabled: false, mode: 'upfront', sequences: {} };
+  if (!v || typeof v !== 'object') return EMPTY;
   const mode = v.mode === 'continuous' ? 'continuous' : 'upfront';
+  const sequences = {};
+  const src = (v.sequences && typeof v.sequences === 'object') ? v.sequences : {};
+  for (const bo of [1, 3, 5, 7]) {
+    const seq = cleanSequence(src[bo] || src[String(bo)]);
+    if (seq.length) sequences[bo] = seq;
+  }
+  // legacy single-sequence configs: treat as the Bo-appropriate default if present
+  if (Object.keys(sequences).length === 0 && Array.isArray(v.sequence) && v.sequence.length) {
+    const legacy = cleanSequence(v.sequence);
+    const picks = legacy.filter(s => s.action === 'pick').length;
+    const bo = picks >= 3 ? 7 : picks === 2 ? 5 : picks === 1 ? 3 : 1;
+    sequences[bo] = legacy;
+  }
   return {
-    enabled: !!v.enabled && dedup.length >= 2 && seq.length >= 1,
-    mapPool: dedup,
-    sequence: seq,
-    mode: mode
+    enabled: !!v.enabled && Object.keys(sequences).length >= 1,
+    mode: mode,
+    sequences: sequences
   };
 }
 
@@ -256,13 +283,15 @@ function publicView(t) {
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding,
-    veto: t.veto || { enabled: false, mapPool: [], sequence: [], mode: 'upfront' },
+    veto: t.veto || { enabled: false, mode: 'upfront', sequences: {} },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
     challongeDate: t.challongeDate || null,
     rounds: t.rounds || 0,
     maps: t.maps || {},
     mapDb: (t.mapDb || []).map(publicMapView),
+    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice() })),
+    poolAssign: t.poolAssign || {},
     players: t.players,
     teams: t.teams.map(x => ({
       id: x.id, name: x.name, seed: x.seed,
@@ -290,31 +319,41 @@ function publicView(t) {
 // slot values: null = pending, 'BYE' = confirmed empty, otherwise teamId
 
 // Initialize the veto state for a match, if the tournament has vetoes enabled.
-// A/B default from seed (higher seed = A), organizer can reassign per match. The sequence
-// of ban/pick steps is walked one at a time; picks fill ordered game slots; leftover = decider.
+// The sequence is chosen by the match's BO; maps come from the match's assigned pool.
+// A/B is set at generation (higher seed = A) and the organizer can reassign before it opens.
 function initVeto(t, m) {
   if (!t.veto || !t.veto.enabled) return;
   if (m.bracket === 'ffa') return; // vetoes are for head-to-head matches only
   if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return;
-  if (t.veto.mapPool.length < 2 || !t.veto.sequence || !t.veto.sequence.length) return;
   if (m.veto && m.veto.stepIndex > 0) return; // already started — don't clobber progress
+
+  const seq = (t.veto.sequences && (t.veto.sequences[m.bo] || t.veto.sequences[String(m.bo)])) || null;
+  let poolIds = poolMapIds(t, m); // maps in this match's pool
+  // need a sequence for this BO and enough maps (steps consume 1 each, +1 decider)
+  if (!seq || !seq.length) { m.veto = null; return; }
+  const need = seq.length + 1;
+  if (poolIds.length < need) { m.veto = null; return; }
+  // if the pool is larger than the sequence needs, use the first `need` maps so exactly one
+  // map is left as the decider (a sequence resolves to a single leftover by construction).
+  if (poolIds.length > need) poolIds = poolIds.slice(0, need);
+
   // default: higher seed (lower seed number) is A
   const s1 = (teamById(t, m.team1) || {}).seed || 999;
   const s2 = (teamById(t, m.team2) || {}).seed || 999;
   const teamA = (m.veto && m.veto.teamA) || (s1 <= s2 ? m.team1 : m.team2);
   const teamB = teamA === m.team1 ? m.team2 : m.team1;
   m.veto = {
-    remaining: t.veto.mapPool.slice(),
+    remaining: poolIds,
     banned: [],                 // [{ map, by:teamId }]
     picks: [],                  // [{ map, by:teamId, game:N }] ordered game slots
-    sequence: t.veto.sequence.slice(),
+    sequence: seq.slice(),
     mode: t.veto.mode || 'upfront',
     stepIndex: 0,
     teamA: teamA,
     teamB: teamB,
+    bo: m.bo,
     done: false
   };
-  // resolve the decider immediately if the sequence leaves exactly one map (handled at completion)
 }
 
 // which team's turn is it, and what action, at the current step? returns {team, action}|null
@@ -656,6 +695,7 @@ function swissPairRound(t, r) {
     const b = pool.splice(j, 1)[0];
     const m = newMatch(t, 'sw', r, idx++, t.cfg.bo);
     m.team1 = a; m.team2 = b; m.status = 'ready';
+    initVeto(t, m);
   }
 }
 
@@ -740,6 +780,7 @@ function swissAfterReport(t) {
         if (!b) b = pool[1];
         const m = newMatch(t, 'sw', Math.min(st[a].played, st[b].played) + 1, 98, t.cfg.bo);
         m.team1 = a; m.team2 = b; m.status = 'ready';
+        initVeto(t, m);
         continue; // try to pair more
       }
       if (pool.length === 1) {
@@ -1312,7 +1353,7 @@ async function handleAPI(req, res, url) {
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
       plan, maxTeams,
-      cfg: null, maps: {}, mapDb: [],
+      cfg: null, maps: {}, mapDb: [], mapPools: [], poolAssign: {},
       seeding: (b.seeding === 'rating') ? 'rating' : 'random',
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
@@ -1921,15 +1962,59 @@ async function handleAPI(req, res, url) {
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.veto !== undefined) {
         if (t.status === 'running' || t.status === 'finished') return bad(res, 'Vetoes can only be changed before the bracket starts');
-        const validIds = {};
-        for (const mp of (t.mapDb || [])) validIds[mp.id] = 1;
-        t.veto = cleanVeto(b.veto, validIds);
+        t.veto = cleanVeto(b.veto);
       }
       saveDB();
       return json(res, 200, { ok: true });
     }
 
     // set maps for a round (admin, any time)
+    // ===== map pools (named sets of maps, assignable to rounds/matches) =====
+    if (sub === 'pool_save') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const name = cleanName(b.name, 40);
+      if (!name) return bad(res, 'Pool name required');
+      const ids = Array.isArray(b.mapIds) ? b.mapIds.filter(id => mapById(t, id)) : [];
+      let pool;
+      if (b.id) {
+        pool = poolById(t, b.id);
+        if (!pool) return bad(res, 'Pool not found');
+        pool.name = name;
+        pool.mapIds = ids;
+      } else {
+        pool = { id: 'pool' + uid(5), name, mapIds: ids };
+        t.mapPools.push(pool);
+      }
+      saveDB();
+      return json(res, 200, { ok: true, id: pool.id });
+    }
+
+    if (sub === 'pool_delete') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      t.mapPools = (t.mapPools || []).filter(p => p.id !== b.id);
+      // clear any assignments pointing to this pool
+      for (const key of Object.keys(t.poolAssign || {})) {
+        if (t.poolAssign[key] === b.id) delete t.poolAssign[key];
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // assign a pool to a round ("bracket:round") or a specific match ("match:<id>"); empty clears it
+    if (sub === 'pool_assign') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const key = String(b.key || '');
+      if (!key) return bad(res, 'Missing assignment key');
+      if (b.poolId) {
+        if (!poolById(t, b.poolId)) return bad(res, 'Pool not found');
+        t.poolAssign[key] = b.poolId;
+      } else {
+        delete t.poolAssign[key];
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     // ===== map database =====
     // Add or update a map. Image comes as a base64 data URL (optional). Organizer only.
     if (sub === 'map_save') {
@@ -1983,11 +2068,15 @@ async function handleAPI(req, res, url) {
       if (!map) return json(res, 200, { ok: true });
       deleteMapImage(map.image);
       t.mapDb = t.mapDb.filter(m => m.id !== b.id);
-      // remove from any round pools
+      // remove from any round pools (legacy per-round map lists)
       for (const key of Object.keys(t.maps || {})) {
         t.maps[key] = (t.maps[key] || []).filter(id => id !== b.id);
       }
-      // remove from veto pool
+      // remove from all named map pools
+      for (const pool of (t.mapPools || [])) {
+        pool.mapIds = (pool.mapIds || []).filter(id => id !== b.id);
+      }
+      // remove from veto pool (legacy flat pool)
       if (t.veto && Array.isArray(t.veto.mapPool)) t.veto.mapPool = t.veto.mapPool.filter(id => id !== b.id);
       saveDB();
       return json(res, 200, { ok: true });

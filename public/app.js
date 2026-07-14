@@ -1919,6 +1919,10 @@ function mapRows(maps) {
 
 function mapsLine(bracket, round, el) {
   if (T.imported) return;
+  // if this round's matches use map vetoes, the maps come from the veto (shown on the Vetoes tab),
+  // so don't show the round map-pool block at all.
+  const roundHasVeto = T.matches.some(m => m.bracket === bracket && m.round === round && m.veto);
+  if (roundHasVeto) return;
   const admin = viewerIsOrganizer();
   const maps = mapsFor(bracket, round);
   if (!maps.length && !admin) return;
@@ -2048,14 +2052,8 @@ function matchBox(m) {
 function vetoIndicator(m) {
   if (!m.veto) return '';
   const v = m.veto;
-  if (!v.done) {
-    return `<div class="veto-mini"><a href="#" data-veto-link="${m.id}" class="veto-mini-link">Map veto in progress →</a></div>`;
-  }
-  const picks = (v.picks || []).slice().sort((a, b) => a.game - b.game);
-  const games = picks.slice();
-  if (v.decider) games.push(v.decider);
-  if (!games.length) return '';
-  return `<div class="veto-mini done">${games.map(g => '<span class="veto-mini-map">' + esc(mapName(g.map)) + '</span>').join('')}</div>`;
+  const label = v.done ? 'See vetoed maps →' : 'Map veto in progress →';
+  return `<div class="veto-mini"><a href="#" data-veto-link="${m.id}" class="veto-mini-link">${label}</a></div>`;
 }
 
 // ---- Maps tab: the map database + where each map is played ----
@@ -2073,9 +2071,14 @@ function drawMaps(el) {
       usage[id].push(lbl);
     }
   }
-  // also note maps in the veto pool
-  const inVetoPool = {};
-  if (T.veto && T.veto.enabled) for (const id of (T.veto.mapPool || [])) inVetoPool[id] = 1;
+  // which pools each map belongs to (for a badge)
+  const inPool = {};
+  for (const pool of (T.mapPools || [])) {
+    for (const id of (pool.mapIds || [])) {
+      if (!inPool[id]) inPool[id] = [];
+      inPool[id].push(pool.name);
+    }
+  }
 
   let html = '';
 
@@ -2086,7 +2089,7 @@ function drawMaps(el) {
         <div><h2 style="margin:0">Map database</h2><div class="muted small">${db.length} map${db.length === 1 ? '' : 's'} · ${published} published${db.length - published > 0 ? ' · ' + (db.length - published) + ' hidden (prep)' : ''}</div></div>
         <button class="btn primary" id="mapAdd">+ Add map</button>
       </div>
-      <p class="muted small" style="margin-top:8px">Add every map that might be played. Hidden maps are only visible to organizers — use that to prep a pool before revealing it. When map vetoes are on, captains ban/pick from this pool; you can also assign maps to specific rounds on the Bracket tab.</p>
+      <p class="muted small" style="margin-top:8px">Add every map that might be played. Hidden maps are only visible to organizers — use that to prep a pool before revealing it. Group maps into pools below and assign each pool to rounds or matches; when vetoes are on, captains ban/pick from the pool assigned to their match.</p>
     </div>`;
   }
 
@@ -2099,7 +2102,7 @@ function drawMaps(el) {
       const used = usage[m.id] || [];
       const badges = [];
       if (admin && !m.published) badges.push('<span class="idbadge late">hidden</span>');
-      if (inVetoPool[m.id]) badges.push('<span class="idbadge verified">veto pool</span>');
+      if (inPool[m.id]) badges.push('<span class="idbadge verified">' + esc(inPool[m.id].join(', ')) + '</span>');
       html += `<div class="mapdb-card">
         <div class="mapdb-thumb${m.image ? '' : ' noimg'}" ${m.image ? 'data-map-info="' + esc(m.id) + '"' : ''}>
           ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">no image</span>'}
@@ -2119,6 +2122,45 @@ function drawMaps(el) {
     html += '</div></div>';
   }
 
+  // ---- map pools (organizer only) ----
+  if (admin) {
+    const pools = T.mapPools || [];
+    html += `<div class="panel section">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><h2 style="margin:0">Map pools</h2><div class="muted small">Group maps into pools, then assign each pool to rounds or matches. A match's veto draws from its assigned pool.</div></div>
+        <button class="btn primary" id="poolAdd"${db.length === 0 ? ' disabled title="Add maps first"' : ''}>+ New pool</button>
+      </div>`;
+    if (pools.length === 0) {
+      html += '<div class="empty" style="margin-top:12px">No pools yet.' + (db.length === 0 ? ' Add maps first.' : ' Create one to group maps.') + '</div>';
+    } else {
+      html += '<div class="pool-cards">';
+      for (const pool of pools) {
+        const names = (pool.mapIds || []).map(id => mapName(id));
+        // where is this pool assigned?
+        const assignedTo = [];
+        for (const key of Object.keys(T.poolAssign || {})) {
+          if (T.poolAssign[key] === pool.id) {
+            const [bk, rd] = key.split(':');
+            if (bk === 'match') assignedTo.push('a specific match');
+            else assignedTo.push(roundKeyLabel(bk, rd));
+          }
+        }
+        html += `<div class="pool-card">
+          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">${names.length} map${names.length === 1 ? '' : 's'}</span></div>
+          <div class="pool-card-maps">${names.length ? names.map(n => '<span class="pool-map-chip">' + esc(n) + '</span>').join('') : '<span class="muted small">no maps</span>'}</div>
+          ${assignedTo.length ? '<div class="pool-card-assign">Used for: ' + assignedTo.map(a => esc(a)).join(', ') + '</div>' : '<div class="pool-card-assign muted">Not assigned yet' + (pools.length === 1 ? ' (used as default)' : '') + '</div>'}
+          <div class="pool-card-actions">
+            <button class="btn ghost small" data-pooledit="${pool.id}">Edit maps</button>
+            <button class="btn ghost small" data-poolassign="${pool.id}">Assign to rounds</button>
+            <button class="btn danger small" data-pooldel="${pool.id}">Delete</button>
+          </div>
+        </div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
   el.innerHTML = html;
 
   const addBtn = document.getElementById('mapAdd');
@@ -2131,10 +2173,106 @@ function drawMaps(el) {
   });
   el.querySelectorAll('[data-mapdel]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mapdel);
-    const used = (usage[m.id] || []).length || inVetoPool[m.id];
-    if (!confirm('Delete "' + m.name + '"?' + (used ? ' It will be removed from rounds and the veto pool too.' : ''))) return;
+    const used = (usage[m.id] || []).length || (inPool[m.id] && inPool[m.id].length);
+    if (!confirm('Delete "' + m.name + '"?' + (used ? ' It will be removed from rounds and pools too.' : ''))) return;
     try { await api('/api/t/' + T.id + '/map_delete', { id: m.id, admin: adminToken() }); toast('Map deleted'); await refresh(); }
     catch (e) { toast(e.message, true); }
+  });
+  // pool controls
+  const poolAdd = document.getElementById('poolAdd');
+  if (poolAdd) poolAdd.onclick = () => editPool(null);
+  el.querySelectorAll('[data-pooledit]').forEach(b => b.onclick = () => editPool((T.mapPools || []).find(p => p.id === b.dataset.pooledit)));
+  el.querySelectorAll('[data-poolassign]').forEach(b => b.onclick = () => assignPool((T.mapPools || []).find(p => p.id === b.dataset.poolassign)));
+  el.querySelectorAll('[data-pooldel]').forEach(b => b.onclick = async () => {
+    const pool = (T.mapPools || []).find(p => p.id === b.dataset.pooldel);
+    if (!confirm('Delete pool "' + pool.name + '"? Round/match assignments to it are cleared.')) return;
+    try { await api('/api/t/' + T.id + '/pool_delete', { id: pool.id, admin: adminToken() }); toast('Pool deleted'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+// a readable label for a round-assignment key
+function roundKeyLabel(bracket, round) {
+  if (bracket === 'gf') return 'Grand final';
+  if (bracket === 'sw') return 'Swiss round ' + round;
+  if (bracket === 'ffa') return 'FFA round ' + round;
+  if (bracket === 'lb') return 'LB round ' + round;
+  if (bracket === 'wb') return (T.bracketType === 'double' ? 'WB round ' : 'Round ') + round;
+  return bracket + ' ' + round;
+}
+
+// create/edit a map pool (name + which maps are in it)
+function editPool(existing) {
+  const pool = existing || { name: '', mapIds: [] };
+  const db = T.mapDb || [];
+  const body = `
+    <h3>${existing ? 'Edit pool' : 'New pool'}</h3>
+    <label>Pool name</label>
+    <input type="text" id="plName" maxlength="40" value="${esc(pool.name)}" placeholder="e.g. Finals pool" autocomplete="off">
+    <label style="margin-top:12px">Maps in this pool</label>
+    <div class="vpool-list">
+      ${db.map(m => `<label class="vpool-item"><input type="checkbox" class="plCb" value="${m.id}"${(pool.mapIds || []).indexOf(m.id) >= 0 ? ' checked' : ''}> ${esc(m.name)}${!m.published ? ' <span class="idbadge late">hidden</span>' : ''}</label>`).join('')}
+    </div>
+    <div class="actions"><button class="btn ghost" id="plCancel">Cancel</button><button class="btn primary" id="plSave">${existing ? 'Save' : 'Create pool'}</button></div>`;
+  modal(body, root => {
+    root.querySelector('#plCancel').onclick = closeModal;
+    root.querySelector('#plSave').onclick = async () => {
+      const name = root.querySelector('#plName').value.trim();
+      if (!name) return toast('Pool name required', true);
+      const mapIds = Array.from(root.querySelectorAll('.plCb')).filter(c => c.checked).map(c => c.value);
+      try {
+        await api('/api/t/' + T.id + '/pool_save', { id: existing ? pool.id : undefined, name, mapIds, admin: adminToken() });
+        closeModal(); toast(existing ? 'Pool saved' : 'Pool created'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+// assign a pool to rounds (and clear). Lists the rounds present in the bracket.
+function assignPool(pool) {
+  // collect the distinct (bracket:round) keys that exist as matches, plus the current assignment
+  const roundKeys = [];
+  const seen = {};
+  for (const m of T.matches) {
+    if (m.bracket === 'ffa') continue;
+    const k = m.bracket + ':' + m.round;
+    if (!seen[k]) { seen[k] = 1; roundKeys.push(k); }
+  }
+  // if the bracket isn't generated yet, offer generic round slots based on plan? Keep it simple:
+  if (roundKeys.length === 0) {
+    modal(`<h3>Assign "${esc(pool.name)}"</h3>
+      <p class="muted small">Round assignment becomes available once the bracket is generated (each round then appears here). Until then, a single pool is used as the default for all matches.</p>
+      <div class="actions"><button class="btn ghost" id="paClose">Close</button></div>`, root => {
+      root.querySelector('#paClose').onclick = closeModal;
+    });
+    return;
+  }
+  const rows = roundKeys.map(k => {
+    const [bk, rd] = k.split(':');
+    const assignedHere = T.poolAssign[k] === pool.id;
+    const assignedOther = T.poolAssign[k] && T.poolAssign[k] !== pool.id;
+    const otherName = assignedOther ? ((T.mapPools.find(p => p.id === T.poolAssign[k]) || {}).name || '') : '';
+    return `<label class="pa-row"><input type="checkbox" class="paCb" value="${k}"${assignedHere ? ' checked' : ''}> ${esc(roundKeyLabel(bk, rd))}${assignedOther ? ' <span class="muted small">(currently: ' + esc(otherName) + ')</span>' : ''}</label>`;
+  }).join('');
+  modal(`<h3>Assign "${esc(pool.name)}" to rounds</h3>
+    <p class="muted small">Tick the rounds that use this pool. Unticking a round clears its assignment (it falls back to the default pool).</p>
+    ${rows}
+    <div class="actions"><button class="btn ghost" id="paCancel">Cancel</button><button class="btn primary" id="paSave">Save</button></div>`, root => {
+    root.querySelector('#paCancel').onclick = closeModal;
+    root.querySelector('#paSave').onclick = async () => {
+      const checked = {};
+      root.querySelectorAll('.paCb').forEach(c => { if (c.checked) checked[c.value] = 1; });
+      try {
+        // for each round key: if checked -> assign this pool; if it was this pool and now unchecked -> clear
+        for (const k of roundKeys) {
+          const want = !!checked[k];
+          const isThis = T.poolAssign[k] === pool.id;
+          if (want && !isThis) await api('/api/t/' + T.id + '/pool_assign', { key: k, poolId: pool.id, admin: adminToken() });
+          else if (!want && isThis) await api('/api/t/' + T.id + '/pool_assign', { key: k, poolId: '', admin: adminToken() });
+        }
+        closeModal(); toast('Assignments saved'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
   });
 }
 
@@ -2268,12 +2406,19 @@ function vetoHTML(m) {
 
   let h = '<div class="vetobox' + (v.done ? ' done' : '') + '">';
 
-  // A/B legend + organizer flip (only before the veto starts)
+  // A/B legend. Before the veto starts, the organizer sets who is A and who is B explicitly.
   h += `<div class="veto-ab">
     <span class="veto-abtag team-A">A: ${esc(nameA)}</span>
     <span class="veto-abtag team-B">B: ${esc(nameB)}</span>
-    ${(isOrg && v.stepIndex === 0 && !v.done) ? '<button class="btn ghost small" data-veto-flip="' + m.id + '" style="margin-left:auto">Swap A/B</button>' : ''}
   </div>`;
+  if (isOrg && v.stepIndex === 0 && !v.done) {
+    h += `<div class="veto-abset">
+      <span class="muted small">Set Team A (bans/picks first):</span>
+      <button class="btn ${v.teamA === m.team1 ? 'primary' : 'ghost'} small" data-veto-seta="${m.id}" data-team="${m.team1}">${esc(teamName(m.team1))}</button>
+      <button class="btn ${v.teamA === m.team2 ? 'primary' : 'ghost'} small" data-veto-seta="${m.id}" data-team="${m.team2}">${esc(teamName(m.team2))}</button>
+      <span class="muted small" style="margin-left:6px">Set this before players start.</span>
+    </div>`;
+  }
 
   if (v.done) {
     h += '<div class="veto-head">Maps</div><div class="veto-games">';
@@ -2331,12 +2476,14 @@ function wireVeto(box, m) {
       catch (e) { toast(e.message, true); }
     };
   });
-  const flip = box.querySelector('[data-veto-flip]');
-  if (flip) flip.onclick = async () => {
-    const newA = (v.teamA === m.team1) ? m.team2 : m.team1;
-    try { await api('/api/t/' + T.id + '/veto_setab', { matchId: m.id, teamA: newA, admin: adminToken() }); await refresh(); }
-    catch (e) { toast(e.message, true); }
-  };
+  box.querySelectorAll('[data-veto-seta]').forEach(btn => {
+    btn.onclick = async () => {
+      const teamA = btn.dataset.team;
+      if (teamA === v.teamA) return; // already A
+      try { await api('/api/t/' + T.id + '/veto_setab', { matchId: m.id, teamA, admin: adminToken() }); await refresh(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
   const undo = box.querySelector('[data-veto-undo]');
   if (undo) undo.onclick = async () => {
     try { await api('/api/t/' + T.id + '/veto_undo', { matchId: m.id, admin: adminToken() }); await refresh(); }
@@ -3257,28 +3404,21 @@ async function drawAdmin(el) {
   </div>`;
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0 && T.competition === 'team') {
-    const v = T.veto || { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
-    const vpool = v.mapPool || [];
-    const vdb = T.mapDb || [];
+    const v = T.veto || { enabled: false, mode: 'upfront', sequences: {} };
     html += `<div class="panel section"><h2>Map vetoes</h2>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="vtEnabled" style="width:auto"${v.enabled ? ' checked' : ''}> Enable map vetoes</label>
       <div id="vtCfg" style="${v.enabled ? '' : 'display:none;'}margin-top:12px">
-        <label>Map pool</label>
-        ${vdb.length === 0
-          ? '<p class="muted small">No maps in the database yet. Add maps on the <strong>Maps</strong> tab first, then pick which ones are in the veto pool here.</p>'
-          : '<p class="muted small">Tick the maps captains ban/pick from. Manage the maps themselves (images, descriptions, publish) on the Maps tab.</p><div class="vpool-list">' +
-            vdb.map(mp => `<label class="vpool-item"><input type="checkbox" class="vpoolCb" value="${mp.id}"${vpool.indexOf(mp.id) >= 0 ? ' checked' : ''}> ${esc(mp.name)}${!mp.published ? ' <span class="idbadge late">hidden</span>' : ''}</label>`).join('') +
-            '</div>'}
+        <p class="muted small">Maps and map pools live on the <strong>Maps</strong> tab — build your pools there and assign them to rounds or matches. Here you define the ban/pick order. Each match uses the order matching its own best-of, and the pool assigned to it.</p>
 
-        <label style="margin-top:14px">Ban / pick order</label>
-        <p class="muted small">Build the exact sequence captains follow. Team A and Team B alternate however you set it. Picks become games in order (Game 1, Game 2, ...); the last map left over is the decider. Start from a preset, or build your own.</p>
+        <label style="margin-top:8px">Ban / pick order per series length</label>
+        <div class="bo-tabs" id="boTabs">
+          ${[1,3,5,7].map((bo, i) => `<button class="bo-tab${i === 0 ? ' active' : ''}" data-botab="${bo}">Bo${bo}</button>`).join('')}
+        </div>
+        <div class="muted small" id="boSeqHint" style="margin:8px 0"></div>
         <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">
-          <span class="muted small" style="align-self:center">Presets:</span>
-          <button class="btn ghost small" data-vpreset="bo1">Bo1</button>
-          <button class="btn ghost small" data-vpreset="bo3">Bo3</button>
-          <button class="btn ghost small" data-vpreset="bo5">Bo5</button>
-          <button class="btn ghost small" data-vpreset="bo7">Bo7</button>
-          <button class="btn ghost small" data-vpreset="clear">Clear</button>
+          <span class="muted small" style="align-self:center">Preset:</span>
+          <button class="btn ghost small" id="boPreset">Standard for this Bo</button>
+          <button class="btn ghost small" id="boClear">Clear</button>
         </div>
         <div id="vtSeq" class="vseq"></div>
         <div class="row" style="gap:6px;margin-top:10px">
@@ -3294,7 +3434,7 @@ async function drawAdmin(el) {
           <option value="upfront"${v.mode !== 'continuous' ? ' selected' : ''}>All upfront — captains complete the whole veto before game 1</option>
           <option value="continuous"${v.mode === 'continuous' ? ' selected' : ''}>Continuous — reveal steps as games are played</option>
         </select>
-        <div class="muted small" style="margin-top:8px">Team A defaults to the higher seed; you can flip A/B per match from the bracket. Editable until the bracket starts.</div>
+        <div class="muted small" style="margin-top:8px">Team A defaults to the higher seed; you set who's A/B per match on the Bracket tab before the veto opens. Editable until the bracket starts.</div>
       </div>
       <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
     </div>`;
@@ -3317,13 +3457,26 @@ async function drawAdmin(el) {
   // ---- veto config with sequence editor ----
   const vtEnabled = document.getElementById('vtEnabled');
   if (vtEnabled) {
-    // working copy of the sequence being edited
-    let vseq = (T.veto && Array.isArray(T.veto.sequence)) ? T.veto.sequence.map(s => ({ action: s.action, team: s.team })) : [];
+    // per-BO working copies; each match uses the sequence matching its own best-of
+    const vseqs = {};
+    for (const bo of [1, 3, 5, 7]) {
+      const src = (T.veto && T.veto.sequences && (T.veto.sequences[bo] || T.veto.sequences[String(bo)])) || [];
+      vseqs[bo] = src.map(s => ({ action: s.action, team: s.team }));
+    }
+    let curBo = 1;
+
+    const PRESETS = {
+      1: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'} ], // ban to 1 (pool ≥5)
+      3: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'A'},{action:'pick',team:'B'} ], // 2 picks + decider
+      5: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'} ],
+      7: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'} ]
+    };
 
     const renderSeq = () => {
+      const vseq = vseqs[curBo];
       const host = document.getElementById('vtSeq');
       if (!host) return;
-      if (vseq.length === 0) { host.innerHTML = '<div class="muted small" style="padding:8px 0">No steps yet — use a preset or the buttons below.</div>'; }
+      if (vseq.length === 0) { host.innerHTML = '<div class="muted small" style="padding:8px 0">No steps for Bo' + curBo + '. Use the preset or add steps below. (Leave empty if you have no Bo' + curBo + ' matches.)</div>'; }
       else {
         host.innerHTML = vseq.map((s, i) => `<div class="vstep">
           <span class="vstep-n">${i + 1}</span>
@@ -3336,57 +3489,59 @@ async function drawAdmin(el) {
           </span>
         </div>`).join('');
       }
-      // summary: how many games this produces
       const picks = vseq.filter(s => s.action === 'pick').length;
       const bans = vseq.filter(s => s.action === 'ban').length;
-      const maps = Array.from(document.querySelectorAll('.vpoolCb')).filter(c => c.checked).map(c => c.value);
-      const games = picks + 1; // picks + decider
-      const need = vseq.length + 1; // steps consume one map each, +1 decider
+      const games = picks + 1;
+      const need = vseq.length + 1;
+      const hint = document.getElementById('boSeqHint');
+      if (hint) hint.innerHTML = 'Editing the <strong>Bo' + curBo + '</strong> order. A Bo' + curBo + ' match plays ' + curBo + ' game' + (curBo === 1 ? '' : 's') + '.';
       const sumEl = document.getElementById('vtSummary');
       if (sumEl) {
-        let msg = `${bans} ban${bans === 1 ? '' : 's'}, ${picks} pick${picks === 1 ? '' : 's'} → <strong>${games} game${games === 1 ? '' : 's'}</strong> (${picks} picked + 1 decider). Needs a pool of at least ${need} maps`;
-        if (maps.length && maps.length < need) msg += ` <span class="warn">— you have ${maps.length}</span>`;
-        sumEl.innerHTML = msg + '.';
+        if (vseq.length === 0) { sumEl.innerHTML = ''; }
+        else {
+          let msg = `${bans} ban${bans === 1 ? '' : 's'}, ${picks} pick${picks === 1 ? '' : 's'} → <strong>${games} game${games === 1 ? '' : 's'}</strong>. Each match's pool needs at least ${need} maps`;
+          if (games !== curBo) msg += ` <span class="warn">— this produces ${games} game${games === 1 ? '' : 's'} but Bo${curBo} needs ${curBo}</span>`;
+          sumEl.innerHTML = msg + '.';
+        }
       }
-      // wire step controls
       host.querySelectorAll('[data-vdel]').forEach(b => b.onclick = () => { vseq.splice(+b.dataset.vdel, 1); renderSeq(); });
       host.querySelectorAll('[data-vup]').forEach(b => b.onclick = () => { const i = +b.dataset.vup; if (i > 0) { [vseq[i-1], vseq[i]] = [vseq[i], vseq[i-1]]; renderSeq(); } });
       host.querySelectorAll('[data-vdown]').forEach(b => b.onclick = () => { const i = +b.dataset.vdown; if (i < vseq.length - 1) { [vseq[i+1], vseq[i]] = [vseq[i], vseq[i+1]]; renderSeq(); } });
     };
 
-    // presets — mirror the common competitive formats (A/B alternate; picks become games)
-    const PRESETS = {
-      bo1: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'} ], // ban down to 1 (needs 5-map pool)
-      bo3: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'A'},{action:'pick',team:'B'} ], // 2 picks + decider
-      bo5: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'} ],
-      bo7: [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'B'},{action:'pick',team:'A'},{action:'ban',team:'B'},{action:'ban',team:'A'} ]
-    };
-
     vtEnabled.onchange = () => { document.getElementById('vtCfg').style.display = vtEnabled.checked ? 'block' : 'none'; };
-    el.querySelectorAll('.vpoolCb').forEach(cb => cb.onchange = renderSeq);
-    el.querySelectorAll('[data-vpreset]').forEach(b => b.onclick = () => {
-      const p = b.dataset.vpreset;
-      vseq = (p === 'clear') ? [] : PRESETS[p].map(s => ({ action: s.action, team: s.team }));
+    // BO tab switching
+    el.querySelectorAll('[data-botab]').forEach(btn => btn.onclick = () => {
+      curBo = parseInt(btn.dataset.botab, 10);
+      el.querySelectorAll('[data-botab]').forEach(b => b.classList.toggle('active', b === btn));
       renderSeq();
     });
+    document.getElementById('boPreset').onclick = () => { vseqs[curBo] = PRESETS[curBo].map(s => ({ action: s.action, team: s.team })); renderSeq(); };
+    document.getElementById('boClear').onclick = () => { vseqs[curBo] = []; renderSeq(); };
     el.querySelectorAll('[data-vadd]').forEach(b => b.onclick = () => {
       const [action, team] = b.dataset.vadd.split(':');
-      vseq.push({ action, team });
+      vseqs[curBo].push({ action, team });
       renderSeq();
     });
     renderSeq();
 
     document.getElementById('vtSave').onclick = async () => {
-      const maps = Array.from(document.querySelectorAll('.vpoolCb')).filter(c => c.checked).map(c => c.value);
       const mode = document.getElementById('vtMode').value;
       const enabled = vtEnabled.checked;
-      if (enabled) {
-        if (maps.length < 2) return toast('Pick at least 2 maps for the pool', true);
-        if (vseq.length < 1) return toast('Add at least one ban or pick step', true);
-        if (maps.length < vseq.length + 1) return toast('Pool too small for this sequence — need at least ' + (vseq.length + 1) + ' maps in the pool', true);
+      const sequences = {};
+      for (const bo of [1, 3, 5, 7]) if (vseqs[bo].length) sequences[bo] = vseqs[bo];
+      if (enabled && Object.keys(sequences).length === 0) {
+        return toast('Add a ban/pick order for at least one series length (Bo1/Bo3/Bo5/Bo7)', true);
+      }
+      // warn if a sequence produces the wrong number of games for its BO
+      for (const bo of [1, 3, 5, 7]) {
+        if (sequences[bo]) {
+          const games = sequences[bo].filter(s => s.action === 'pick').length + 1;
+          if (games !== bo) return toast('The Bo' + bo + ' order produces ' + games + ' game(s), but Bo' + bo + ' needs ' + bo + '. Fix it before saving.', true);
+        }
       }
       try {
-        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mapPool: maps, sequence: vseq, mode }, admin: adminToken() });
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, sequences }, admin: adminToken() });
         await refresh();
         toast('Vetoes saved');
       } catch (e) { toast(e.message, true); }

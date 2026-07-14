@@ -509,3 +509,28 @@ tbody tr:hover { background: #ffffff05; }
 }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* veto indicator spacing (issue 4) */
+.veto-mini { margin: 8px 10px 4px; }
+.veto-mini-link { font-size: 13px; }
+/* larger turn text (issue 6) */
+.veto-head { font-size: 15px !important; margin-bottom: 10px; }
+.vetobox .veto-head strong { font-size: 16px; }
+/* explicit A/B set control (issue 5) */
+.veto-abset { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; }
+/* per-BO tabs */
+.bo-tabs { display: flex; gap: 4px; margin: 6px 0; }
+.bo-tab { background: var(--panel2); border: 1px solid var(--line-solid); color: var(--muted); padding: 6px 16px; border-radius: 4px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
+.bo-tab.active { color: var(--amber); border-color: var(--amber); background: #2a2110; }
+/* map pool cards */
+.pool-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+.pool-card { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; padding: 12px; }
+.pool-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.pool-card-name { font-weight: 600; font-size: 15px; }
+.pool-card-maps { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.pool-map-chip { font-size: 11px; color: var(--text2, #b8c0cc); border: 1px solid var(--line-solid); border-radius: 3px; padding: 1px 6px; }
+.pool-card-assign { font-size: 12px; color: var(--amber); margin-bottom: 8px; }
+.pool-card-assign.muted { color: var(--muted); }
+.pool-card-actions { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--line-solid); padding-top: 8px; }
+.pa-row { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 4px 0; cursor: pointer; }
+.pa-row input { width: auto; }
