@@ -66,7 +66,7 @@ function capToken() {
 }
 function myToken() { return adminToken() || capToken(); }
 
-const VALID_TABS = ['overview', 'players', 'teams', 'bracket', 'standings', 'admin'];
+const VALID_TABS = ['overview', 'players', 'teams', 'bracket', 'vetoes', 'standings', 'admin'];
 let pendingOrganizerClaim = null; // { id, token } — set when an ?admin= link is opened
 function captureTokensFromURL() {
   const id = tourneyId();
@@ -968,13 +968,22 @@ function drawTournament() {
   const lastStep = T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
   const steps = ['Signups', midStep, lastStep, 'Results'];
 
-  const tabs = ['overview', 'players', 'teams', 'bracket', 'standings'];
+  const tabs = ['overview', 'players', 'teams', 'bracket'];
+  // Vetoes tab appears once the bracket is running and vetoes are enabled
+  const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
+  if (vetoActive) tabs.push('vetoes');
+  tabs.push('standings');
   if (admin) tabs.push('admin');
   if (!tabs.includes(currentTab)) currentTab = 'overview';
 
   const tabLabel = tb => {
     if (tb === 'teams' && T.status === 'draft') return 'Draft';
     if (tb === 'bracket') return T.competition === 'ffa' || T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
+    if (tb === 'vetoes') {
+      // badge with how many vetoes still need action
+      const pending = T.matches.filter(m => m.veto && !m.veto.done).length;
+      return pending > 0 ? 'Vetoes (' + pending + ')' : 'Vetoes';
+    }
     return tb;
   };
 
@@ -1003,6 +1012,7 @@ function drawTournament() {
   else if (currentTab === 'players') drawPlayers(body);
   else if (currentTab === 'teams') drawTeams(body);
   else if (currentTab === 'bracket') drawBracket(body);
+  else if (currentTab === 'vetoes') drawVetoes(body);
   else if (currentTab === 'standings') drawStandings(body);
   else if (currentTab === 'admin') drawAdmin(body);
 }
@@ -1988,13 +1998,68 @@ function matchBox(m) {
   box.dataset.mid = m.id;
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
-    vetoHTML(m) +
+    vetoIndicator(m) +
     ((canReport || canCorrect)
       ? `<div class="bfoot"><button class="btn ${canReport ? 'amber' : 'ghost'} small">${canReport ? 'Report score' : 'Correct'}</button></div>` : '');
   const btn = box.querySelector('.bfoot button');
   if (btn) btn.onclick = () => reportScore(m.id);
-  wireVeto(box, m);
+  const vlink = box.querySelector('[data-veto-link]');
+  if (vlink) vlink.onclick = (e) => { e.preventDefault(); currentTab = 'vetoes'; syncTabURL(); drawTournament(); };
   return box;
+}
+
+// compact in-bracket veto indicator: a link to the Vetoes tab (pending) or the chosen maps (done)
+function vetoIndicator(m) {
+  if (!m.veto) return '';
+  const v = m.veto;
+  if (!v.done) {
+    return `<div class="veto-mini"><a href="#" data-veto-link="${m.id}" class="veto-mini-link">Map veto in progress →</a></div>`;
+  }
+  const picks = (v.picks || []).slice().sort((a, b) => a.game - b.game);
+  const games = picks.slice();
+  if (v.decider) games.push(v.decider);
+  if (!games.length) return '';
+  return `<div class="veto-mini done">${games.map(g => '<span class="veto-mini-map">' + esc(g.map) + '</span>').join('')}</div>`;
+}
+
+// Dedicated Vetoes page — each match with a veto gets its own card with the full ban/pick UI.
+function drawVetoes(el) {
+  const vetoMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
+  if (!vetoMatches.length) {
+    el.innerHTML = '<div class="panel"><div class="empty">No map vetoes are active right now. They appear here as matches become ready.</div></div>';
+    return;
+  }
+  // pending (need action) first, then completed
+  const pending = vetoMatches.filter(m => !m.veto.done);
+  const done = vetoMatches.filter(m => m.veto.done);
+
+  let html = '';
+  const card = (m) => {
+    const label = mLabel(m);
+    return `<div class="panel section veto-card" data-vmatch="${m.id}">
+      <div class="veto-card-head"><h2>${esc(label)}</h2><span class="veto-card-teams">${esc(teamName(m.team1))} <span class="muted">vs</span> ${esc(teamName(m.team2))}</span></div>
+      <div class="veto-card-body"></div>
+    </div>`;
+  };
+
+  if (pending.length) {
+    html += '<div class="veto-section-label">Needs action</div>';
+    html += pending.map(card).join('');
+  }
+  if (done.length) {
+    html += '<div class="veto-section-label" style="margin-top:20px">Completed</div>';
+    html += done.map(card).join('');
+  }
+  el.innerHTML = html;
+
+  // render the veto UI into each card body and wire it
+  for (const m of vetoMatches) {
+    const cardEl = el.querySelector(`[data-vmatch="${m.id}"]`);
+    if (!cardEl) continue;
+    const bodyEl = cardEl.querySelector('.veto-card-body');
+    bodyEl.innerHTML = vetoHTML(m);
+    wireVeto(bodyEl, m);
+  }
 }
 
 // veto section HTML for a match (empty string if no veto)

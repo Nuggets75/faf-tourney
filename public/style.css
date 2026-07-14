@@ -330,6 +330,17 @@ tbody tr:hover { background: #ffffff05; }
 .veto-map.act-ban:hover { border-color: var(--red); color: var(--red); }
 .veto-map.act-pick { cursor: pointer; color: var(--text); background: var(--panel2); }
 .veto-map.act-pick:hover { border-color: var(--green); color: var(--green); }
+.veto-section-label { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 4px 0 10px; }
+.veto-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.veto-card-head h2 { margin: 0; }
+.veto-card-teams { font-size: 14px; color: var(--text); }
+.veto-card .vetobox { border: none; padding: 0; background: transparent; }
+.veto-mini { margin-top: 6px; }
+.veto-mini-link { font-size: 12px; color: var(--amber); text-decoration: none; }
+.veto-mini-link:hover { text-decoration: underline; }
+.veto-mini.done { display: flex; flex-wrap: wrap; gap: 4px; }
+.veto-mini-map { font-family: var(--mono); font-size: 11px; color: var(--green); border: 1px solid #2f6b45; background: #12331f; border-radius: 3px; padding: 1px 6px; }
+
 
 .btn.faf { display: block; width: 100%; background: #2d5a9e; color: #eaf2fb; border: 1px solid #3f74c4; font-weight: 600; letter-spacing: .5px; }
 .btn.faf:hover { background: #366bbd; box-shadow: 0 0 12px #2d5a9e55; }
