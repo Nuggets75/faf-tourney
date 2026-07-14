@@ -2000,11 +2000,31 @@ function mapRows(maps) {
 
 function mapsLine(bracket, round, el) {
   if (T.imported) return;
-  // if this round's matches use map vetoes, the maps come from the veto (shown on the Vetoes tab),
-  // so don't show the round map-pool block at all.
-  const roundHasVeto = T.matches.some(m => m.bracket === bracket && m.round === round && m.veto);
-  if (roundHasVeto) return;
   const admin = viewerIsOrganizer();
+
+  // With vetoes on, a round's maps come from its assigned pool — show that instead of a
+  // fixed list, and let the organizer change it right here (works in the preview too).
+  if (T.veto && T.veto.enabled) {
+    const key = bracket + ':' + round;
+    const assigned = (T.poolAssign || {})[key];
+    const pools = T.mapPools || [];
+    const pool = assigned ? pools.find(p => p.id === assigned) : null;
+    const fallback = (!pool && pools.length) ? pools[0] : null;
+    const shown = pool || fallback;
+    if (!admin && !shown) return;
+    const div = document.createElement('div');
+    div.className = 'mapblock';
+    div.innerHTML = '<div class="mapblock-head"><span>MAP POOL</span>' + (admin ? '<a href="#">change</a>' : '') + '</div>' +
+      (shown
+        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : ' <span class="muted">(default)</span>') + '</span></div>'
+          + '<div class="maprow mapsub">' + (shown.mapIds || []).map(id => esc(mapName(id))).join(', ') + '</div>'
+        : '<div class="maprow muted">no pools yet — add them on the Maps tab</div>');
+    const a = div.querySelector('a');
+    if (a) a.onclick = e => { e.preventDefault(); pickPoolForRound(bracket, round); };
+    el.appendChild(div);
+    return;
+  }
+
   const maps = mapsFor(bracket, round);
   if (!maps.length && !admin) return;
   const div = document.createElement('div');
@@ -2014,6 +2034,57 @@ function mapsLine(bracket, round, el) {
   const a = div.querySelector('a');
   if (a) a.onclick = e => { e.preventDefault(); editMaps(bracket, round); };
   el.appendChild(div);
+}
+
+// Pick which pool a round uses (the round-first counterpart to assignPool).
+function pickPoolForRound(bracket, round) {
+  const key = bracket + ':' + round;
+  const pools = T.mapPools || [];
+  const cur = (T.poolAssign || {})[key] || '';
+  if (!pools.length) {
+    modal(`<h3>${esc(roundKeyLabel(bracket, round))}</h3>
+      <p class="muted small">No map pools yet. Create them on the <strong>Maps</strong> tab, then assign one here.</p>
+      <div class="actions"><button class="btn ghost" id="prClose">Close</button></div>`, root => {
+      root.querySelector('#prClose').onclick = closeModal;
+    });
+    return;
+  }
+  // this round's best-of, if the bracket already exists
+  const bos = {};
+  for (const m of (T.matches || [])) if (m.bracket === bracket && m.round === round) bos[m.bo] = 1;
+  const boList = Object.keys(bos).map(x => parseInt(x, 10));
+  const rows = pools.map(p => {
+    const mismatch = boList.length && boList.indexOf(p.bo || 1) < 0;
+    return `<button type="button" class="pick-row${cur === p.id ? ' on' : ''}" data-pid="${p.id}">
+      <span class="pr-name">${esc(p.name)}</span>
+      <span class="muted small">Bo${p.bo || 1} &middot; ${(p.mapIds || []).length} maps</span>
+      ${mismatch ? '<span class="warn small">not Bo' + boList.join('/') + '</span>' : ''}
+      <span class="pr-tick"></span></button>`;
+  }).join('');
+  modal(`<h3>Map pool for ${esc(roundKeyLabel(bracket, round))}</h3>
+    <p class="muted small">Captains in this round ban/pick from the pool you choose.${boList.length ? ' These matches are Bo' + boList.join('/') + '.' : ''}</p>
+    <div class="pick-rows">${rows}</div>
+    <div class="actions">
+      <button class="btn ghost" id="prCancel">Cancel</button>
+      <button class="btn ghost" id="prClear">Use default</button>
+      <button class="btn primary" id="prSave">Save</button>
+    </div>`, root => {
+    let sel = cur;
+    root.querySelectorAll('.pick-row').forEach(btn => btn.onclick = () => {
+      root.querySelectorAll('.pick-row').forEach(b => b.classList.remove('on'));
+      btn.classList.add('on');
+      sel = btn.dataset.pid;
+    });
+    root.querySelector('#prCancel').onclick = closeModal;
+    const save = async poolId => {
+      try {
+        await api('/api/t/' + T.id + '/pool_assign', { key, poolId, admin: adminToken() });
+        closeModal(); toast('Pool assigned'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    root.querySelector('#prClear').onclick = () => save('');
+    root.querySelector('#prSave').onclick = () => save(sel);
+  });
 }
 
 function editMaps(bracket, round) {
@@ -2984,6 +3055,7 @@ function drawBracketPreview(el) {
     h.className = 'bcol-title';
     h.textContent = colLabel('wb', r, R);
     col.appendChild(h);
+    mapsLine('wb', r, col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
     if (r === 1) {
@@ -3012,6 +3084,7 @@ function drawBracketPreview(el) {
     h.className = 'bcol-title';
     h.textContent = 'GRAND FINAL';
     col.appendChild(h);
+    mapsLine('gf', 1, col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
     const gfbox = previewBox(feederText('gf:1:0', 1, { txt: 'Winner of winners bracket', tbd: true }),
@@ -3045,6 +3118,7 @@ function drawBracketPreview(el) {
         h.className = 'bcol-title';
         h.textContent = colLabel('lb', q, lbRounds);
         col.appendChild(h);
+        mapsLine('lb', q, col);
         const mc = document.createElement('div');
         mc.className = 'bcol-matches';
         const count = lbCountAt(q);
@@ -3151,6 +3225,35 @@ function drawSwissPreview(el, n) {
   sec.innerHTML = `<h2>Swiss <span class="h2-strong">preview</span></h2>
     <p class="muted small" style="margin:0">${esc(String(n))} teams expected \u00b7 pairings are generated round by round once the tournament starts. Round 1 pairs by seed; later rounds by standings.</p>`;
   el.appendChild(sec);
+
+  // let the organizer set up each round's maps ahead of time
+  const setup = document.createElement('div');
+  setup.className = 'panel section';
+  setup.innerHTML = '<h2>Maps per round</h2>';
+  const row = document.createElement('div');
+  row.className = 'swiss-map-prep';
+  for (let r = 1; r <= rounds; r++) {
+    const col = document.createElement('div');
+    col.className = 'bcol';
+    const h = document.createElement('div');
+    h.className = 'bcol-title';
+    h.textContent = 'ROUND ' + r;
+    col.appendChild(h);
+    mapsLine('sw', r, col);
+    row.appendChild(col);
+  }
+  if (!T.plan || T.plan.final !== 0) {
+    const col = document.createElement('div');
+    col.className = 'bcol';
+    const h = document.createElement('div');
+    h.className = 'bcol-title';
+    h.textContent = 'FINAL';
+    col.appendChild(h);
+    mapsLine('gf', 1, col);
+    row.appendChild(col);
+  }
+  setup.appendChild(row);
+  el.appendChild(setup);
 }
 
 function drawFfaPreview(el, n) {
