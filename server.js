@@ -275,7 +275,7 @@ function publicView(t) {
     rounds: t.rounds || 0,
     maps: t.maps || {},
     mapDb: (t.mapDb || []).map(publicMapView),
-    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice() })),
+    mapPools: (t.mapPools || []).map(p => ({ id: p.id, name: p.name, mapIds: (p.mapIds || []).slice(), sequence: (p.sequence || []).slice(), bo: p.bo || ((p.sequence || []).filter(x => x.action === 'pick').length + 1) })),
     poolAssign: t.poolAssign || {},
     players: t.players,
     teams: t.teams.map(x => ({
@@ -320,6 +320,9 @@ function initVeto(t, m) {
   const seq = cleanSequence(pool.sequence);
   if (!seq.length) { m.veto = null; return; }
   if (poolIds.length !== seq.length + 1) { m.veto = null; return; }
+  // the pool is built for a specific series length; refuse to run a Bo5 order on a Bo1 match
+  const poolBo = BO_OK.indexOf(parseInt(pool.bo, 10)) >= 0 ? parseInt(pool.bo, 10) : (seq.filter(x => x.action === 'pick').length + 1);
+  if (poolBo !== m.bo) { m.veto = null; return; }
 
   // default: higher seed (lower seed number) is A
   const s1 = (teamById(t, m.team1) || {}).seed || 999;
@@ -1945,8 +1948,20 @@ async function handleAPI(req, res, url) {
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.veto !== undefined) {
-        if (t.status === 'running' || t.status === 'finished') return bad(res, 'Vetoes can only be changed before the bracket starts');
+        if (t.status === 'finished') return bad(res, 'The tournament is finished');
         t.veto = cleanVeto(b.veto);
+        if (t.veto.enabled) {
+          // enabling (including mid-bracket): give every ready match without a veto one now,
+          // so turning this on later is never a dead end.
+          for (const m of t.matches) {
+            if (m.status === 'ready' && !m.veto) initVeto(t, m);
+          }
+        } else {
+          // disabling: drop vetoes that haven't been acted on; leave finished ones as a record
+          for (const m of t.matches) {
+            if (m.veto && !m.veto.done && m.veto.stepIndex === 0) m.veto = null;
+          }
+        }
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -1959,11 +1974,17 @@ async function handleAPI(req, res, url) {
       const name = cleanName(b.name, 40);
       if (!name) return bad(res, 'Pool name required');
       const ids = Array.isArray(b.mapIds) ? b.mapIds.filter(id => mapById(t, id)) : [];
-      // The ban/pick order lives on the pool: its length is tied to the pool size, since the
-      // sequence must consume every map but one (the leftover is the decider).
+      // A pool is built for a specific series length. Two rules keep it coherent:
+      //   steps  = maps - 1   (every map but one is consumed; the leftover is the decider)
+      //   picks  = bo - 1     (each pick is a game; the decider is the last game)
+      const bo = BO_OK.indexOf(parseInt(b.bo, 10)) >= 0 ? parseInt(b.bo, 10) : 1;
       const seq = cleanSequence(b.sequence);
       if (seq.length && ids.length && seq.length !== ids.length - 1) {
         return bad(res, 'This pool has ' + ids.length + ' maps, so its order needs exactly ' + (ids.length - 1) + ' steps (leaving 1 as the decider). It has ' + seq.length + '.');
+      }
+      const picks = seq.filter(x => x.action === 'pick').length;
+      if (seq.length && picks !== bo - 1) {
+        return bad(res, 'A Bo' + bo + ' pool needs exactly ' + (bo - 1) + ' pick step' + (bo - 1 === 1 ? '' : 's') + ' (plus the decider). This order has ' + picks + '.');
       }
       let pool;
       if (b.id) {
@@ -1972,8 +1993,9 @@ async function handleAPI(req, res, url) {
         pool.name = name;
         pool.mapIds = ids;
         pool.sequence = seq;
+        pool.bo = bo;
       } else {
-        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq };
+        pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo };
         t.mapPools.push(pool);
       }
       saveDB();

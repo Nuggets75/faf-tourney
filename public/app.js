@@ -782,6 +782,10 @@ async function renderHost() {
           <option value="rating" selected>By rating (entered at signup)</option>
           <option value="random">Random</option>
         </select>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
+          <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
+        </label>
+        <div class="muted small" style="margin-top:6px">You'll build your maps, pools and ban/pick orders on the tournament's <strong>Maps</strong> tab afterwards. You can also turn this on or off later from the Admin tab.</div>
         <div style="margin-top:20px">
           <button class="btn primary" id="cGo">Create tournament</button>
         </div>
@@ -858,6 +862,7 @@ async function renderHost() {
         cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value,
+        veto: { enabled: document.getElementById('cVeto').checked, mode: 'upfront' },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
@@ -2153,8 +2158,16 @@ function drawMaps(el) {
           }
         }
         html += `<div class="pool-card">
-          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">${names.length} map${names.length === 1 ? '' : 's'}</span></div>
+          <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
           <div class="pool-card-maps">${names.length ? names.map(n => '<span class="pool-map-chip">' + esc(n) + '</span>').join('') : '<span class="muted small">no maps</span>'}</div>
+          ${(function(){
+            const steps = (pool.sequence || []).length, need = names.length - 1;
+            const picks = (pool.sequence || []).filter(x => x.action === 'pick').length;
+            const bo = pool.bo || 1;
+            if (!steps) return '<div class="pool-card-warn">No ban/pick order set — vetoes won\'t run</div>';
+            if (steps !== need || picks !== bo - 1) return '<div class="pool-card-warn">Order doesn\'t match (needs ' + need + ' steps, ' + (bo - 1) + ' picks)</div>';
+            return '';
+          })()}
           ${assignedTo.length ? '<div class="pool-card-assign">Used for: ' + assignedTo.map(a => esc(a)).join(', ') + '</div>' : '<div class="pool-card-assign muted">Not assigned yet' + (pools.length === 1 ? ' (used as default)' : '') + '</div>'}
           <div class="pool-card-actions">
             <button class="btn ghost small" data-pooledit="${pool.id}">Edit maps</button>
@@ -2227,16 +2240,21 @@ function editPool(existing) {
     <label>Pool name</label>
     <input type="text" id="plName" maxlength="40" value="${esc(pool.name)}" placeholder="e.g. Finals pool" autocomplete="off">
     <label style="margin-top:12px">Maps in this pool</label>
-    <div class="pick-list" id="plMaps">
-      ${db.map(m => `<button type="button" class="pick-item${(pool.mapIds || []).indexOf(m.id) >= 0 ? ' on' : ''}" data-mapid="${m.id}">${esc(m.name)}${!m.published ? ' <span class="idbadge late">hidden</span>' : ''}</button>`).join('')}
+    <div class="pick-rows" id="plMaps">
+      ${db.map(m => `<button type="button" class="pick-row${(pool.mapIds || []).indexOf(m.id) >= 0 ? ' on' : ''}" data-mapid="${m.id}"><span class="pr-name">${esc(m.name)}</span>${!m.published ? '<span class="idbadge late">hidden</span>' : ''}<span class="pr-tick"></span></button>`).join('')}
     </div>
     <div class="pick-count" id="plCount"></div>
 
+    <label style="margin-top:14px">These matches are</label>
+    <select id="plBo" style="max-width:220px">
+      ${[1,3,5,7].map(n => `<option value="${n}"${(pool.bo || 1) === n ? ' selected' : ''}>Best of ${n}</option>`).join('')}
+    </select>
+
     <label style="margin-top:14px">Ban / pick order for this pool</label>
-    <p class="muted small">Captains work through these steps for any match using this pool. Every map but one is banned or picked; the last one left is the decider. So the order needs exactly <strong>(maps − 1)</strong> steps.</p>
+    <p class="muted small">Captains work through these steps for any match using this pool. Every map but one is banned or picked; the last one left is the decider. So the order needs exactly <strong>(maps − 1)</strong> steps, and one pick per game except the decider.</p>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px">
       <span class="muted small" style="align-self:center">Fill with:</span>
-      <button class="btn ghost small" id="plFillBans">Alternating bans</button>
+      <button class="btn ghost small" id="plFillBans">Standard order</button>
       <button class="btn ghost small" id="plClear">Clear</button>
     </div>
     <div id="plSeq" class="vseq"></div>
@@ -2250,7 +2268,7 @@ function editPool(existing) {
 
     <div class="actions"><button class="btn ghost" id="plCancel">Cancel</button><button class="btn primary" id="plSave">${existing ? 'Save' : 'Create pool'}</button></div>`;
   modal(body, root => {
-    const selectedIds = () => Array.from(root.querySelectorAll('#plMaps .pick-item.on')).map(b => b.dataset.mapid);
+    const selectedIds = () => Array.from(root.querySelectorAll('#plMaps .pick-row.on')).map(b => b.dataset.mapid);
 
     const renderSeq = () => {
       const host = root.querySelector('#plSeq');
@@ -2268,26 +2286,35 @@ function editPool(existing) {
         </span></div>`).join('');
       const cnt = root.querySelector('#plCount');
       if (cnt) cnt.textContent = nMaps ? nMaps + ' map' + (nMaps === 1 ? '' : 's') + ' selected' : 'Click maps to add them to this pool';
+      const bo = parseInt(root.querySelector('#plBo').value, 10);
       const picks = vseq.filter(s => s.action === 'pick').length;
-      const games = picks + 1;
       const sum = root.querySelector('#plSummary');
-      let msg = `${nMaps} map${nMaps === 1 ? '' : 's'} → needs <strong>${need}</strong> step${need === 1 ? '' : 's'}; you have <strong>${vseq.length}</strong>.`;
-      if (nMaps && vseq.length !== need) msg += ' <span class="warn">Add or remove steps to match.</span>';
-      else if (nMaps) msg += ` Produces <strong>${games} game${games === 1 ? '' : 's'}</strong> — use this pool for Bo${games} matches.`;
-      sum.innerHTML = msg;
+      const problems = [];
+      if (nMaps && vseq.length !== need) problems.push(`needs <strong>${need}</strong> step${need === 1 ? '' : 's'} for ${nMaps} maps, has <strong>${vseq.length}</strong>`);
+      if (vseq.length && picks !== bo - 1) problems.push(`Bo${bo} needs <strong>${bo - 1}</strong> pick${bo - 1 === 1 ? '' : 's'}, has <strong>${picks}</strong>`);
+      if (!nMaps) sum.innerHTML = '<span class="muted">Pick some maps first.</span>';
+      else if (problems.length) sum.innerHTML = '<span class="warn">' + problems.join(' &middot; ') + '</span>';
+      else sum.innerHTML = `<span class="ok-msg">Valid: ${vseq.length} step${vseq.length === 1 ? '' : 's'} over ${nMaps} maps &rarr; ${bo} game${bo === 1 ? '' : 's'} (Bo${bo}).</span>`;
       host.querySelectorAll('[data-pldel]').forEach(b => b.onclick = () => { vseq.splice(+b.dataset.pldel, 1); renderSeq(); });
       host.querySelectorAll('[data-plup]').forEach(b => b.onclick = () => { const i = +b.dataset.plup; if (i > 0) { [vseq[i-1], vseq[i]] = [vseq[i], vseq[i-1]]; renderSeq(); } });
       host.querySelectorAll('[data-pldown]').forEach(b => b.onclick = () => { const i = +b.dataset.pldown; if (i < vseq.length - 1) { [vseq[i+1], vseq[i]] = [vseq[i], vseq[i+1]]; renderSeq(); } });
     };
 
-    root.querySelectorAll('#plMaps .pick-item').forEach(btn => btn.onclick = () => {
+    root.querySelectorAll('#plMaps .pick-row').forEach(btn => btn.onclick = () => {
       btn.classList.toggle('on');
       renderSeq();
     });
+    root.querySelector('#plBo').onchange = renderSeq;
+    // standard order: alternate bans down to the picks, then alternate picks (last map = decider)
     root.querySelector('#plFillBans').onclick = () => {
       const need = Math.max(selectedIds().length - 1, 0);
+      const bo = parseInt(root.querySelector('#plBo').value, 10);
+      const wantPicks = bo - 1;
+      if (need < wantPicks) { toast('Add more maps first — Bo' + bo + ' needs at least ' + (wantPicks + 1) + ' maps', true); return; }
       vseq = [];
-      for (let i = 0; i < need; i++) vseq.push({ action: 'ban', team: i % 2 === 0 ? 'A' : 'B' });
+      const bans = need - wantPicks;
+      for (let i = 0; i < bans; i++) vseq.push({ action: 'ban', team: i % 2 === 0 ? 'A' : 'B' });
+      for (let i = 0; i < wantPicks; i++) vseq.push({ action: 'pick', team: i % 2 === 0 ? 'A' : 'B' });
       renderSeq();
     };
     root.querySelector('#plClear').onclick = () => { vseq = []; renderSeq(); };
@@ -2303,11 +2330,16 @@ function editPool(existing) {
       const name = root.querySelector('#plName').value.trim();
       if (!name) return toast('Pool name required', true);
       const mapIds = selectedIds();
+      const bo = parseInt(root.querySelector('#plBo').value, 10);
       if (vseq.length && mapIds.length && vseq.length !== mapIds.length - 1) {
         return toast(mapIds.length + ' maps needs exactly ' + (mapIds.length - 1) + ' steps — you have ' + vseq.length, true);
       }
+      const nPicks = vseq.filter(x => x.action === 'pick').length;
+      if (vseq.length && nPicks !== bo - 1) {
+        return toast('A Bo' + bo + ' pool needs exactly ' + (bo - 1) + ' pick step(s) — you have ' + nPicks, true);
+      }
       try {
-        await api('/api/t/' + T.id + '/pool_save', { id: existing ? pool.id : undefined, name, mapIds, sequence: vseq, admin: adminToken() });
+        await api('/api/t/' + T.id + '/pool_save', { id: existing ? pool.id : undefined, name, mapIds, sequence: vseq, bo, admin: adminToken() });
         closeModal(); toast(existing ? 'Pool saved' : 'Pool created'); await refresh();
       } catch (e) { toast(e.message, true); }
     };
@@ -2338,7 +2370,12 @@ function assignPool(pool) {
     const assignedHere = T.poolAssign[k] === pool.id;
     const assignedOther = T.poolAssign[k] && T.poolAssign[k] !== pool.id;
     const otherName = assignedOther ? ((T.mapPools.find(p => p.id === T.poolAssign[k]) || {}).name || '') : '';
-    return `<button type="button" class="pick-row${assignedHere ? ' on' : ''}" data-rkey="${k}">${esc(roundKeyLabel(bk, rd))}${assignedOther ? ' <span class="muted small" style="font-weight:400">(currently: ' + esc(otherName) + ')</span>' : ''}</button>`;
+    // the pool is built for one series length; flag rounds that don't match
+    const rbos = {};
+    for (const mm of T.matches) if (mm.bracket === bk && mm.round === parseInt(rd, 10)) rbos[mm.bo] = 1;
+    const boList = Object.keys(rbos).map(x => parseInt(x, 10));
+    const mismatch = boList.length && boList.indexOf(pool.bo || 1) < 0;
+    return `<button type="button" class="pick-row${assignedHere ? ' on' : ''}" data-rkey="${k}">${esc(roundKeyLabel(bk, rd))}${boList.length ? ' <span class="muted small" style="font-weight:400">Bo' + boList.join('/') + '</span>' : ''}${mismatch ? ' <span class="warn small">pool is Bo' + (pool.bo || 1) + '</span>' : ''}${assignedOther ? ' <span class="muted small" style="font-weight:400">(currently: ' + esc(otherName) + ')</span>' : ''}</button>`;
   }).join('');
   modal(`<h3>Assign "${esc(pool.name)}" to rounds</h3>
     <p class="muted small">Tick the rounds that use this pool. Unticking a round clears its assignment (it falls back to the default pool).</p>
@@ -3346,9 +3383,7 @@ function drawStandings(el) {
     const label = T.championTeamId === team.id ? '1' : (!team.out ? '—' : String(rank));
     const note = T.championTeamId === team.id ? '🏆 Champion' : (!team.out ? 'Still in' :
       team.out.bracket === 'gf' ? 'Lost the final' :
-      team.out.bracket === 'lb' ? 'Out in LB round ' + team.out.round :
-      team.out.bracket === 'ffa' ? 'Out in round ' + team.out.round :
-      'Out in round ' + team.out.round);
+      'Out in ' + roundKeyLabel(team.out.bracket, team.out.round).toLowerCase());
     return `<tr class="${label === '1' ? 'rank1' : label === '2' ? 'rank2' : (label === '3' ? 'rank3' : '')}">
       <td class="mono">${label}</td><td>${esc(team.name)}</td><td class="small muted">${esc(note)}</td></tr>`;
   }).join('');
@@ -3497,7 +3532,7 @@ async function drawAdmin(el) {
     <div style="margin-top:14px"><button class="btn" id="aiSave">Save setup</button></div>
   </div>`;
 
-  if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0 && T.competition === 'team') {
+  if (T.status !== 'finished' && T.competition === 'team') {
     const v = T.veto || { enabled: false, mode: 'upfront' };
     const pools = T.mapPools || [];
     const ready = pools.filter(p => (p.sequence || []).length && (p.sequence || []).length === (p.mapIds || []).length - 1);
@@ -3509,11 +3544,12 @@ async function drawAdmin(el) {
           ? '<p class="warn small">No map pools yet — create one on the Maps tab or no vetoes will run.</p>'
           : '<div class="pool-status">' + pools.map(p => {
               const steps = (p.sequence || []).length, need = (p.mapIds || []).length - 1;
-              const ok = steps > 0 && steps === need;
-              const games = steps > 0 ? (p.sequence.filter(x => x.action === 'pick').length + 1) : 0;
+              const picks = (p.sequence || []).filter(x => x.action === 'pick').length;
+              const bo = p.bo || 1;
+              const ok = steps > 0 && steps === need && picks === bo - 1;
               return '<div class="pool-status-row">' + (ok ? '<span class="idbadge verified">ready</span>' : '<span class="idbadge late">needs setup</span>') +
                 ' <strong>' + esc(p.name) + '</strong> <span class="muted small">' + (p.mapIds || []).length + ' maps · ' +
-                (ok ? steps + ' steps → Bo' + games + ' matches' : (steps === 0 ? 'no ban/pick order set' : steps + ' steps but needs ' + need)) + '</span></div>';
+                (ok ? 'Bo' + bo + ' matches' : (steps === 0 ? 'no ban/pick order set' : 'order needs ' + need + ' steps / ' + (bo - 1) + ' picks')) + '</span></div>';
             }).join('') + '</div>'}
         <label style="margin-top:14px">When is the veto done?</label>
         <select id="vtMode" style="max-width:320px">
