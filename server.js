@@ -54,6 +54,9 @@ function loadDB() {
   }
   if (!db.sessions) db.sessions = {};
   if (!db.oauthPending) db.oauthPending = {};
+  if (!Array.isArray(db.auditLog)) db.auditLog = [];
+  if (!Array.isArray(db.hostRequests)) db.hostRequests = [];
+  if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
   // migrate v1 records so old test tournaments don't crash the client
   let changed = false;
   for (const t of Object.values(db.tournaments)) {
@@ -109,6 +112,52 @@ function now() { return Date.now(); }
 
 function getT(id) { return db.tournaments[id] || null; }
 function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
+
+// ---------- audit log ----------
+// A short, honest record of the things worth being able to answer later: who made this, and
+// who deleted that. Capped so db.json can't grow without bound.
+const AUDIT_MAX = 5000;
+function clientIp(req) {
+  const xf = req.headers['x-forwarded-for'];
+  if (xf) return String(xf).split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || '';
+}
+// Who is doing this? Prefer a real FAF identity; fall back to how they authenticated.
+function actorOf(req, token) {
+  const sess = currentSession(req);
+  if (sess) return { kind: 'faf', fafId: sess.fafId, name: sess.fafName || ('FAF ' + sess.fafId) };
+  if (token && GADMIN && token === GADMIN) return { kind: 'siteadmin', fafId: null, name: 'Site admin' };
+  if (token) return { kind: 'token', fafId: null, name: 'Organizer link' };
+  return { kind: 'anon', fafId: null, name: 'Anonymous' };
+}
+function audit(req, action, opts) {
+  opts = opts || {};
+  const a = opts.actor || actorOf(req, opts.token);
+  db.auditLog.push({
+    id: uid(8),
+    at: Date.now(),
+    action: action,
+    actorKind: a.kind,
+    actorFafId: a.fafId || null,
+    actorName: a.name || '',
+    ip: clientIp(req),
+    tournamentId: opts.tournamentId || null,
+    tournamentName: opts.tournamentName || '',
+    detail: opts.detail || ''
+  });
+  if (db.auditLog.length > AUDIT_MAX) db.auditLog = db.auditLog.slice(-AUDIT_MAX);
+}
+
+// ---------- who may host ----------
+// Before FAF login is configured, anyone can create (the legacy flow). Once it's on, a FAF
+// account must be approved by the site admin — that's what stops spam and accidents.
+function canHost(req, token) {
+  if (GADMIN && token === GADMIN) return true;         // site admin always can
+  if (!FAF_OAUTH_ON) return true;                       // pre-login: unchanged, open to all
+  const sess = currentSession(req);
+  if (!sess) return false;
+  return !!db.hostAllowed[sess.fafId];
+}
 
 // A tournament's authorized organizers: the creator's FAF id plus anyone who claimed the
 // organizer link while logged in. Site admin always counts.
@@ -1334,6 +1383,16 @@ async function handleAPI(req, res, url) {
     // the legacy flow still applies so the site keeps working before go-live).
     const hostSess = currentSession(req);
     if (FAF_OAUTH_ON && !hostSess) return json(res, 401, { error: 'Log in with FAF to host a tournament' });
+    // Once FAF login is live, hosting is approval-only: the site admin grants it per account.
+    if (!canHost(req, b.admin)) {
+      const pending = (db.hostRequests || []).some(r => r.fafId === (hostSess && hostSess.fafId) && r.status === 'pending');
+      return json(res, 403, {
+        error: pending
+          ? 'Your request to host is still waiting on the site admin.'
+          : 'Your FAF account is not approved to host tournaments yet. Request access from the home page.',
+        needsHostApproval: 1
+      });
+    }
     const name = cleanName(b.name, 60);
     if (!name) return bad(res, 'Name required');
     const competition = b.competition === 'ffa' ? 'ffa' : 'team';
@@ -1388,6 +1447,7 @@ async function handleAPI(req, res, url) {
     };
     db.tournaments[t.id] = t;
     saveDB();
+    audit(req, 'tournament_created', { tournamentId: t.id, tournamentName: t.name, token: b.admin });
     return json(res, 200, { id: t.id, adminToken: t.adminToken });
   }
 
@@ -1396,6 +1456,113 @@ async function handleAPI(req, res, url) {
     if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
     if (b.password !== GADMIN) return json(res, 403, { error: 'Wrong password' });
     return json(res, 200, { ok: true });
+  }
+
+  // ---- hosting access (only meaningful once FAF login is configured) ----
+
+  // Where does the logged-in user stand? Drives the "request access" button.
+  if (parts.length === 2 && parts[1] === 'host_status' && method === 'GET') {
+    const sess = currentSession(req);
+    if (!FAF_OAUTH_ON) return json(res, 200, { oauth: 0, allowed: 1, pending: 0, loggedIn: sess ? 1 : 0 });
+    if (!sess) return json(res, 200, { oauth: 1, allowed: 0, pending: 0, loggedIn: 0 });
+    const pending = (db.hostRequests || []).some(r => r.fafId === sess.fafId && r.status === 'pending');
+    return json(res, 200, {
+      oauth: 1,
+      allowed: db.hostAllowed[sess.fafId] ? 1 : 0,
+      pending: pending ? 1 : 0,
+      loggedIn: 1,
+      name: sess.fafName || ''
+    });
+  }
+
+  // Ask the site admin for hosting rights.
+  if (parts.length === 2 && parts[1] === 'host_request' && method === 'POST') {
+    const b = await readBody(req);
+    const sess = currentSession(req);
+    if (!sess) return json(res, 401, { error: 'Log in with FAF first' });
+    if (db.hostAllowed[sess.fafId]) return bad(res, 'You can already host tournaments');
+    const existing = (db.hostRequests || []).find(r => r.fafId === sess.fafId && r.status === 'pending');
+    if (existing) return bad(res, 'You already have a request waiting');
+    db.hostRequests.push({
+      id: uid(8),
+      fafId: sess.fafId,
+      fafName: sess.fafName || ('FAF ' + sess.fafId),
+      message: cleanName(b.message, 300) || '',
+      at: Date.now(),
+      status: 'pending',
+      decidedAt: null,
+      decidedBy: null
+    });
+    saveDB();
+    audit(req, 'host_access_requested', { detail: sess.fafName || sess.fafId });
+    return json(res, 200, { ok: true });
+  }
+
+  // ---- site admin data + decisions ----
+  if (parts.length === 3 && parts[1] === 'siteadmin' && method === 'POST') {
+    const b = await readBody(req);
+    if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
+    if (b.password !== GADMIN) return json(res, 403, { error: 'Wrong password' });
+    const act = parts[2];
+
+    if (act === 'data') {
+      const allowed = Object.keys(db.hostAllowed).map(fid => ({
+        fafId: fid,
+        name: db.hostAllowed[fid].name || '',
+        at: db.hostAllowed[fid].at || 0,
+        by: db.hostAllowed[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
+      return json(res, 200, {
+        oauth: FAF_OAUTH_ON ? 1 : 0,
+        logs: db.auditLog.slice().reverse().slice(0, 500),   // newest first
+        requests: (db.hostRequests || []).slice().reverse(),
+        allowed
+      });
+    }
+
+    if (act === 'decide') {
+      const r = (db.hostRequests || []).find(x => x.id === b.id);
+      if (!r) return bad(res, 'Request not found');
+      if (r.status !== 'pending') return bad(res, 'That request was already decided');
+      r.status = b.approve ? 'approved' : 'denied';
+      r.decidedAt = Date.now();
+      r.decidedBy = 'site admin';
+      if (b.approve) db.hostAllowed[r.fafId] = { name: r.fafName, at: Date.now(), by: 'site admin' };
+      saveDB();
+      audit(req, b.approve ? 'host_access_granted' : 'host_access_denied', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: r.fafName + ' (' + r.fafId + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'revoke') {
+      const entry = db.hostAllowed[b.fafId];
+      if (!entry) return bad(res, 'That account is not on the list');
+      delete db.hostAllowed[b.fafId];
+      saveDB();
+      audit(req, 'host_access_revoked', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: (entry.name || '') + ' (' + b.fafId + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    // grant directly by FAF id, without a request
+    if (act === 'grant') {
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (db.hostAllowed[fid]) return bad(res, 'Already allowed');
+      db.hostAllowed[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: 'site admin' };
+      saveDB();
+      audit(req, 'host_access_granted', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: (db.hostAllowed[fid].name) + ' (' + fid + ') \u2014 added directly'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    return bad(res, 'Unknown site admin action');
   }
 
   // verify the importer password (grants importer access only, not site admin)
@@ -1554,9 +1721,21 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'delete') {
-      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
-      delete db.tournaments[t.id];
+      const siteAdmin = !!(GADMIN && b.admin === GADMIN);
+      if (!siteAdmin) {
+        // An organizer can undo their own mistake, but only before anything has happened.
+        // Once people have signed up or the bracket exists, deletion is the site admin's call.
+        if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+        if (t.status !== 'signup') return bad(res, 'The tournament has already started \u2014 ask the site admin to remove it');
+        if ((t.players || []).length > 0) return bad(res, 'People have signed up \u2014 ask the site admin to remove it');
+      }
+      const name = t.name, tid = t.id;
+      delete db.tournaments[tid];
       saveDB();
+      audit(req, 'tournament_deleted', {
+        tournamentId: tid, tournamentName: name, token: b.admin,
+        detail: siteAdmin ? 'removed by site admin' : 'removed by organizer during signups'
+      });
       return json(res, 200, { ok: true });
     }
 
@@ -2538,7 +2717,7 @@ const MIME = {
 
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/' || p === '/host' || p.startsWith('/t/')) p = '/index.html';
+  if (p === '/' || p === '/host' || p === '/siteadmin' || p.startsWith('/t/')) p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {

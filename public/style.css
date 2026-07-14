@@ -594,3 +594,14 @@ tr.pickrow.on td:nth-child(2) { color: var(--green); font-weight: 600; }
 .mapsub { font-size: 11px; color: var(--muted); border-top: none; padding-top: 0; }
 .swiss-map-prep { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
 .swiss-map-prep .bcol { min-width: 190px; }
+
+/* site admin console */
+.sa-req { display: flex; gap: 14px; align-items: flex-start; padding: 12px; background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; margin-bottom: 8px; }
+.sa-req-main { flex: 1; }
+.sa-req-name { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.sa-req-msg { font-size: 13px; color: var(--text2, #b8c0cc); margin-bottom: 4px; white-space: pre-wrap; }
+.sa-req-act { display: flex; gap: 6px; flex-shrink: 0; }
+.sa-log td { vertical-align: top; }
+.log-new { color: var(--green); }
+.log-del { color: var(--red, #d9534f); }
+@media (max-width: 640px) { .sa-req { flex-wrap: wrap; } }

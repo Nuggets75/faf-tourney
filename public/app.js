@@ -403,17 +403,59 @@ function drawTopbar(modeText) {
     '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
-  document.getElementById('lockBtn').onclick = siteAdminFlow;
+  document.getElementById('lockBtn').onclick = () => {
+    // already logged in? go to the console (log out from there)
+    if (siteAdmin()) {
+      if (location.pathname === '/siteadmin') { siteAdminFlow(); return; }  // toggles off
+      history.pushState(null, '', '/siteadmin'); route(); return;
+    }
+    siteAdminFlow();
+  };
   document.getElementById('cmdrBtn').onclick = loginFlow;
   document.getElementById('importBtn').onclick = importFlow;
-  document.getElementById('hostBtn').onclick = () => {
+  document.getElementById('hostBtn').onclick = async () => {
     // hosting requires FAF login (when configured)
     if (fafAuth.enabled && !isFafVerified()) {
       toast('Log in with FAF to host a tournament', true);
       return requireLoginThen();
     }
+    // ...and, once login is live, site-admin approval of the account
+    if (fafAuth.enabled && !siteAdmin()) {
+      let st = null;
+      try { st = await (await fetch('/api/host_status')).json(); } catch (e) {}
+      if (st && st.oauth && !st.allowed) return hostAccessFlow(st);
+    }
     history.pushState(null, '', '/host'); route();
   };
+}
+
+// Ask the site admin for permission to host. Shown when an approved-only server turns
+// someone away, so the next step is obvious rather than a dead end.
+function hostAccessFlow(st) {
+  if (st && st.pending) {
+    return modal(`<h3>Request already sent</h3>
+      <p class="muted small">Your request to host tournaments is waiting on the site admin. You'll be able to host as soon as it's approved.</p>
+      <div class="actions"><button class="btn primary" id="haClose">OK</button></div>`, root => {
+      root.querySelector('#haClose').onclick = closeModal;
+    });
+  }
+  modal(`<h3>Request permission to host</h3>
+    <p class="muted small">Hosting on this server is approved per FAF account. Send the site admin a short note about what you'd like to run and they'll take a look.</p>
+    <label>Anything they should know? <span class="muted" style="font-weight:400">(optional)</span></label>
+    <textarea id="haMsg" rows="3" maxlength="300" placeholder="e.g. I run the weekly 2v2 series and want to move it off Challonge"></textarea>
+    <div class="actions">
+      <button class="btn ghost" id="haCancel">Cancel</button>
+      <button class="btn primary" id="haGo">Send request</button>
+    </div>`, root => {
+    root.querySelector('#haCancel').onclick = closeModal;
+    root.querySelector('#haGo').onclick = async () => {
+      try {
+        await api('/api/host_request', { message: root.querySelector('#haMsg').value });
+        closeModal();
+        toast('Request sent — the site admin will review it');
+      } catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 let _importPw = null; // held in memory after a successful password check
@@ -533,10 +575,173 @@ function loginFlow() {
   });
 }
 
+// ---- site admin console: /siteadmin ----
+let saTab = 'requests';
+let saData = null;
+
+async function renderSiteAdmin() {
+  setTitle('Site admin');
+  drawTopbar('');
+  const app = document.getElementById('app');
+  if (!siteAdmin()) {
+    app.innerHTML = `<div class="page"><div class="panel"><div class="empty">
+      Site admin only — use the lock button in the top right to log in.</div></div></div>`;
+    return;
+  }
+  app.innerHTML = `<div class="page">
+    <h1 style="margin:0 0 14px">Site admin</h1>
+    <div class="tabs" style="margin-bottom:14px">
+      <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && (saData.requests || []).filter(r => r.status === 'pending').length) ? ' (' + saData.requests.filter(r => r.status === 'pending').length + ')' : ''}</button>
+      <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
+    </div>
+    <div id="saBody"><div class="panel"><div class="empty">Loading…</div></div></div>
+  </div>`;
+  app.querySelectorAll('[data-satab]').forEach(b => b.onclick = () => { saTab = b.dataset.satab; renderSiteAdmin(); });
+
+  try {
+    const r = await fetch('/api/siteadmin/data', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: siteAdmin() })
+    });
+    saData = await r.json();
+    if (!r.ok) throw new Error(saData.error || 'Failed to load');
+  } catch (e) {
+    document.getElementById('saBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>';
+    return;
+  }
+  const body = document.getElementById('saBody');
+  if (saTab === 'requests') drawSaRequests(body); else drawSaLogs(body);
+}
+
+function drawSaRequests(el) {
+  const reqs = saData.requests || [];
+  const pending = reqs.filter(r => r.status === 'pending');
+  const decided = reqs.filter(r => r.status !== 'pending');
+  const allowed = saData.allowed || [];
+
+  let html = '';
+  if (!saData.oauth) {
+    html += `<div class="panel section"><div class="muted small">FAF login isn't configured on this server yet, so hosting is open to everyone and nobody needs approval. This tab becomes active once the FAF environment variables are set.</div></div>`;
+  }
+
+  html += `<div class="panel section"><h2>Pending requests ${pending.length ? '(' + pending.length + ')' : ''}</h2>`;
+  if (!pending.length) html += '<div class="empty">Nothing waiting.</div>';
+  else html += pending.map(r => `<div class="sa-req">
+      <div class="sa-req-main">
+        <div class="sa-req-name">${esc(r.fafName)} <span class="muted small">FAF id ${esc(r.fafId)}</span></div>
+        ${r.message ? `<div class="sa-req-msg">${esc(r.message)}</div>` : ''}
+        <div class="muted small">${esc(fmtWhen(r.at))}</div>
+      </div>
+      <div class="sa-req-act">
+        <button class="btn primary small" data-sadec="${r.id}" data-ok="1">Approve</button>
+        <button class="btn ghost small" data-sadec="${r.id}" data-ok="0">Deny</button>
+      </div>
+    </div>`).join('');
+  html += '</div>';
+
+  html += `<div class="panel section">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h2 style="margin:0">Allowed to host (${allowed.length})</h2>
+      <button class="btn ghost small" id="saGrant">+ Add by FAF id</button>
+    </div>`;
+  if (!allowed.length) html += '<div class="empty" style="margin-top:10px">Nobody yet.</div>';
+  else html += '<div class="pick-rows" style="margin-top:10px">' + allowed.map(a => `<div class="pick-row on" style="cursor:default">
+      <span class="pr-name">${esc(a.name)} <span class="muted small">FAF id ${esc(a.fafId)}</span></span>
+      <span class="muted small">${esc(fmtWhen(a.at))}</span>
+      <button class="btn danger small" data-sarev="${esc(a.fafId)}">Revoke</button>
+    </div>`).join('') + '</div>';
+  html += '</div>';
+
+  if (decided.length) {
+    html += '<div class="panel section"><h2>Past decisions</h2><table><thead><tr><th>Who</th><th>Outcome</th><th>When</th></tr></thead><tbody>' +
+      decided.map(r => `<tr><td>${esc(r.fafName)}</td><td class="${r.status === 'approved' ? 'ok-msg' : 'muted'}">${esc(r.status)}</td><td class="muted small">${esc(fmtWhen(r.decidedAt || r.at))}</td></tr>`).join('') +
+      '</tbody></table></div>';
+  }
+
+  el.innerHTML = html;
+  el.querySelectorAll('[data-sadec]').forEach(b => b.onclick = async () => {
+    try {
+      await saPost('decide', { id: b.dataset.sadec, approve: b.dataset.ok === '1' ? 1 : 0 });
+      toast(b.dataset.ok === '1' ? 'Approved' : 'Denied');
+      renderSiteAdmin();
+    } catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-sarev]').forEach(b => b.onclick = async () => {
+    if (!confirm('Revoke hosting rights for this account?')) return;
+    try { await saPost('revoke', { fafId: b.dataset.sarev }); toast('Revoked'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+  const g = document.getElementById('saGrant');
+  if (g) g.onclick = () => {
+    modal(`<h3>Allow an account to host</h3>
+      <label>FAF id</label><input type="text" id="sgId" autocomplete="off">
+      <label style="margin-top:10px">Name <span class="muted" style="font-weight:400">(optional)</span></label><input type="text" id="sgName" autocomplete="off">
+      <div class="actions"><button class="btn ghost" id="sgCancel">Cancel</button><button class="btn primary" id="sgGo">Allow</button></div>`, root => {
+      root.querySelector('#sgCancel').onclick = closeModal;
+      root.querySelector('#sgGo').onclick = async () => {
+        const fafId = root.querySelector('#sgId').value.trim();
+        if (!fafId) return toast('FAF id required', true);
+        try {
+          await saPost('grant', { fafId, name: root.querySelector('#sgName').value.trim() });
+          closeModal(); toast('Allowed'); renderSiteAdmin();
+        } catch (e) { toast(e.message, true); }
+      };
+    });
+  };
+}
+
+const SA_ACTION_LABEL = {
+  tournament_created: 'Created tournament',
+  tournament_deleted: 'Deleted tournament',
+  host_access_requested: 'Requested hosting access',
+  host_access_granted: 'Granted hosting access',
+  host_access_denied: 'Denied hosting access',
+  host_access_revoked: 'Revoked hosting access'
+};
+
+function drawSaLogs(el) {
+  const logs = saData.logs || [];
+  const rows = logs.map(l => {
+    const what = SA_ACTION_LABEL[l.action] || l.action;
+    const target = l.tournamentName ? esc(l.tournamentName) : (l.detail ? esc(l.detail) : '\u2014');
+    const cls = l.action === 'tournament_deleted' ? 'log-del' : (l.action === 'tournament_created' ? 'log-new' : '');
+    return `<tr>
+      <td class="muted small mono">${esc(fmtWhen(l.at))}</td>
+      <td class="${cls}">${esc(what)}</td>
+      <td>${target}</td>
+      <td>${esc(l.actorName || '')} ${l.actorFafId ? '<span class="muted small">(' + esc(l.actorFafId) + ')</span>' : '<span class="muted small">' + esc(l.actorKind) + '</span>'}</td>
+      <td class="muted small mono">${esc(l.ip || '')}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<div class="panel section">
+    <h2>Audit log</h2>
+    <p class="muted small">Newest first. Records who created and deleted tournaments, and hosting-access decisions. Keeps the most recent 5000 entries.</p>
+    ${logs.length ? `<table class="sa-log"><thead><tr><th style="width:150px">When</th><th style="width:190px">Action</th><th>Tournament</th><th style="width:200px">Who</th><th style="width:120px">IP</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">Nothing logged yet.</div>'}
+  </div>`;
+}
+
+async function saPost(action, body) {
+  const r = await fetch('/api/siteadmin/' + action, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ password: siteAdmin() }, body))
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'Failed');
+  return d;
+}
+
+function fmtWhen(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
 function siteAdminFlow() {
   if (siteAdmin()) {
     localStorage.removeItem('siteAdmin');
     toast('Site admin off');
+    if (location.pathname === '/siteadmin') { history.pushState(null, '', '/'); }
     route();
     return;
   }
@@ -557,6 +762,7 @@ function siteAdminFlow() {
         localStorage.setItem('siteAdmin', inp.value);
         closeModal();
         toast('Site admin on');
+        history.pushState(null, '', '/siteadmin');
         route();
       } catch (e) { toast(e.message, true); }
     };
@@ -3937,6 +4143,7 @@ function setTitle(name) {
 
 function route() {
   if (location.pathname === '/host') renderHost();
+  else if (location.pathname === '/siteadmin') renderSiteAdmin();
   else if (tourneyId()) renderTournament();
   else renderHome();
 }
