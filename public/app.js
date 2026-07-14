@@ -782,22 +782,12 @@ async function renderHost() {
           <option value="rating" selected>By rating (entered at signup)</option>
           <option value="random">Random</option>
         </select>
-        <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
-          <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
-        </label>
-        <div id="cVetoCfg" style="display:none;margin-top:10px;padding:12px;background:var(--panel2);border:1px solid var(--line-solid);border-radius:4px">
-          <label>Map pool <span class="muted" style="font-weight:400">(one per line)</span></label>
-          <textarea id="cVetoMaps" rows="5" placeholder="Seton's Clutch&#10;Theta Passage&#10;Twin Rivers&#10;..."></textarea>
-          <div class="muted small" style="margin-top:8px">Enable it here with your pool, then build the exact ban/pick order (Bo1/Bo3/Bo5/Bo7 presets or your own) in the <strong>Admin → Map vetoes</strong> panel after creating. A Bo3 order is applied by default.</div>
-        </div>
         <div style="margin-top:20px">
           <button class="btn primary" id="cGo">Create tournament</button>
         </div>
       </div>
     </div>`;
 
-  const cVeto = document.getElementById('cVeto');
-  if (cVeto) cVeto.onchange = () => { document.getElementById('cVetoCfg').style.display = cVeto.checked ? 'block' : 'none'; };
   const comp = document.getElementById('cComp');
   const size = document.getElementById('cSize');
   const formation = document.getElementById('cFormation');
@@ -868,14 +858,6 @@ async function renderHost() {
         cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value,
-        veto: (function() {
-          const en = document.getElementById('cVeto');
-          if (!en || !en.checked) return { enabled: false, mapPool: [], sequence: [], mode: 'upfront' };
-          const maps = document.getElementById('cVetoMaps').value.split('\n').map(x => x.trim()).filter(x => x);
-          // default to a Bo3 order (A ban, B ban, A pick, B pick, decider); organizer refines in Admin
-          const seq = [ {action:'ban',team:'A'},{action:'ban',team:'B'},{action:'pick',team:'A'},{action:'pick',team:'B'} ];
-          return { enabled: true, mapPool: maps, sequence: seq, mode: 'upfront' };
-        })(),
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
