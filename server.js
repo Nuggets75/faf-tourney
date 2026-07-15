@@ -1107,12 +1107,13 @@ async function handleAPI(req, res, url) {
       if (t.status !== 'signup' && !lateOk) return bad(res, 'Signups are closed');
 
       let name, fafId = null, manual = false;
-      if (adminAdding && b.name) {
-        // site admin / organizer adding a manual (unverified) player by name
+      if (!FAF_OAUTH_ON && adminAdding && b.name) {
+        // Legacy (no FAF login): organizer could add an unverified player by name.
+        // With FAF login on, this path is gone — everyone signs up as their own FAF identity.
         name = cleanName(b.name, 30);
         manual = true;
       } else {
-        // self-signup: identity must come from a FAF login
+        // self-signup: identity comes from the FAF login session
         if (FAF_OAUTH_ON && !sess) return json(res, 401, { error: 'Log in with FAF to sign up' });
         if (sess) { name = sess.fafName; fafId = sess.fafId; }
         else { name = cleanName(b.name, 30); } // pre-go-live fallback (no OAuth configured)
@@ -1140,6 +1141,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'signup_team') {
+      if (FAF_OAUTH_ON) return bad(res, 'Whole-team registration is off. Each player signs up individually with their own FAF account, then teams are formed on the Teams tab.');
       if (t.status !== 'signup') return bad(res, 'Signups are closed');
       if (t.formation !== 'premade' || t.teamSize < 2) return bad(res, 'This tournament uses solo signups');
       const teamName = cleanName(b.teamName, 30);

@@ -47,6 +47,7 @@ let fafAuth = { enabled: false, user: null };
 // the effective logged-in name: a verified FAF session wins over the manual name
 function me() {
   if (fafAuth.user && fafAuth.user.fafName) return fafAuth.user.fafName;
+  if (fafAuth.enabled) return '';   // FAF login configured: identity comes only from FAF, never a stored name
   return localStorage.getItem('cmdrName') || '';
 }
 function isFafVerified() { return !!(fafAuth.user && fafAuth.user.fafName); }
@@ -547,26 +548,32 @@ function loginFlow() {
     });
     return;
   }
-  // Not logged in — offer FAF login (if configured) and/or the manual name.
-  const fafBtn = fafAuth.enabled
-    ? `<button class="btn faf" id="lgFaf">Log in with FAF</button>
-       <div class="or-divider"><span>or</span></div>`
-    : '';
+  // Not logged in.
+  if (fafAuth.enabled) {
+    // FAF login is the only way in.
+    modal(`
+      <h3>Log in</h3>
+      <p class="muted small">Log in with your FAF account. This verifies your identity — you sign up and act as yourself only.</p>
+      <button class="btn faf" id="lgFaf">Log in with FAF</button>
+      <div class="actions"><button class="btn ghost" id="lgCancel">Cancel</button></div>`, root => {
+      root.querySelector('#lgCancel').onclick = closeModal;
+      root.querySelector('#lgFaf').onclick = () => {
+        const returnTo = location.pathname + location.search;
+        location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
+      };
+    });
+    return;
+  }
+  // Legacy fallback (FAF login not configured on this server): manual name.
   modal(`
     <h3>Log in</h3>
-    ${fafAuth.enabled ? '<p class="muted small">Log in with your FAF account to verify your identity, or just enter a name.</p>' : '<p class="muted small">Your name pre-fills every signup form.</p>'}
-    ${fafBtn}
+    <p class="muted small">Your name pre-fills every signup form.</p>
     <label>FAF name</label>
     <input type="text" id="lgName" maxlength="30" autocomplete="off">
     <div class="actions">
       <button class="btn ghost" id="lgCancel">Cancel</button>
       <button class="btn primary" id="lgGo">Use this name</button>
     </div>`, root => {
-    const faf = root.querySelector('#lgFaf');
-    if (faf) faf.onclick = () => {
-      const returnTo = location.pathname + location.search;
-      location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
-    };
     const inp = root.querySelector('#lgName');
     inp.focus();
     const go = () => {
