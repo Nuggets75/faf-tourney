@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && node --check challonge.js && node --check lib/util.js",
+    "check": "for f in server.js challonge.js public/app.js lib/*.js; do node --check \"$f\" || exit 1; done",
     "typecheck": "tsc --noEmit"
   },
   "keywords": ["faf", "tournament", "supreme-commander"],

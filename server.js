@@ -12,6 +12,8 @@ const {
   uid, now, shuffle, cleanName, intIn, cleanDate,
   json, bad, readBody, b64url, randToken, pkcePair,
 } = require('./lib/util');
+// Pure bracket math (seeding, sizing, Bo validation) lives in lib/bracket.js.
+const { BO_OK, seedOrder, nextPow2, log2i, seededSlots, cleanBoList } = require('./lib/bracket');
 
 const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -533,37 +535,6 @@ function undoMatch(t, m) {
 }
 
 // ---------- bracket construction ----------
-
-function seedOrder(n) {
-  let order = [1];
-  while (order.length < n) {
-    const next = [];
-    const m = order.length * 2;
-    for (const s of order) { next.push(s); next.push(m + 1 - s); }
-    order = next;
-  }
-  return order;
-}
-function nextPow2(n) { let p = 1; while (p < n) p *= 2; return p; }
-function log2i(n) { let r = 0; while ((1 << r) < n) r++; return r; }
-
-function seededSlots(t, division) {
-  let teams = t.teams.slice();
-  if (division && division > 0) teams = teams.filter(x => (x.division || 0) === division);
-  teams.sort((a, b) => a.seed - b.seed);
-  const size = nextPow2(teams.length);
-  return seedOrder(size).map(s => (s <= teams.length ? teams[s - 1].id : 'BYE'));
-}
-
-const BO_OK = [1, 3, 5, 7];
-function cleanBoList(arr, len) {
-  const out = [];
-  for (let i = 0; i < len; i++) {
-    const v = parseInt(Array.isArray(arr) ? arr[i] : null, 10);
-    out.push(BO_OK.indexOf(v) >= 0 ? v : 3);
-  }
-  return out;
-}
 
 function buildSingle(t, cfg) {
   const slots = seededSlots(t, _buildingDivision);
