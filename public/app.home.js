@@ -530,10 +530,24 @@ function drawTournament() {
       <div class="tabs">
         ${tabs.map(tb => `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}</button>`).join('')}
       </div>
+      ${admin && !T.published ? `<div class="panel" style="border-color:var(--amber);margin-top:12px">
+        <strong>Draft — not public yet.</strong>
+        <p class="muted small" style="margin:6px 0 10px">Only people with the link below can see this. Publish it to list it on the home page and open it up.</p>
+        <div class="copybox"><input type="text" readonly value="${location.origin}/t/${T.id}"><button class="btn small" data-copy="${location.origin}/t/${T.id}">Copy share link</button></div>
+        <div style="margin-top:10px"><button class="btn primary" id="pubBtn">Publish tournament</button></div>
+      </div>` : ''}
     </div>
     <div id="tabBody" class="${currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page'}"></div>`;
 
   app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
+
+  const pubBtn = document.getElementById('pubBtn');
+  if (pubBtn) pubBtn.onclick = async () => {
+    if (!confirm('Publish this tournament? It will appear on the public home page for everyone.')) return;
+    try { await api('/api/t/' + T.id + '/publish', { admin: adminToken() }); toast('Published'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+  app.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
 
   // "your turn" banner, above whatever tab is open
   const banner = turnBannerHTML();
@@ -567,10 +581,12 @@ function gameInfoPanel() {
   if (T.description) cells.push(['Briefing', T.description]);
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);
-  if (!cells.length) return '';
+  const imgs = (T.descImages || []);
+  const gallery = imgs.length ? `<div class="desc-gallery">${imgs.map(f => `<a href="/desc-images/${encodeURIComponent(f)}" target="_blank" rel="noopener"><img src="/desc-images/${encodeURIComponent(f)}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
+  if (!cells.length && !imgs.length) return '';
   return `<div class="panel section"><h2>Game <span class="h2-strong">Setup</span></h2><div class="infogrid">
     ${cells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
-  </div></div>`;
+  </div>${gallery}</div>`;
 }
 
 function drawOverview(el) {

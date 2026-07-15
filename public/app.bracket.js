@@ -215,6 +215,47 @@ function vetoIndicator(m) {
 }
 
 // ---- Maps tab: the map database + where each map is played ----
+// Add or edit a map in the tournament's map database. `map` is null for a new entry.
+function editMapEntry(map) {
+  const editing = !!map;
+  const curImg = map && map.image ? '/map-images/' + encodeURIComponent(map.image) : '';
+  modal(`<h3>${editing ? 'Edit map' : 'Add map'}</h3>
+    <label>Name</label>
+    <input type="text" id="mName" maxlength="60" autocomplete="off" placeholder="e.g. Setons Clutch" value="${editing ? esc(map.name) : ''}">
+    <label style="margin-top:10px">Description <span class="muted small">(optional)</span></label>
+    <textarea id="mDesc" rows="3" style="width:100%">${editing ? esc(map.description || '') : ''}</textarea>
+    <label style="margin-top:10px">Image <span class="muted small">(optional, 5MB max)</span></label>
+    <div id="mImgWrap">${curImg ? `<img src="${curImg}" alt="" style="max-height:120px;border-radius:4px;display:block;margin:6px 0"><label class="muted small" style="display:block"><input type="checkbox" id="mRemoveImg"> Remove current image</label>` : ''}</div>
+    <input type="file" id="mImg" accept="image/*">
+    <label style="margin-top:10px;display:block"><input type="checkbox" id="mPub" ${editing && map.published ? 'checked' : ''}> Published (visible to players)</label>
+    <div class="actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Save map</button></div>`, root => {
+    root.querySelector('#mCancel').onclick = closeModal;
+    root.querySelector('#mSave').onclick = async () => {
+      const name = root.querySelector('#mName').value.trim();
+      if (!name) return toast('Map name required', true);
+      const body = {
+        name,
+        description: root.querySelector('#mDesc').value,
+        published: root.querySelector('#mPub').checked ? 1 : 0,
+        admin: adminToken()
+      };
+      if (editing) body.id = map.id;
+      const fileInput = root.querySelector('#mImg');
+      const removeChk = root.querySelector('#mRemoveImg');
+      const file = fileInput && fileInput.files && fileInput.files[0];
+      try {
+        if (file) {
+          body.image = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read image')); r.readAsDataURL(file); });
+        } else if (removeChk && removeChk.checked) {
+          body.removeImage = 1;
+        }
+        await api('/api/t/' + T.id + '/map_save', body);
+        closeModal(); toast(editing ? 'Map updated' : 'Map added'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
 function drawMaps(el) {
   const admin = viewerIsOrganizer();
   const db = T.mapDb || [];

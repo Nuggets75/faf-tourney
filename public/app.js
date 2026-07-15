@@ -394,6 +394,9 @@ function drawTopbar(modeText) {
   const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
   const loggedIn = isFafVerified() || !!me();
   topbarRight.innerHTML =
+    '<button class="btn ghost small" id="navStart" title="Home">Start</button>' +
+    '<button class="btn ghost small" id="navHall" title="Hall of Fame">Hall of Fame</button>' +
+    '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">Rules</button>' +
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
     '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' +
     (me()
@@ -403,6 +406,10 @@ function drawTopbar(modeText) {
     '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
+  const goTo = p => { history.pushState(null, '', p); route(); };
+  document.getElementById('navStart').onclick = () => goTo('/');
+  document.getElementById('navHall').onclick = () => goTo('/hall');
+  document.getElementById('navFaq').onclick = () => goTo('/faq');
   document.getElementById('lockBtn').onclick = () => {
     // already logged in? go to the console (log out from there)
     if (siteAdmin()) {
@@ -593,6 +600,8 @@ async function renderSiteAdmin() {
     <div class="tabs" style="margin-bottom:14px">
       <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && (saData.requests || []).filter(r => r.status === 'pending').length) ? ' (' + saData.requests.filter(r => r.status === 'pending').length + ')' : ''}</button>
       <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
+      <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
+      <button class="tab ${saTab === 'articles' ? 'active' : ''}" data-satab="articles">Articles</button>
     </div>
     <div id="saBody"><div class="panel"><div class="empty">Loading…</div></div></div>
   </div>`;
@@ -610,7 +619,7 @@ async function renderSiteAdmin() {
     return;
   }
   const body = document.getElementById('saBody');
-  if (saTab === 'requests') drawSaRequests(body); else drawSaLogs(body);
+  if (saTab === 'requests') drawSaRequests(body); else if (saTab === 'archived') drawSaArchived(body); else if (saTab === 'articles') drawSaArticles(body); else drawSaLogs(body);
 }
 
 function drawSaRequests(el) {
@@ -693,11 +702,72 @@ function drawSaRequests(el) {
 const SA_ACTION_LABEL = {
   tournament_created: 'Created tournament',
   tournament_deleted: 'Deleted tournament',
+  tournament_archived: 'Archived tournament',
+  tournament_restored: 'Restored tournament',
+  tournament_published: 'Published tournament',
   host_access_requested: 'Requested hosting access',
   host_access_granted: 'Granted hosting access',
   host_access_denied: 'Denied hosting access',
   host_access_revoked: 'Revoked hosting access'
 };
+
+function drawSaArticles(el) {
+  const arts = saData.articles || [];
+  let html = `<div class="panel section"><div class="row" style="justify-content:space-between;align-items:center">
+    <h2 style="margin:0">FAQ / Rules articles (${arts.length})</h2>
+    <button class="btn primary small" id="saArtNew">+ New article</button></div>`;
+  if (!arts.length) html += '<div class="empty" style="margin-top:10px">No articles yet. These show on the public Rules page.</div>';
+  else html += '<div style="margin-top:10px">' + arts.map(a => `<div class="sa-req">
+      <div class="sa-req-main"><div class="sa-req-name">${esc(a.title)}</div><div class="muted small">Updated ${esc(fmtWhen(a.updatedAt || a.createdAt))}</div></div>
+      <div class="sa-req-act"><button class="btn ghost small" data-artedit="${a.id}">Edit</button><button class="btn danger small" data-artdel="${a.id}">Delete</button></div>
+    </div>`).join('') + '</div>';
+  html += '</div>';
+  el.innerHTML = html;
+  const editor = (art) => {
+    modal(`<h3>${art ? 'Edit' : 'New'} article</h3>
+      <label>Title</label><input type="text" id="artTitle" maxlength="120" value="${art ? esc(art.title) : ''}" autocomplete="off">
+      <label style="margin-top:10px">Body</label><textarea id="artBody" rows="10" style="width:100%">${art ? esc(art.body) : ''}</textarea>
+      <div class="actions"><button class="btn ghost" id="artCancel">Cancel</button><button class="btn primary" id="artSave">Save</button></div>`, root => {
+      root.querySelector('#artCancel').onclick = closeModal;
+      root.querySelector('#artSave').onclick = async () => {
+        const title = root.querySelector('#artTitle').value.trim();
+        if (!title) return toast('Title required', true);
+        const bodyv = root.querySelector('#artBody').value;
+        try { await saPost('article_save', art ? { id: art.id, title, body: bodyv } : { title, body: bodyv }); closeModal(); toast('Saved'); renderSiteAdmin(); }
+        catch (e) { toast(e.message, true); }
+      };
+    });
+  };
+  const nb = document.getElementById('saArtNew'); if (nb) nb.onclick = () => editor(null);
+  el.querySelectorAll('[data-artedit]').forEach(b => b.onclick = () => editor(arts.find(a => a.id === b.dataset.artedit)));
+  el.querySelectorAll('[data-artdel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Delete this article?')) return;
+    try { await saPost('article_delete', { id: b.dataset.artdel }); toast('Deleted'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+function drawSaArchived(el) {
+  const arch = saData.archived || [];
+  let html = `<div class="panel section"><h2>Archived tournaments (${arch.length})</h2>
+    <p class="muted small" style="margin:6px 0 10px">Archived by organizers and hidden from the public. Restore to bring one back to where it was, or delete it permanently.</p>`;
+  if (!arch.length) html += '<div class="empty">Nothing archived.</div>';
+  else html += '<table><thead><tr><th>Name</th><th>Status</th><th>Players</th><th>Archived</th><th></th></tr></thead><tbody>' +
+    arch.map(t => `<tr><td>${esc(t.name)}</td><td class="muted">${esc(t.status)}</td><td class="muted">${t.players}</td><td class="muted small">${esc(fmtWhen(t.at))}</td>
+      <td style="white-space:nowrap"><button class="btn primary small" data-sarestore="${t.id}">Restore</button><button class="btn danger small" data-sadelperm="${t.id}" style="margin-left:6px">Delete</button></td></tr>`).join('') +
+    '</tbody></table>';
+  html += '</div>';
+  el.innerHTML = html;
+  el.querySelectorAll('[data-sarestore]').forEach(b => b.onclick = async () => {
+    try { await api('/api/t/' + b.dataset.sarestore + '/restore', { admin: siteAdmin() }); toast('Restored'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-sadelperm]').forEach(b => b.onclick = async () => {
+    if (!confirm('Permanently delete this archived tournament? This cannot be undone.')) return;
+    try { await api('/api/t/' + b.dataset.sadelperm + '/delete', { admin: siteAdmin() }); toast('Deleted'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
 
 function drawSaLogs(el) {
   const logs = saData.logs || [];

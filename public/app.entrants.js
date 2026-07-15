@@ -235,6 +235,11 @@ function editPlayer(p) {
 
 // ----- teams / draft -----
 
+function localDatetimeValue(ms) {
+  const d = new Date(ms), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
 function drawOpenTeams(el) {
   const admin = viewerIsOrganizer();
   const myPid = T.viewer && T.viewer.signedUpPlayerId;
@@ -257,6 +262,7 @@ function drawOpenTeams(el) {
     const full = myTeam.playerIds.length >= size;
     html += `<div class="panel section"><h2>Your team: ${esc(myTeam.name)} ${full ? '<span class="idbadge verified">full</span>' : '<span class="idbadge late">' + myTeam.playerIds.length + '/' + size + '</span>'}</h2>
       <div class="teammates">${mates.map(m => `<div class="teammate">${esc(m.name)}${m.id === myTeam.captainId ? ' <span class="cap-tag">captain</span>' : ''}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}</div>`).join('')}</div>
+      ${full ? `<div style="margin-top:10px">${myTeam.checkedIn ? '<span class="idbadge verified">Checked in \u2713</span> <button class="btn ghost small" id="otUncheck" style="margin-left:6px">Undo check-in</button>' : '<button class="btn primary small" id="otCheckin">Check in</button> <span class="muted small" style="margin-left:8px">Any team member can check in.</span>'}</div>` : ''}
       <div style="margin-top:12px">
         <button class="btn ghost small" id="otLeave">Leave team</button>
         ${isCap && !myTeam.captainRenamed ? '<button class="btn ghost small" id="otRename" style="margin-left:6px">Rename</button>' : ''}
@@ -272,27 +278,63 @@ function drawOpenTeams(el) {
       <p class="muted small" style="margin-top:8px">You'll be captain. Teams need ${size} players to enter the bracket.</p></div>`;
   }
 
-  // ---- all teams ----
+  // ---- check-in deadline ----
   const canJoin = myPlayer && !myTeam;
-  html += `<div class="panel section"><h2>Teams <span class="h2-strong">(${T.teams.length})</span></h2>`;
-  if (T.teams.length === 0) {
-    html += '<div class="empty">No teams yet. Be the first to create one.</div>';
-  } else {
-    html += '<div class="teamgrid">';
-    for (const tm of T.teams.slice().sort((a, b) => a.name.localeCompare(b.name))) {
-      const mems = tm.playerIds.map(pid => T.players.find(p => p.id === pid)).filter(Boolean);
-      const full = tm.playerIds.length >= size;
-      const openSlots = size - tm.playerIds.length;
-      html += `<div class="teamcard ${full ? 'full' : 'open'}">
-        <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
-        <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${admin && !full && m.id !== tm.captainId ? '' : ''}</div>`).join('')}</div>
-        ${canJoin && !full ? `<button class="btn amber small tc-join" data-join="${tm.id}">Join (${openSlots} open)</button>` : ''}
-        ${admin ? `<div class="tc-admin"><button class="btn ghost small" data-arename="${tm.id}">Rename</button><button class="btn danger small" data-adisband="${tm.id}">Disband</button></div>` : ''}
-      </div>`;
-    }
+  if (T.checkInDeadline || admin) {
+    const dl = T.checkInDeadline ? new Date(T.checkInDeadline) : null;
+    const passed = dl && Date.now() > T.checkInDeadline;
+    html += `<div class="panel section"><h2>Check-in</h2>`;
+    if (dl) html += `<p class="${passed ? 'warn' : 'muted'} small">Deadline: <strong>${esc(dl.toLocaleString())}</strong>${passed ? ' — passed' : ''}. Any member of a full team can check it in.</p>`;
+    else html += `<p class="muted small">No check-in deadline set. Teams enter by signup order up to the cap.</p>`;
+    if (admin) html += `<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      <input type="datetime-local" id="ciDeadline"${dl ? ` value="${localDatetimeValue(T.checkInDeadline)}"` : ''}>
+      <button class="btn ghost small" id="ciSave">Set deadline</button>
+      ${dl ? '<button class="btn ghost small" id="ciClear">Clear</button>' : ''}</div>`;
     html += '</div>';
   }
-  html += '</div>';
+
+  // ---- teams: participants / waiting list / forming ----
+  const cap = T.maxTeams > 0 ? T.maxTeams : 0;
+  const fullTeams = T.teams.filter(x => x.playerIds.length >= size);
+  const useCheckin = !!T.checkInDeadline || fullTeams.some(x => x.checkedIn);
+  const orderedFull = fullTeams.slice().sort((a, b) => {
+    if (useCheckin && !!a.checkedIn !== !!b.checkedIn) return a.checkedIn ? -1 : 1;
+    return (a.createdAt || 0) - (b.createdAt || 0);
+  });
+  const participants = cap ? orderedFull.slice(0, cap) : orderedFull;
+  const waitlist = cap ? orderedFull.slice(cap) : [];
+  const forming = T.teams.filter(x => x.playerIds.length < size).slice().sort((a, b) => a.name.localeCompare(b.name));
+
+  const teamCard = (tm) => {
+    const mems = tm.playerIds.map(pid => T.players.find(p => p.id === pid)).filter(Boolean);
+    const full = tm.playerIds.length >= size;
+    const openSlots = size - tm.playerIds.length;
+    return `<div class="teamcard ${full ? 'full' : 'open'}">
+      <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
+      <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}</div>`).join('')}</div>
+      ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
+      ${canJoin && !full ? `<button class="btn amber small tc-join" data-join="${tm.id}">Join (${openSlots} open)</button>` : ''}
+      ${admin ? `<div class="tc-admin">${full ? `<button class="btn ghost small" data-checkin="${tm.id}" data-val="${tm.checkedIn ? 0 : 1}">${tm.checkedIn ? 'Un-check' : 'Check in'}</button>` : ''}<button class="btn ghost small" data-arename="${tm.id}">Rename</button><button class="btn danger small" data-adisband="${tm.id}">Disband</button></div>` : ''}
+    </div>`;
+  };
+
+  if (!T.teams.length) {
+    html += '<div class="panel section"><h2>Teams</h2><div class="empty">No teams yet. Be the first to create one.</div></div>';
+  } else {
+    html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''})</span></h2>`;
+    html += participants.length ? '<div class="teamgrid">' + participants.map(teamCard).join('') + '</div>' : '<div class="empty">No full teams yet.</div>';
+    html += '</div>';
+    if (waitlist.length) {
+      html += `<div class="panel section"><h2>Waiting list <span class="h2-strong">(${waitlist.length})</span></h2>
+        <p class="muted small" style="margin-bottom:8px">Beyond the ${cap}-team cap. If a participant drops or misses check-in, the next checked-in waiting team moves up (signup order).</p>
+        <div class="teamgrid">${waitlist.map(teamCard).join('')}</div></div>`;
+    }
+    if (forming.length) {
+      html += `<div class="panel section"><h2>Forming <span class="h2-strong">(${forming.length})</span></h2>
+        <p class="muted small" style="margin-bottom:8px">Not full yet — need ${size} players to enter.</p>
+        <div class="teamgrid">${forming.map(teamCard).join('')}</div></div>`;
+    }
+  }
 
   // ---- unteamed players ----
   const unteamed = T.players.filter(p => !p.teamId);
@@ -303,14 +345,15 @@ function drawOpenTeams(el) {
         if (p.fafId) b = ' <span class="idbadge verified">\u2713</span>';
         return `<span class="unteamed-chip" ${admin ? 'data-assign="' + p.id + '"' : ''}>${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${admin ? ' <span class="assign-hint">assign\u2192</span>' : ''}</span>`;
       }).join('')}</div>
-      ${admin ? '<p class="muted small" style="margin-top:8px">Click a player to assign them to a team.</p>' : ''}</div>`;
+      ${admin ? '<p class="muted small" style="margin-top:8px">Click a player to assign them to a team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : ''}</div>`;
   }
 
   // ---- organizer: form teams / divisions ----
   if (admin) {
-    const fullCount = T.teams.filter(x => x.playerIds.length >= size).length;
+    const fullCount = fullTeams.length;
+    const ci = fullTeams.filter(x => x.checkedIn).length;
     html += `<div class="panel section"><h2>Start</h2>
-      <p class="muted small">${fullCount} full team${fullCount === 1 ? '' : 's'} ready. Only full teams (${size} players) enter the bracket; incomplete teams and un-teamed players become reserves you can sub in later.</p>
+      <p class="muted small">${fullCount} full team${fullCount === 1 ? '' : 's'}${useCheckin ? ', ' + ci + ' checked in' : ''}. ${cap ? 'Up to ' + cap + ' enter as participants' + (useCheckin ? ' (checked-in first, then signup order)' : ' (signup order)') + '; the rest' : 'Incomplete teams and extras'} become reserves you can sub in later.</p>
       <button class="btn amber" id="otFormTeams">Close signups &amp; lock teams</button></div>`;
   }
 
@@ -350,6 +393,40 @@ function drawOpenTeams(el) {
   el.querySelectorAll('[data-assign]').forEach(c => c.onclick = () => organizerAssignPlayer(c.dataset.assign));
   const otFormTeams = document.getElementById('otFormTeams');
   if (otFormTeams) otFormTeams.onclick = () => call('/phase', { action: 'form_teams', admin: adminToken() });
+
+  // check-in (member checks in their own full team; organizer toggles any team)
+  const otCheckin = document.getElementById('otCheckin');
+  if (otCheckin) otCheckin.onclick = () => call('/checkin_team', { value: 1 }, 'Checked in');
+  const otUncheck = document.getElementById('otUncheck');
+  if (otUncheck) otUncheck.onclick = () => call('/checkin_team', { value: 0 }, 'Check-in undone');
+  el.querySelectorAll('[data-checkin]').forEach(b => b.onclick = () => call('/checkin_team', { teamId: b.dataset.checkin, value: +b.dataset.val, admin: adminToken() }, 'Updated'));
+
+  // check-in deadline (organizer)
+  const ciSave = document.getElementById('ciSave');
+  if (ciSave) ciSave.onclick = () => { const v = document.getElementById('ciDeadline').value; if (!v) return toast('Pick a date and time', true); call('/edit_info', { checkInDeadline: v, admin: adminToken() }, 'Deadline set'); };
+  const ciClear = document.getElementById('ciClear');
+  if (ciClear) ciClear.onclick = () => call('/edit_info', { checkInDeadline: '', admin: adminToken() }, 'Deadline cleared');
+
+  // organizer: build a team around a free agent (#6)
+  const otOrgCreate = document.getElementById('otOrgCreate');
+  if (otOrgCreate) otOrgCreate.onclick = () => {
+    const free = T.players.filter(p => !p.teamId);
+    if (!free.length) return toast('No free agents to team up', true);
+    modal(`<h3>New team from a free agent</h3>
+      <label>Player (becomes captain)</label>
+      <select id="ocPlayer">${free.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+      <label style="margin-top:10px">Team name <span class="muted small">(optional)</span></label>
+      <input type="text" id="ocName" maxlength="30" autocomplete="off">
+      <div class="actions"><button class="btn ghost" id="ocCancel">Cancel</button><button class="btn primary" id="ocSave">Create</button></div>`, root => {
+      root.querySelector('#ocCancel').onclick = closeModal;
+      root.querySelector('#ocSave').onclick = async () => {
+        const playerId = root.querySelector('#ocPlayer').value;
+        const name = root.querySelector('#ocName').value.trim();
+        try { await api('/api/t/' + T.id + '/org_create_team', { playerId, name, admin: adminToken() }); closeModal(); toast('Team created'); await refresh(); }
+        catch (e) { toast(e.message, true); }
+      };
+    });
+  };
 }
 
 // organizer: assign an unteamed player to a team (or create context)

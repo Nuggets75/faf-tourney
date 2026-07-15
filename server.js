@@ -39,6 +39,10 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 // drive later (or served from a CDN) without touching db.json, which stores only filenames.
 const MAP_IMG_DIR = process.env.MAP_IMG_DIR || path.join(DATA_DIR, 'map-images');
 const MAX_IMG_BYTES = 5 * 1024 * 1024; // 5MB per image
+// Description/briefing images live in their own directory so they can be relocated to
+// another drive independently (DESC_IMG_DIR). Capped per tournament.
+const DESC_IMG_DIR = process.env.DESC_IMG_DIR || path.join(DATA_DIR, 'desc-images');
+const MAX_DESC_IMAGES = 10;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 // Site-wide admin password. Set via ADMIN_PASSWORD environment variable in the
 // Dockhand stack — NOT in this repo, so it is never visible on GitHub.
@@ -81,6 +85,7 @@ function loadDB() {
   if (!Array.isArray(db.auditLog)) db.auditLog = [];
   if (!Array.isArray(db.hostRequests)) db.hostRequests = [];
   if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
+  if (!Array.isArray(db.articles)) db.articles = [];
   // migrate v1 records so old test tournaments don't crash the client
   let changed = false;
   for (const t of Object.values(db.tournaments)) {
@@ -120,6 +125,7 @@ function saveDB() {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.mkdirSync(MAP_IMG_DIR, { recursive: true });
+      fs.mkdirSync(DESC_IMG_DIR, { recursive: true });
       const tmp = DB_FILE + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(db));
       fs.renameSync(tmp, DB_FILE);
@@ -220,6 +226,26 @@ function deleteMapImage(fname) {
   try { fs.unlinkSync(path.join(MAP_IMG_DIR, path.basename(fname))); } catch (e) {}
 }
 
+// --- description/briefing images (separate directory, see DESC_IMG_DIR) ---
+function saveDescImage(dataUrl) {
+  const m = /^data:([^;]+);base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new Error('Invalid image data');
+  const mime = m[1].toLowerCase();
+  const ext = IMG_EXT[mime];
+  if (!ext) throw new Error('Only image files are allowed (png, jpg, gif, webp, bmp)');
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > MAX_IMG_BYTES) throw new Error('Image exceeds 5MB');
+  if (buf.length === 0) throw new Error('Empty image');
+  const fname = 'desc_' + uid(10) + '.' + ext;
+  fs.mkdirSync(DESC_IMG_DIR, { recursive: true });
+  fs.writeFileSync(path.join(DESC_IMG_DIR, fname), buf);
+  return fname;
+}
+function deleteDescImage(fname) {
+  if (!fname) return;
+  try { fs.unlinkSync(path.join(DESC_IMG_DIR, path.basename(fname))); } catch (e) {}
+}
+
 // find the pool object by id
 // resolve which pool a match should use: match-specific → round → tournament default (first pool)
 // the map ids available for a match's veto (its pool's maps)
@@ -265,6 +291,9 @@ function teamOfCaptainToken(t, token) {
 function publicView(t) {
   return {
     id: t.id, name: t.name, description: t.description, category: t.category || null,
+    published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0,
+    descImages: (t.descImages || []).slice(),
+    checkInDeadline: t.checkInDeadline || null,
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
     teamSize: t.teamSize, draftOrder: t.draftOrder,
@@ -285,6 +314,7 @@ function publicView(t) {
       id: x.id, name: x.name, seed: x.seed,
       captainId: x.captainId, playerIds: x.playerIds,
       division: x.division || 0,
+      checkedIn: x.checkedIn ? 1 : 0, createdAt: x.createdAt || 0,
       captainRenamed: x.captainRenamed ? 1 : 0,
       eliminated: x.eliminated || false,
       out: x.out || null,
@@ -640,6 +670,7 @@ async function handleAPI(req, res, url) {
       id: uid(5), adminToken: uid(12), lateToken: uid(12),
       name, description: cleanName(b.description, 500),
       category,
+      published: false, archived: false, descImages: [],
       lobbyOptions: cleanName(b.lobbyOptions, 500),
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
@@ -724,7 +755,11 @@ async function handleAPI(req, res, url) {
         oauth: FAF_OAUTH_ON ? 1 : 0,
         logs: db.auditLog.slice().reverse().slice(0, 500),   // newest first
         requests: (db.hostRequests || []).slice().reverse(),
-        allowed
+        allowed,
+        archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({
+          id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length
+        })).sort((x, y) => y.at - x.at),
+        articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0))
       });
     }
 
@@ -753,6 +788,27 @@ async function handleAPI(req, res, url) {
         actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
         detail: (entry.name || '') + ' (' + b.fafId + ')'
       });
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'article_save') {
+      const title = cleanName(b.title, 120);
+      if (!title) return bad(res, 'Title required');
+      const body2 = String(b.body || '').slice(0, 20000);
+      if (b.id) {
+        const a = (db.articles || []).find(x => x.id === b.id);
+        if (!a) return bad(res, 'Article not found');
+        a.title = title; a.body = body2; a.updatedAt = Date.now();
+      } else {
+        db.articles.push({ id: 'art' + uid(6), title, body: body2, order: db.articles.length, createdAt: Date.now(), updatedAt: Date.now() });
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'article_delete') {
+      db.articles = (db.articles || []).filter(a => a.id !== b.id);
+      saveDB();
       return json(res, 200, { ok: true });
     }
 
@@ -816,6 +872,7 @@ async function handleAPI(req, res, url) {
 
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     const list = Object.values(db.tournaments)
+      .filter(t => t.published !== false && !t.archived)   // drafts and archived are hidden from the public list
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
         id: t.id, name: t.name, status: t.status, category: t.category || null,
@@ -827,6 +884,46 @@ async function handleAPI(req, res, url) {
         challongeDate: t.challongeDate || null
       }));
     return json(res, 200, list);
+  }
+
+  if (parts.length === 2 && parts[1] === 'halloffame' && method === 'GET') {
+    // Aggregated across all published, non-archived tournaments. No schema change:
+    // players are keyed by FAF id, teams by normalized name.
+    const players = {};   // fafId -> { fafId, name, wins, entered }
+    const teams = {};     // nameKey -> { name, wins }
+    for (const t of Object.values(db.tournaments)) {
+      if (t.published === false || t.archived) continue;
+      for (const p of (t.players || [])) {
+        if (!p.fafId) continue;
+        if (!players[p.fafId]) players[p.fafId] = { fafId: p.fafId, name: p.name, wins: 0, entered: 0 };
+        players[p.fafId].entered++;
+        players[p.fafId].name = p.name;
+      }
+      if (t.status === 'finished' && t.championTeamId) {
+        const champ = (t.teams || []).find(x => x.id === t.championTeamId);
+        if (champ) {
+          const key = (champ.name || '').trim().toLowerCase();
+          if (key) { if (!teams[key]) teams[key] = { name: champ.name, wins: 0 }; teams[key].wins++; }
+          for (const pid of (champ.playerIds || [])) {
+            const p = (t.players || []).find(x => x.id === pid);
+            if (p && p.fafId) {
+              if (!players[p.fafId]) players[p.fafId] = { fafId: p.fafId, name: p.name, wins: 0, entered: 0 };
+              players[p.fafId].wins++;
+            }
+          }
+        }
+      }
+    }
+    const playerList = Object.values(players)
+      .filter(p => p.wins > 0 || p.entered > 0)
+      .sort((a, b) => b.wins - a.wins || b.entered - a.entered || a.name.localeCompare(b.name));
+    const teamList = Object.values(teams).sort((a, b) => b.wins - a.wins || a.name.localeCompare(b.name));
+    return json(res, 200, { players: playerList, teams: teamList });
+  }
+
+  if (parts.length === 2 && parts[1] === 'articles' && method === 'GET') {
+    const arts = (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+    return json(res, 200, arts);
   }
 
   if (parts.length >= 3 && parts[1] === 't') {
@@ -931,11 +1028,14 @@ async function handleAPI(req, res, url) {
     if (sub === 'delete') {
       const siteAdmin = !!(GADMIN && b.admin === GADMIN);
       if (!siteAdmin) {
-        // An organizer can undo their own mistake, but only before anything has happened.
-        // Once people have signed up or the bracket exists, deletion is the site admin's call.
+        // Non-site-admins never hard-delete: they archive. Archiving hides the tournament from
+        // the public and can be restored (or permanently removed) by the site admin.
         if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
-        if (t.status !== 'signup') return bad(res, 'The tournament has already started \u2014 ask the site admin to remove it');
-        if ((t.players || []).length > 0) return bad(res, 'People have signed up \u2014 ask the site admin to remove it');
+        if (t.archived) return json(res, 200, { ok: true, archived: true });
+        t.archived = true; t.archivedAt = now();
+        saveDB();
+        audit(req, 'tournament_archived', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: 'archived by organizer (restorable by site admin)' });
+        return json(res, 200, { ok: true, archived: true });
       }
       const name = t.name, tid = t.id;
       delete db.tournaments[tid];
@@ -944,6 +1044,22 @@ async function handleAPI(req, res, url) {
         tournamentId: tid, tournamentName: name, token: b.admin,
         detail: siteAdmin ? 'removed by site admin' : 'removed by organizer during signups'
       });
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'restore') {
+      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      t.archived = false; t.archivedAt = null;
+      saveDB();
+      audit(req, 'tournament_restored', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: 'restored by site admin' });
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'publish') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      t.published = true;
+      saveDB();
+      audit(req, 'tournament_published', { tournamentId: t.id, tournamentName: t.name, token: b.admin });
       return json(res, 200, { ok: true });
     }
 
@@ -1061,7 +1177,7 @@ async function handleAPI(req, res, url) {
     // rename the dropped player to the sub's FAF name and fix the rating
     // ===== open-team management (formation === 'open') =====
     // helper checks live here so they can reference the request session
-    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain'].indexOf(sub) >= 0) {
+    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'checkin_team', 'org_create_team'].indexOf(sub) >= 0) {
       if (t.formation !== 'open') return bad(res, 'This tournament does not use open team signups');
       if (t.status !== 'signup') return bad(res, 'Teams are locked once the tournament starts');
     }
@@ -1085,10 +1201,45 @@ async function handleAPI(req, res, url) {
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Team name required');
       if (t.teams.some(x => (x.name || '').toLowerCase() === name.toLowerCase())) return bad(res, 'That team name is taken');
-      if (t.maxTeams > 0 && t.teams.length >= t.maxTeams) return bad(res, 'The tournament is full (' + t.maxTeams + ' teams)');
-      const team = { id: 't' + uid(4), name, seed: 0, captainId: me.id, playerIds: [me.id], captainToken: uid(10), eliminated: false, out: null };
+      // No hard cap here: teams beyond maxTeams are allowed and become the waiting list.
+      // maxTeams caps PARTICIPANTS, resolved at launch (see finalizeOpenTeams).
+      const team = { id: 't' + uid(4), name, seed: 0, captainId: me.id, playerIds: [me.id], captainToken: uid(10), eliminated: false, out: null, createdAt: now(), checkedIn: false };
       t.teams.push(team);
       me.teamId = team.id;
+      saveDB();
+      return json(res, 200, { ok: true, teamId: team.id });
+    }
+
+    if (sub === 'checkin_team') {
+      // Any member of a full team can check it in (the captain may be running late).
+      // Organizers can check in / un-check any team by id.
+      const organizer = canOrganize(t, req, b);
+      let team;
+      if (organizer && b.teamId) team = teamById(t, b.teamId);
+      else {
+        const me = actingPlayer(b);
+        if (!me || !me.teamId) return json(res, 401, { error: 'Join a team first' });
+        team = teamById(t, me.teamId);
+      }
+      if (!team) return bad(res, 'Team not found');
+      if (team.playerIds.length < t.teamSize) return bad(res, 'Only a full team can check in');
+      team.checkedIn = (b.value === undefined) ? true : !!b.value;
+      team.checkedInAt = team.checkedIn ? now() : null;
+      saveDB();
+      return json(res, 200, { ok: true, checkedIn: team.checkedIn });
+    }
+
+    if (sub === 'org_create_team') {
+      // Organizer manually forms a team around an unteamed player (they become captain).
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const p = playerById(t, b.playerId);
+      if (!p) return bad(res, 'Player not found');
+      if (p.teamId) return bad(res, 'That player is already on a team');
+      const name = cleanName(b.name, 30) || (p.name + "'s team");
+      if (t.teams.some(x => (x.name || '').toLowerCase() === name.toLowerCase())) return bad(res, 'That team name is taken');
+      const team = { id: 't' + uid(4), name, seed: 0, captainId: p.id, playerIds: [p.id], captainToken: uid(10), eliminated: false, out: null, createdAt: now(), checkedIn: false };
+      t.teams.push(team);
+      p.teamId = team.id;
       saveDB();
       return json(res, 200, { ok: true, teamId: team.id });
     }
@@ -1400,12 +1551,36 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    if (sub === 'add_desc_image') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      t.descImages = t.descImages || [];
+      if (t.descImages.length >= MAX_DESC_IMAGES) return bad(res, 'This tournament already has the maximum of ' + MAX_DESC_IMAGES + ' images');
+      let fname;
+      try { fname = saveDescImage(b.image); } catch (e) { return bad(res, e.message); }
+      t.descImages.push(fname);
+      saveDB();
+      return json(res, 200, { ok: true, file: fname, count: t.descImages.length });
+    }
+
+    if (sub === 'remove_desc_image') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fname = path.basename(String(b.file || ''));
+      t.descImages = (t.descImages || []).filter(f => f !== fname);
+      deleteDescImage(fname);
+      saveDB();
+      return json(res, 200, { ok: true, count: t.descImages.length });
+    }
+
     // edit tournament info (admin, any time)
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (b.description !== undefined) t.description = cleanName(b.description, 500);
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
+      if (b.checkInDeadline !== undefined) {
+        if (!b.checkInDeadline) t.checkInDeadline = null;
+        else { const ms = new Date(b.checkInDeadline).getTime(); t.checkInDeadline = isNaN(ms) ? null : ms; }
+      }
       if (b.veto !== undefined) {
         if (t.status === 'finished') return bad(res, 'The tournament is finished');
         t.veto = cleanVeto(b.veto);
@@ -1936,7 +2111,7 @@ const MIME = {
 
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/' || p === '/host' || p === '/siteadmin' || p.startsWith('/t/')) p = '/index.html';
+  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/hall' || p === '/faq' || p.startsWith('/t/')) p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
@@ -1958,6 +2133,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) return await handleAPI(req, res, url);
     if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
     if (url.pathname.startsWith('/map-images/')) return serveMapImage(req, res, url);
+    if (url.pathname.startsWith('/desc-images/')) return serveDescImage(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     console.error(e);
@@ -1971,6 +2147,17 @@ function serveMapImage(req, res, url) {
   if (!name || name.indexOf('..') >= 0) { res.writeHead(404); return res.end('Not found'); }
   const file = path.join(MAP_IMG_DIR, name);
   fs.readFile(file, (err, data) => {
+    if (err) { res.writeHead(404); return res.end('Not found'); }
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=86400' });
+    res.end(data);
+  });
+}
+function serveDescImage(req, res, url) {
+  const name = path.basename(decodeURIComponent(url.pathname.slice('/desc-images/'.length)));
+  if (!name || name.indexOf('..') >= 0) { res.writeHead(404); return res.end('Not found'); }
+  fs.readFile(path.join(DESC_IMG_DIR, name), (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     const ext = (name.split('.').pop() || '').toLowerCase();
     const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };

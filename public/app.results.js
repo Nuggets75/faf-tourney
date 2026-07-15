@@ -382,9 +382,43 @@ async function drawAdmin(el) {
       <li>Data lives in the container volume — deleting the volume deletes tournaments.</li>
     </ul></div>`;
 
+  html += `<div class="panel section"><h2>Briefing images <span class="muted small">(${(T.descImages || []).length}/10)</span></h2>
+    <p class="muted small" style="margin:6px 0 10px">Screenshots or icons shown on the Overview under the briefing. Up to 10 (5MB each).</p>
+    <div class="desc-gallery">${(T.descImages || []).map(f => `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt=""><button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`).join('')}</div>
+    <div style="margin-top:10px"><input type="file" id="descImgInput" accept="image/*" multiple ${(T.descImages || []).length >= 10 ? 'disabled' : ''}></div></div>`;
+
+  html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive</h2>
+    <p class="muted small" style="margin:6px 0 10px">Archiving hides this tournament from everyone and takes it off the home page. It is reversible — a site admin can restore it from the site-admin console. Nothing is permanently deleted.</p>
+    <button class="btn danger" id="archiveBtn">Archive tournament</button></div>`;
+
   el.innerHTML = html;
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
+  });
+
+  const archiveBtn = document.getElementById('archiveBtn');
+  if (archiveBtn) archiveBtn.onclick = async () => {
+    if (!confirm('Archive this tournament? It will be hidden from everyone. A site admin can restore it later.')) return;
+    try { await api('/api/t/' + T.id + '/delete', { admin: adminToken() }); toast('Archived'); location.href = '/'; }
+    catch (e) { toast(e.message, true); }
+  };
+
+  const descInput = document.getElementById('descImgInput');
+  if (descInput) descInput.onchange = async () => {
+    const files = Array.from(descInput.files || []);
+    const room = 10 - (T.descImages || []).length;
+    if (files.length > room) toast('Only ' + room + ' more image(s) allowed', true);
+    for (const file of files.slice(0, Math.max(0, room))) {
+      try {
+        const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read file')); r.readAsDataURL(file); });
+        await api('/api/t/' + T.id + '/add_desc_image', { image: dataUrl, admin: adminToken() });
+      } catch (e) { toast(e.message, true); }
+    }
+    await refresh();
+  };
+  el.querySelectorAll('[data-descdel]').forEach(b => b.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/remove_desc_image', { file: b.dataset.descdel, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
   });
 
   // ---- veto config (enable + mode; ban/pick orders live on each pool in the Maps tab) ----
@@ -579,8 +613,45 @@ function setTitle(name) {
 function route() {
   if (location.pathname === '/host') renderHost();
   else if (location.pathname === '/siteadmin') renderSiteAdmin();
+  else if (location.pathname === '/hall') renderHall();
+  else if (location.pathname === '/faq') renderFaq();
   else if (tourneyId()) renderTournament();
   else renderHome();
+}
+
+async function renderHall() {
+  setTitle('Hall of Fame');
+  drawTopbar('');
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="page"><h1 style="margin:0 0 14px">Hall of Fame</h1><div id="hofBody"><div class="panel"><div class="empty">Loading…</div></div></div></div>';
+  let data;
+  try { const r = await fetch('/api/halloffame'); data = await r.json(); if (!r.ok) throw new Error(data.error || 'Failed to load'); }
+  catch (e) { document.getElementById('hofBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
+  const players = data.players || [], teams = data.teams || [];
+  let html = '<div class="panel section"><h2>Players <span class="muted small">(by championships)</span></h2>';
+  if (!players.length) html += '<div class="empty">No results yet — win a tournament to get on the board.</div>';
+  else html += '<table><thead><tr><th>#</th><th>Player</th><th>Wins</th><th>Entered</th></tr></thead><tbody>' +
+    players.map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.wins}</td><td class="mono muted">${p.entered}</td></tr>`).join('') + '</tbody></table>';
+  html += '</div><div class="panel section"><h2>Teams <span class="muted small">(by championships)</span></h2>';
+  if (!teams.length) html += '<div class="empty">No champions yet.</div>';
+  else html += '<table><thead><tr><th>#</th><th>Team</th><th>Wins</th></tr></thead><tbody>' +
+    teams.map((t, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(t.name)}</td><td class="mono">${t.wins}</td></tr>`).join('') + '</tbody></table>';
+  html += '</div>';
+  document.getElementById('hofBody').innerHTML = html;
+}
+
+async function renderFaq() {
+  setTitle('FAQ / Rules');
+  drawTopbar('');
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="page"><h1 style="margin:0 0 14px">FAQ / Rules</h1><div id="faqBody"><div class="panel"><div class="empty">Loading…</div></div></div></div>';
+  let arts;
+  try { const r = await fetch('/api/articles'); arts = await r.json(); if (!r.ok) throw new Error('Failed to load'); }
+  catch (e) { document.getElementById('faqBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
+  let html;
+  if (!arts.length) html = '<div class="panel"><div class="empty">Nothing here yet.' + (siteAdmin() ? ' Add articles from the site-admin console (Articles tab).' : '') + '</div></div>';
+  else html = arts.map(a => `<div class="panel section"><h2>${esc(a.title)}</h2><div class="ic-body" style="margin-top:8px">${esc(a.body)}</div></div>`).join('');
+  document.getElementById('faqBody').innerHTML = html;
 }
 
 window.addEventListener('popstate', route);

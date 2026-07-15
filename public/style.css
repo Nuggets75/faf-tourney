@@ -461,6 +461,11 @@ tbody tr:hover { background: #ffffff05; }
 .infocell .ic-label { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--amber); margin-bottom: 5px; }
 .infocell .ic-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .req { color: var(--danger, #e5484d); }
+.desc-gallery { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.desc-gallery > a, .desc-thumb { display: block; }
+.desc-gallery img { max-height: 130px; max-width: 220px; border-radius: 4px; border: 1px solid var(--line-solid); object-fit: cover; display: block; }
+.desc-thumb { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.tc-checkin { margin-top: 6px; }
 
 .scale-row { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .scale-row input[type=range] { flex: 1; accent-color: var(--amber); }
