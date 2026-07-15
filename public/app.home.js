@@ -9,7 +9,12 @@ async function renderHome() {
   let list = [];
   try { list = await api('/api/tournaments'); } catch (e) {}
 
-  const loginPanel = me() ? '' : `
+  const loginPanel = me() ? '' : (fafAuth.enabled ? `
+    <div class="panel section">
+      <h2>Log <span class="h2-strong">In</span></h2>
+      <p class="muted small" style="margin-bottom:10px">Log in with your FAF account to sign up and take part. You act as yourself only.</p>
+      <button class="btn faf" id="homeLgFaf" style="max-width:280px">Log in with FAF</button>
+    </div>` : `
     <div class="panel section">
       <h2>Log <span class="h2-strong">In</span></h2>
       <div class="row" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
@@ -20,7 +25,7 @@ async function renderHome() {
         <button class="btn primary" id="homeLgGo" style="padding-top:10px;padding-bottom:10px">Log in</button>
       </div>
       <div class="muted small" style="margin-top:10px">Your name pre-fills every signup form.</div>
-    </div>`;
+    </div>`);
 
   const completed = list.filter(t => t.status === 'finished')
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
@@ -48,6 +53,11 @@ async function renderHome() {
     hlName.onkeydown = e => { if (e.key === 'Enter') go(); };
     document.getElementById('homeLgGo').onclick = go;
   }
+  const hlFaf = document.getElementById('homeLgFaf');
+  if (hlFaf) hlFaf.onclick = () => {
+    const returnTo = location.pathname + location.search;
+    location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
+  };
 
   groups.forEach((g, i) => {
     const tl = document.getElementById('tlist' + i);
