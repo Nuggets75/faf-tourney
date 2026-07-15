@@ -394,7 +394,7 @@ function drawTopbar(modeText) {
   const mode = siteAdmin() ? 'SITE ADMIN' : modeText;
   const loggedIn = isFafVerified() || !!me();
   topbarRight.innerHTML =
-    '<button class="btn ghost small" id="navStart" title="Home">Start</button>' +
+    '<button class="btn ghost small" id="navStart" title="Home">Overview</button>' +
     '<button class="btn ghost small" id="navHall" title="Hall of Fame">Hall of Fame</button>' +
     '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">Rules</button>' +
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +

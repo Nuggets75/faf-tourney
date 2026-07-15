@@ -122,7 +122,6 @@ async function renderHost() {
             <select id="cFormation">
               <option value="open">Open teams — players sign up, then form teams themselves</option>
               <option value="draft">Captains draft — organizer picks captains, they draft the pool</option>
-              <option value="premade">Premade (legacy) — one player types the whole roster</option>
             </select>
             <div id="draftOrderWrap">
               <label>Draft pick order</label>
@@ -577,6 +576,7 @@ function drawTournament() {
 
 function gameInfoPanel() {
   const cells = [];
+  if (T.category) cells.push(['Type', T.category === 'official' ? 'Official' : 'Community']);
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
   if (T.description) cells.push(['Briefing', T.description]);
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);

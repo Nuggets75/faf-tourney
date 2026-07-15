@@ -93,10 +93,29 @@ function pickPoolForRound(bracket, round) {
   });
 }
 
+// The best-of for a round when the bracket isn't generated yet (preview). Mirrors the
+// preview's boForRound logic using the tournament plan, so the per-round map picker shows
+// the right number of games (e.g. 1 for a Bo1 round, not a hardcoded 5).
+function projectedBoFor(bracket, round) {
+  const plan = T.plan || {};
+  if (bracket === 'gf') return plan.gf || 5;
+  const n = (T.teams && T.teams.length >= 2) ? T.teams.length : projectedTeamCount();
+  const size = Math.max(2, Math.pow(2, Math.ceil(Math.log2(Math.max(n, 2)))));
+  const R = Math.round(Math.log2(size));
+  if (T.bracketType === 'double') {
+    if (bracket === 'lb') { const lbRounds = 2 * R - 2; return round >= lbRounds ? (plan.lbFinal || 3) : (plan.lb || 3); }
+    return round >= R ? (plan.wbFinal || 3) : (plan.wb || 3);
+  }
+  if (T.bracketType === 'single') {
+    return round >= R ? (plan.final || 5) : round === R - 1 ? (plan.semi || 3) : (plan.early || 3);
+  }
+  return plan.bo || 1;
+}
+
 function editMaps(bracket, round) {
   const existing = mapsFor(bracket, round);
   const roundMatches = T.matches.filter(m => m.bracket === bracket && m.round === round);
-  const maxBo = roundMatches.length ? Math.max.apply(null, roundMatches.map(m => m.bo)) : 5;
+  const maxBo = roundMatches.length ? Math.max.apply(null, roundMatches.map(m => m.bo)) : projectedBoFor(bracket, round);
   const count = Math.max(maxBo, existing.length, 1);
   const db = (T.mapDb || []);
   if (db.length === 0) {
