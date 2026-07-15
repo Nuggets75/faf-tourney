@@ -258,7 +258,8 @@ function drawOpenTeams(el) {
       <div class="teammates">${mates.map(m => `<div class="teammate">${esc(m.name)}${m.id === myTeam.captainId ? ' <span class="cap-tag">captain</span>' : ''}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}</div>`).join('')}</div>
       <div style="margin-top:12px">
         <button class="btn ghost small" id="otLeave">Leave team</button>
-        ${isCap ? '<button class="btn ghost small" id="otRename" style="margin-left:6px">Rename</button><button class="btn danger small" id="otDisband" style="margin-left:6px">Disband team</button>' : ''}
+        ${isCap && !myTeam.captainRenamed ? '<button class="btn ghost small" id="otRename" style="margin-left:6px">Rename</button>' : ''}
+        ${isCap ? '<button class="btn danger small" id="otDisband" style="margin-left:6px">Disband team</button>' : ''}
       </div></div>`;
   } else {
     // signed up, no team: create or join
@@ -285,7 +286,7 @@ function drawOpenTeams(el) {
         <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
         <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${admin && !full && m.id !== tm.captainId ? '' : ''}</div>`).join('')}</div>
         ${canJoin && !full ? `<button class="btn amber small tc-join" data-join="${tm.id}">Join (${openSlots} open)</button>` : ''}
-        ${admin ? `<div class="tc-admin"><button class="btn ghost small" data-adisband="${tm.id}">Disband</button></div>` : ''}
+        ${admin ? `<div class="tc-admin"><button class="btn ghost small" data-arename="${tm.id}">Rename</button><button class="btn danger small" data-adisband="${tm.id}">Disband</button></div>` : ''}
       </div>`;
     }
     html += '</div>';
@@ -336,10 +337,15 @@ function drawOpenTeams(el) {
   const otRename = document.getElementById('otRename');
   if (otRename) otRename.onclick = () => {
     const name = prompt('New team name:', myTeam.name);
-    if (name && name.trim()) call('/rename_team', { teamId: myTeam.id, name: name.trim() }, 'Renamed');
+    if (name && name.trim()) call('/rename_team', { teamId: myTeam.id, name: name.trim(), admin: adminToken() }, 'Renamed');
   };
   el.querySelectorAll('[data-join]').forEach(b => b.onclick = () => call('/join_team', { teamId: b.dataset.join }, 'Joined team'));
   el.querySelectorAll('[data-adisband]').forEach(b => b.onclick = () => { if (confirm('Disband this team?')) call('/disband_team', { teamId: b.dataset.adisband }, 'Team disbanded'); });
+  el.querySelectorAll('[data-arename]').forEach(b => b.onclick = () => {
+    const tm = T.teams.find(x => x.id === b.dataset.arename);
+    const name = prompt('New team name:', tm ? tm.name : '');
+    if (name && name.trim()) call('/rename_team', { teamId: b.dataset.arename, name: name.trim(), admin: adminToken() }, 'Renamed');
+  });
   el.querySelectorAll('[data-assign]').forEach(c => c.onclick = () => organizerAssignPlayer(c.dataset.assign));
   const otFormTeams = document.getElementById('otFormTeams');
   if (otFormTeams) otFormTeams.onclick = () => call('/phase', { action: 'form_teams', admin: adminToken() });
@@ -586,7 +592,8 @@ function drawTeams(el) {
 
       const openSlots = (T.status === 'draft' || T.status === 'signup') ? Math.max(0, T.teamSize - team.playerIds.length) : 0;
       const total = team.playerIds.reduce((sum, pid) => sum + (ratingOf(pid) || 0), 0);
-      card.innerHTML = `<h3><span>${esc(team.name)}</span><span class="seedtag">SEED ${team.seed}</span></h3>
+      const canRename = admin || !!(T.viewer && T.viewer.teamId === team.id && T.teamSize > 1 && !team.captainRenamed);
+      card.innerHTML = `<h3><span>${esc(team.name)}</span><span class="seedtag">SEED ${team.seed}</span>${canRename ? '<button class="btn ghost small" data-rename="' + team.id + '" style="margin-left:6px">Rename</button>' : ''}</h3>
         <ul>${team.playerIds.map(pid => {
           const r = ratingOf(pid);
           return `<li style="display:flex;justify-content:space-between;gap:8px"><span>${esc(playerName(pid))}${pid === team.captainId && T.teamSize > 1 ? '<span class="captag">CAPTAIN</span>' : ''}</span>${anyRatings ? '<span class="mono muted">' + (r != null ? r : '\u2014') + '</span>' : ''}</li>`;
@@ -595,6 +602,13 @@ function drawTeams(el) {
         anyRatings ? '<div class="teamtotal"><span>TOTAL</span><span class="mono">' + total + '</span></div>' : ''}`;
       tg.appendChild(card);
     }
+    tg.querySelectorAll('[data-rename]').forEach(b => b.onclick = async () => {
+      const tm = T.teams.find(x => x.id === b.dataset.rename);
+      const name = prompt('New team name:', tm ? tm.name : '');
+      if (!name || !name.trim()) return;
+      try { await api('/api/t/' + T.id + '/rename_team', { teamId: b.dataset.rename, name: name.trim(), admin: adminToken() }); await refresh(); toast('Renamed'); }
+      catch (e) { toast(e.message, true); }
+    });
   }
 
   const divApply = document.getElementById('divApply');

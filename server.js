@@ -285,6 +285,7 @@ function publicView(t) {
       id: x.id, name: x.name, seed: x.seed,
       captainId: x.captainId, playerIds: x.playerIds,
       division: x.division || 0,
+      captainRenamed: x.captainRenamed ? 1 : 0,
       eliminated: x.eliminated || false,
       out: x.out || null,
       finalRank: x.finalRank || null
@@ -1057,7 +1058,7 @@ async function handleAPI(req, res, url) {
     // rename the dropped player to the sub's FAF name and fix the rating
     // ===== open-team management (formation === 'open') =====
     // helper checks live here so they can reference the request session
-    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'rename_team'].indexOf(sub) >= 0) {
+    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain'].indexOf(sub) >= 0) {
       if (t.formation !== 'open') return bad(res, 'This tournament does not use open team signups');
       if (t.status !== 'signup') return bad(res, 'Teams are locked once the tournament starts');
     }
@@ -1138,16 +1139,30 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'rename_team') {
-      const organizer = canOrganize(t, req, b);
       const team = teamById(t, b.teamId);
       if (!team) return bad(res, 'Team not found');
-      const me = actingPlayer(b);
-      const isCap = me && team.captainId === me.id;
-      if (!isCap && !organizer) return json(res, 403, { error: 'Only the captain or organizer can rename' });
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Team name required');
       if (t.teams.some(x => x.id !== team.id && (x.name || '').toLowerCase() === name.toLowerCase())) return bad(res, 'That team name is taken');
-      team.name = name;
+
+      const organizer = canOrganize(t, req, b);   // site admin or organizer
+      const me = actingPlayer(b);
+      const isCap = !!(me && team.captainId === me.id);
+
+      if (organizer) {
+        // organizers and site admins can always rename any team, as often as needed.
+        team.name = name;
+        audit(req, 'team_renamed', { tournamentId: t.id, tournamentName: t.name, token: b.token || b.admin, detail: 'organizer renamed team ' + team.id + ' \u2192 ' + name });
+      } else if (isCap) {
+        // captains get a single rename, and only in team games (more than one player per team).
+        if (!(t.teamSize > 1)) return json(res, 403, { error: 'Only an organizer can rename in this tournament' });
+        if (team.captainRenamed) return bad(res, 'You have already used your one team rename \u2014 ask an organizer for any further change');
+        team.name = name;
+        team.captainRenamed = true;
+        audit(req, 'team_renamed', { tournamentId: t.id, tournamentName: t.name, detail: 'captain renamed team ' + team.id + ' \u2192 ' + name });
+      } else {
+        return json(res, 403, { error: 'Only the team captain or an organizer can rename this team' });
+      }
       saveDB();
       return json(res, 200, { ok: true });
     }
