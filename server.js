@@ -264,7 +264,7 @@ function teamOfCaptainToken(t, token) {
 
 function publicView(t) {
   return {
-    id: t.id, name: t.name, description: t.description,
+    id: t.id, name: t.name, description: t.description, category: t.category || null,
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
     teamSize: t.teamSize, draftOrder: t.draftOrder,
@@ -600,6 +600,8 @@ async function handleAPI(req, res, url) {
     }
     const name = cleanName(b.name, 60);
     if (!name) return bad(res, 'Name required');
+    const category = (b.category === 'official' || b.category === 'community') ? b.category : null;
+    if (!category) return bad(res, 'Choose whether this is an Official or Community tournament');
     const competition = b.competition === 'ffa' ? 'ffa' : 'team';
     let teamSize, formation, bracketType = 'single', ffaCfg = null, draftOrder = 'linear', plan = null;
     const pb = b.plan || {};
@@ -637,6 +639,7 @@ async function handleAPI(req, res, url) {
     const t = {
       id: uid(5), adminToken: uid(12), lateToken: uid(12),
       name, description: cleanName(b.description, 500),
+      category,
       lobbyOptions: cleanName(b.lobbyOptions, 500),
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
@@ -815,7 +818,7 @@ async function handleAPI(req, res, url) {
     const list = Object.values(db.tournaments)
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
-        id: t.id, name: t.name, status: t.status,
+        id: t.id, name: t.name, status: t.status, category: t.category || null,
         competition: t.competition, bracketType: t.bracketType,
         teamSize: t.teamSize, players: t.players.length,
         teams: t.teams.length, createdAt: t.createdAt,
@@ -1082,6 +1085,7 @@ async function handleAPI(req, res, url) {
       const name = cleanName(b.name, 30);
       if (!name) return bad(res, 'Team name required');
       if (t.teams.some(x => (x.name || '').toLowerCase() === name.toLowerCase())) return bad(res, 'That team name is taken');
+      if (t.maxTeams > 0 && t.teams.length >= t.maxTeams) return bad(res, 'The tournament is full (' + t.maxTeams + ' teams)');
       const team = { id: 't' + uid(4), name, seed: 0, captainId: me.id, playerIds: [me.id], captainToken: uid(10), eliminated: false, out: null };
       t.teams.push(team);
       me.teamId = team.id;

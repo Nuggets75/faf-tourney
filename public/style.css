@@ -457,9 +457,10 @@ tbody tr:hover { background: #ffffff05; }
 .tlist-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
 .infogrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
-.infocell { background: #0c121980; border: 1px solid var(--line-solid); border-radius: 4px; padding: 12px 14px; }
+.infocell { background: #0c121980; border: 1px solid var(--line-solid); border-radius: 4px; padding: 12px 14px; min-width: 0; }
 .infocell .ic-label { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--amber); margin-bottom: 5px; }
-.infocell .ic-body { font-size: 13px; white-space: pre-wrap; }
+.infocell .ic-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.req { color: var(--danger, #e5484d); }
 
 .scale-row { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .scale-row input[type=range] { flex: 1; accent-color: var(--amber); }

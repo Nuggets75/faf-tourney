@@ -27,6 +27,7 @@ function drawPlayers(el) {
     } else {
       const helpText = T.competition === 'ffa' && T.teamSize === 1 ? 'Every player enters solo. Lobbies are grouped automatically.'
             : T.formation === 'draft' ? 'The organizer picks captains from the player list once signups close, then captains draft their teams.'
+            : T.formation === 'open' ? 'After signing up here, go to the Teams tab to create or join a team.'
             : 'Solo bracket — every signup is an entrant.';
       if (viewerSignedUp()) {
         html += `<div class="panel section"><h2>Sign up</h2>

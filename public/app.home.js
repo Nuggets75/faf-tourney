@@ -107,6 +107,13 @@ async function renderHost() {
           <option value="ffa">FFA</option>
         </select>
 
+        <label>Type <span class="req">*</span></label>
+        <select id="cCategory">
+          <option value="">Select Official or Community…</option>
+          <option value="official">Official</option>
+          <option value="community">Community</option>
+        </select>
+
         <div id="teamOpts">
           <label>Team size</label>
           <select id="cSize">${[1,2,3,4,5,6].map(n => '<option value="'+n+'"'+(n===2?' selected':'')+'>'+n+'v'+n+'</option>').join('')}</select>
@@ -268,6 +275,8 @@ async function renderHost() {
   document.getElementById('cGo').onclick = async () => {
     const name = document.getElementById('cName').value.trim();
     if (!name) return toast('Give the tournament a name', true);
+    const category = document.getElementById('cCategory').value;
+    if (!category) return toast('Choose whether this is an Official or Community tournament', true);
     const isFfa = comp.value === 'ffa';
     const bt = cBracket.value;
     let plan = {};
@@ -278,6 +287,7 @@ async function renderHost() {
       const r = await api('/api/tournaments', {
         name,
         description: document.getElementById('cDesc').value,
+        category,
         lobbyOptions: document.getElementById('cLobby').value,
         mods: document.getElementById('cMods').value,
         competition: comp.value,
@@ -510,7 +520,7 @@ function drawTournament() {
       <div class="headrow">
         <div>
           <h1>${esc(T.name)}</h1>
-          <div class="muted small">${esc(typeLine(T))}</div>
+          <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
         </div>
         <span class="pill ${T.status}">${esc(statusLabel(T.status))}</span>
       </div>
