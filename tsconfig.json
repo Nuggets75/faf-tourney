@@ -1,0 +1,17 @@
+{
+  "// note": "Type-checking only. The production container never runs this - it just git-clones the repo and runs `node server.js`. tsc/typescript are devDependencies used for editor checks and CI. checkJs is false so files are opted in one at a time with a top-of-file `// @ts-check` comment as they get JSDoc types.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["server.js", "challonge.js", "lib/**/*.js", "public/**/*.js"]
+}

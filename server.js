@@ -5,8 +5,13 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const challonge = require('./challonge');
+// Leaf helpers now live in lib/util.js (see that file). Destructured here so
+// existing call sites are unchanged.
+const {
+  uid, now, shuffle, cleanName, intIn, cleanDate,
+  json, bad, readBody, b64url, randToken, pkcePair,
+} = require('./lib/util');
 
 const PORT = parseInt(process.env.PORT || '8090', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -104,9 +109,6 @@ function saveDB() {
     }
   }, 150);
 }
-
-function uid(len) { return crypto.randomBytes(len || 8).toString('hex'); }
-function now() { return Date.now(); }
 
 // ---------- helpers ----------
 
@@ -297,18 +299,6 @@ function decideTeamA(t, m) {
   return mode === 'lowerA' ? lower : higher;
 }
 
-function cleanDate(v) {
-  if (typeof v !== 'string') return null;
-  const s = v.trim();
-  if (!s) return null;
-  // legacy date-only
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // full ISO datetime (what the client sends now) — validate by parsing
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString(); // normalize to UTC ISO
-}
-
 // The team the logged-in viewer is the CAPTAIN of (matched by FAF identity).
 function teamOfSession(t, req) {
   const sess = currentSession(req);
@@ -337,13 +327,6 @@ function playerById(t, pid) { return t.players.find(p => p.id === pid) || null; 
 function teamById(t, tid) { return t.teams.find(x => x.id === tid) || null; }
 function matchById(t, mid) { return t.matches.find(x => x.id === mid) || null; }
 
-function shuffle(a) {
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
-  }
-  return a;
-}
 
 function publicView(t) {
   return {
@@ -1114,37 +1097,6 @@ function formTeamsGrouped(t) {
 
 // ---------- API plumbing ----------
 
-function json(res, code, obj) {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(obj));
-}
-function bad(res, msg) { json(res, 400, { error: msg }); }
-
-function readBody(req, maxBytes) {
-  const limit = maxBytes || 200000;
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', c => {
-      data += c;
-      if (data.length > limit) { reject(new Error('too large')); req.destroy(); }
-    });
-    req.on('end', () => {
-      if (!data) return resolve({});
-      try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('bad json')); }
-    });
-    req.on('error', reject);
-  });
-}
-
-function cleanName(s, max) {
-  if (typeof s !== 'string') return '';
-  return s.replace(/[<>]/g, '').trim().slice(0, max || 40);
-}
-function intIn(v, lo, hi, dflt) {
-  const n = parseInt(v, 10);
-  return (n >= lo && n <= hi) ? n : dflt;
-}
-
 // ---------- FAF OAuth helpers ----------
 
 const https = require('https');
@@ -1165,17 +1117,6 @@ function httpsRequest(opts, body) {
     if (body) req.write(body);
     req.end();
   });
-}
-
-function b64url(buf) {
-  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-function randToken(nbytes) { return b64url(crypto.randomBytes(nbytes || 32)); }
-// PKCE: verifier is a random string; challenge is base64url(sha256(verifier)).
-function pkcePair() {
-  const verifier = randToken(48);
-  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
-  return { verifier, challenge };
 }
 
 // pending logins: state -> { verifier, exp, returnTo }
