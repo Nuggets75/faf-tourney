@@ -309,9 +309,10 @@ function planSummary(t) {
   return 'Bo' + p.bo + ' matches' + (p.final ? ' · Bo' + p.finalBo + ' final between the top 2' : ' · highest standing wins') + (p.fast ? ' · fast pairing' : '');
 }
 
-function modal(html, onMount) {
+function modal(html, onMount, opts) {
   const root = document.getElementById('modalRoot');
-  root.innerHTML = '<div class="modal-bg"><div class="modal">' + html + '</div></div>';
+  const wide = opts && opts.wide ? ' modal-wide' : '';
+  root.innerHTML = '<div class="modal-bg"><div class="modal' + wide + '">' + html + '</div></div>';
   root.querySelector('.modal-bg').addEventListener('mousedown', e => {
     if (e.target.classList.contains('modal-bg')) closeModal();
   });
@@ -711,6 +712,19 @@ const SA_ACTION_LABEL = {
   host_access_revoked: 'Revoked hosting access'
 };
 
+// Render an article body safely: escape everything, then turn ![alt](url) image tokens
+// into <img> (only local /article-images/ or http(s) urls). Newlines preserved via pre-wrap.
+function renderArticleBody(text) {
+  let s = esc(text || '');
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+    if (/^\/article-images\/[A-Za-z0-9_.-]+$/.test(url) || /^https?:\/\/[^\s"'<>]+$/.test(url)) {
+      return '<img src="' + url + '" alt="' + alt + '" class="art-img">';
+    }
+    return m;
+  });
+  return s;
+}
+
 function drawSaArticles(el) {
   const arts = saData.articles || [];
   let html = `<div class="panel section"><div class="row" style="justify-content:space-between;align-items:center">
@@ -723,20 +737,59 @@ function drawSaArticles(el) {
     </div>`).join('') + '</div>';
   html += '</div>';
   el.innerHTML = html;
+
   const editor = (art) => {
     modal(`<h3>${art ? 'Edit' : 'New'} article</h3>
-      <label>Title</label><input type="text" id="artTitle" maxlength="120" value="${art ? esc(art.title) : ''}" autocomplete="off">
-      <label style="margin-top:10px">Body</label><textarea id="artBody" rows="10" style="width:100%">${art ? esc(art.body) : ''}</textarea>
+      <label>Title</label>
+      <input type="text" id="artTitle" maxlength="120" autocomplete="off" value="${art ? esc(art.title) : ''}">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px">
+        <label style="margin:0">Body</label>
+        <span class="muted small">Paste a screenshot straight in, or <a href="#" id="artImgBtn">insert an image</a>.</span>
+      </div>
+      <textarea id="artBody" rows="16" style="width:100%;font-family:var(--mono);font-size:13px;line-height:1.5" placeholder="Write your rules / FAQ here. Paste images directly — they upload automatically.">${art ? esc(art.body) : ''}</textarea>
+      <input type="file" id="artImgFile" accept="image/*" style="display:none">
+      <div class="muted small" style="margin-top:14px;text-transform:uppercase;letter-spacing:1px">Preview</div>
+      <div id="artPreview" class="ic-body art-preview"></div>
       <div class="actions"><button class="btn ghost" id="artCancel">Cancel</button><button class="btn primary" id="artSave">Save</button></div>`, root => {
+      const ta = root.querySelector('#artBody');
+      const prev = root.querySelector('#artPreview');
+      const updatePreview = () => { prev.innerHTML = renderArticleBody(ta.value) || '<span class="muted small">Nothing yet.</span>'; };
+      updatePreview();
+      ta.addEventListener('input', updatePreview);
+
+      const insertAtCursor = (txt) => {
+        const s = ta.selectionStart, e = ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + txt + ta.value.slice(e);
+        ta.selectionStart = ta.selectionEnd = s + txt.length;
+        updatePreview(); ta.focus();
+      };
+      const uploadImage = async (file) => {
+        if (!file) return;
+        try {
+          const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read image')); r.readAsDataURL(file); });
+          const d = await saPost('article_image', { image: dataUrl });
+          insertAtCursor('\n![image](' + d.url + ')\n');
+          toast('Image added');
+        } catch (err) { toast(err.message, true); }
+      };
+      ta.addEventListener('paste', e => {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        for (const it of items) {
+          if (it.type && it.type.indexOf('image/') === 0) { const f = it.getAsFile(); if (f) { e.preventDefault(); uploadImage(f); return; } }
+        }
+      });
+      const fileInput = root.querySelector('#artImgFile');
+      root.querySelector('#artImgBtn').onclick = e => { e.preventDefault(); fileInput.click(); };
+      fileInput.onchange = () => { uploadImage(fileInput.files[0]); fileInput.value = ''; };
+
       root.querySelector('#artCancel').onclick = closeModal;
       root.querySelector('#artSave').onclick = async () => {
         const title = root.querySelector('#artTitle').value.trim();
         if (!title) return toast('Title required', true);
-        const bodyv = root.querySelector('#artBody').value;
-        try { await saPost('article_save', art ? { id: art.id, title, body: bodyv } : { title, body: bodyv }); closeModal(); toast('Saved'); renderSiteAdmin(); }
+        try { await saPost('article_save', art ? { id: art.id, title, body: ta.value } : { title, body: ta.value }); closeModal(); toast('Saved'); renderSiteAdmin(); }
         catch (e) { toast(e.message, true); }
       };
-    });
+    }, { wide: true });
   };
   const nb = document.getElementById('saArtNew'); if (nb) nb.onclick = () => editor(null);
   el.querySelectorAll('[data-artedit]').forEach(b => b.onclick = () => editor(arts.find(a => a.id === b.dataset.artedit)));

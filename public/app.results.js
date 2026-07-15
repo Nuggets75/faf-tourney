@@ -650,7 +650,7 @@ async function renderFaq() {
   catch (e) { document.getElementById('faqBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
   let html;
   if (!arts.length) html = '<div class="panel"><div class="empty">Nothing here yet.' + (siteAdmin() ? ' Add articles from the site-admin console (Articles tab).' : '') + '</div></div>';
-  else html = arts.map(a => `<div class="panel section"><h2>${esc(a.title)}</h2><div class="ic-body" style="margin-top:8px">${esc(a.body)}</div></div>`).join('');
+  else html = arts.map(a => `<div class="panel section"><h2>${esc(a.title)}</h2><div class="ic-body" style="margin-top:8px">${renderArticleBody(a.body)}</div></div>`).join('');
   document.getElementById('faqBody').innerHTML = html;
 }
 

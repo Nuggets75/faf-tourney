@@ -43,6 +43,8 @@ const MAX_IMG_BYTES = 5 * 1024 * 1024; // 5MB per image
 // another drive independently (DESC_IMG_DIR). Capped per tournament.
 const DESC_IMG_DIR = process.env.DESC_IMG_DIR || path.join(DATA_DIR, 'desc-images');
 const MAX_DESC_IMAGES = 10;
+// FAQ/Rules article images (own directory, relocatable like the others).
+const ARTICLE_IMG_DIR = process.env.ARTICLE_IMG_DIR || path.join(DATA_DIR, 'article-images');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 // Site-wide admin password. Set via ADMIN_PASSWORD environment variable in the
 // Dockhand stack — NOT in this repo, so it is never visible on GitHub.
@@ -126,6 +128,7 @@ function saveDB() {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.mkdirSync(MAP_IMG_DIR, { recursive: true });
       fs.mkdirSync(DESC_IMG_DIR, { recursive: true });
+      fs.mkdirSync(ARTICLE_IMG_DIR, { recursive: true });
       const tmp = DB_FILE + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(db));
       fs.renameSync(tmp, DB_FILE);
@@ -244,6 +247,25 @@ function saveDescImage(dataUrl) {
 function deleteDescImage(fname) {
   if (!fname) return;
   try { fs.unlinkSync(path.join(DESC_IMG_DIR, path.basename(fname))); } catch (e) {}
+}
+
+// --- FAQ/Rules article images (separate directory) ---
+function saveArticleImage(dataUrl) {
+  const m = /^data:([^;]+);base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new Error('Invalid image data');
+  const ext = IMG_EXT[m[1].toLowerCase()];
+  if (!ext) throw new Error('Only image files are allowed (png, jpg, gif, webp, bmp)');
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > MAX_IMG_BYTES) throw new Error('Image exceeds 5MB');
+  if (buf.length === 0) throw new Error('Empty image');
+  const fname = 'art_' + uid(10) + '.' + ext;
+  fs.mkdirSync(ARTICLE_IMG_DIR, { recursive: true });
+  fs.writeFileSync(path.join(ARTICLE_IMG_DIR, fname), buf);
+  return fname;
+}
+function deleteArticleImage(fname) {
+  if (!fname) return;
+  try { fs.unlinkSync(path.join(ARTICLE_IMG_DIR, path.basename(fname))); } catch (e) {}
 }
 
 // find the pool object by id
@@ -806,7 +828,19 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    if (act === 'article_image') {
+      let fname;
+      try { fname = saveArticleImage(b.image); } catch (e) { return bad(res, e.message); }
+      return json(res, 200, { ok: true, file: fname, url: '/article-images/' + fname });
+    }
+
     if (act === 'article_delete') {
+      const art = (db.articles || []).find(a => a.id === b.id);
+      if (art) {
+        // remove any images this article referenced, so they don't orphan on disk
+        const used = String(art.body || '').match(/\/article-images\/[A-Za-z0-9_.-]+/g) || [];
+        used.forEach(u => deleteArticleImage(u.split('/').pop()));
+      }
       db.articles = (db.articles || []).filter(a => a.id !== b.id);
       saveDB();
       return json(res, 200, { ok: true });
@@ -2134,6 +2168,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
     if (url.pathname.startsWith('/map-images/')) return serveMapImage(req, res, url);
     if (url.pathname.startsWith('/desc-images/')) return serveDescImage(req, res, url);
+    if (url.pathname.startsWith('/article-images/')) return serveArticleImage(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     console.error(e);
@@ -2158,6 +2193,17 @@ function serveDescImage(req, res, url) {
   const name = path.basename(decodeURIComponent(url.pathname.slice('/desc-images/'.length)));
   if (!name || name.indexOf('..') >= 0) { res.writeHead(404); return res.end('Not found'); }
   fs.readFile(path.join(DESC_IMG_DIR, name), (err, data) => {
+    if (err) { res.writeHead(404); return res.end('Not found'); }
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=86400' });
+    res.end(data);
+  });
+}
+function serveArticleImage(req, res, url) {
+  const name = path.basename(decodeURIComponent(url.pathname.slice('/article-images/'.length)));
+  if (!name || name.indexOf('..') >= 0) { res.writeHead(404); return res.end('Not found'); }
+  fs.readFile(path.join(ARTICLE_IMG_DIR, name), (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     const ext = (name.split('.').pop() || '').toLowerCase();
     const types = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
