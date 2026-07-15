@@ -6,13 +6,18 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "for f in server.js challonge.js public/app.js lib/*.js; do node --check \"$f\" || exit 1; done",
+    "check": "for f in server.js challonge.js public/*.js lib/*.js; do node --check \"$f\" || exit 1; done",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["faf", "tournament", "supreme-commander"],
+  "keywords": [
+    "faf",
+    "tournament",
+    "supreme-commander"
+  ],
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "acorn": "^8.12.1",
     "typescript": "^5.6.3"
   }
 }

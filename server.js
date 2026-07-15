@@ -25,6 +25,9 @@ const {
 // Swiss and FFA formats (import the shared match primitives internally).
 const { swissPairRound, swissAfterReport } = require('./lib/swiss');
 const { ffaCreateRound, ffaAfterReport } = require('./lib/ffa');
+// Team formation and map lookups.
+const { buildDraft, finishDraftIfDone, finalizeOpenTeams, formTeamsGrouped } = require('./lib/teams');
+const { mapById, publicMapView } = require('./lib/maps');
 // Wire the Swiss progression hook into the match core (see lib/match.js). Must come
 // after the swiss require above, since swissAfterReport is now imported, not hoisted.
 require('./lib/match').setHooks({ swissAfterReport });
@@ -193,22 +196,8 @@ function canOrganize(t, req, body) {
 }
 // ---------- map database ----------
 // Each map: { id, name, image (filename in MAP_IMG_DIR or null), description, published }
-function mapById(t, id) {
-  if (!t.mapDb) return null;
-  for (const m of t.mapDb) if (m.id === id) return m;
-  return null;
-}
 // map ids -> display objects (for serialization); unknown ids are dropped
-function resolveMaps(t, ids) {
-  if (!Array.isArray(ids)) return [];
-  const out = [];
-  for (const id of ids) { const m = mapById(t, id); if (m) out.push(m); }
-  return out;
-}
 // what maps can appear in the veto pool / round pools: published ones (organizers see all)
-function publicMapView(m) {
-  return { id: m.id, name: m.name, image: m.image || null, description: m.description || '', published: m.published ? 1 : 0 };
-}
 // validate + persist an uploaded base64 image, return the stored filename (or throw)
 const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
 function saveMapImage(dataUrl) {
@@ -361,109 +350,13 @@ function publicView(t) {
 
 // ---------- teams & draft ----------
 
-function makeTeam(t, name, captainPid, memberPids, seed) {
-  const team = {
-    id: 't' + uid(4), name, seed,
-    captainId: captainPid, playerIds: memberPids.slice(),
-    captainToken: uid(10), eliminated: false, out: null
-  };
-  t.teams.push(team);
-  for (const pid of memberPids) { const p = playerById(t, pid); if (p) p.teamId = team.id; }
-  return team;
-}
 
-function applySeeding(t, arr, avgFn) {
-  if (t.seeding === 'rating') arr.sort((a, b) => avgFn(b) - avgFn(a));
-  else shuffle(arr);
-}
 
-function buildDraft(t, captainIds) {
-  t.teams = [];
-  const seeds = captainIds.slice();
-  applySeeding(t, seeds, pid => (playerById(t, pid).rating || 0));
-  seeds.forEach((pid, i) => {
-    const p = playerById(t, pid);
-    makeTeam(t, 'Team ' + p.name, pid, [pid], i + 1);
-  });
-  const numTeams = t.teams.length;
-  const picksPerTeam = Math.max(0, t.teamSize - 1);
-  const poolSize = t.players.filter(p => !p.teamId).length;
-  const totalPicks = Math.min(numTeams * picksPerTeam, poolSize);
-  const base = t.teams.map(x => x.id);
-  const order = [];
-  let i = 0;
-  while (order.length < totalPicks && i < 10000) {
-    const round = Math.floor(i / numTeams);
-    const pos = i - round * numTeams;
-    let idx;
-    if (t.draftOrder === 'snake') idx = (round % 2 === 0) ? pos : (numTeams - 1 - pos);
-    else idx = numTeams - 1 - pos; // linear: bottom seed picks first, every round
-    const teamId = base[idx];
-    const team = teamById(t, teamId);
-    if (team.playerIds.length + order.filter(o => o === teamId).length < t.teamSize) order.push(teamId);
-    i++;
-  }
-  t.draft = { order, current: 0 };
-  t.status = 'draft';
-}
 
-function finishDraftIfDone(t) {
-  if (!t.draft) return;
-  if (t.draft.current >= t.draft.order.length) {
-    t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
-    t.status = 'drafted';
-    t.draft.done = true;
-  }
-}
 
 // Finalize OPEN teams: only teams filled to exactly teamSize enter; incomplete teams and
 // un-teamed players become reserves (subs). Existing teams are kept and seeded by combined rating.
-function finalizeOpenTeams(t) {
-  const full = t.teams.filter(x => x.playerIds.length === t.teamSize);
-  if (full.length < 2) return 'Need at least 2 full teams (' + t.teamSize + ' players each) to start';
-  // seed the full teams
-  applySeeding(t, full, tm => tm.playerIds.reduce((s, pid) => s + ((playerById(t, pid) || {}).rating || 0), 0) / t.teamSize);
-  full.forEach((tm, i) => { tm.seed = i + 1; });
-  // players on incomplete teams -> back to pool; then those + already-unteamed become reserves
-  const fullIds = {}; full.forEach(tm => { fullIds[tm.id] = 1; });
-  for (const tm of t.teams) {
-    if (!fullIds[tm.id]) {
-      for (const pid of tm.playerIds) { const p = playerById(t, pid); if (p) p.teamId = null; }
-    }
-  }
-  t.teams = full;
-  t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
-  t.status = 'drafted';
-  return null;
-}
 
-function formTeamsGrouped(t) {
-  if (t.teamSize === 1) {
-    if (t.players.length < 2) return 'Need at least 2 players';
-    const arr = t.players.slice();
-    applySeeding(t, arr, p => p.rating || 0);
-    t.teams = [];
-    arr.forEach((p, i) => makeTeam(t, p.name, p.id, [p.id], i + 1));
-    t.subs = [];
-    t.status = 'drafted';
-    return null;
-  }
-  const groups = {};
-  for (const p of t.players) {
-    const key = (p.teamName || '').toLowerCase();
-    if (!key) continue;
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(p);
-  }
-  const entries = Object.values(groups);
-  if (entries.length < 2) return 'Need at least 2 teams (players set a team name at signup)';
-  applySeeding(t, entries, g => g.reduce((s, p) => s + (p.rating || 0), 0) / g.length);
-  t.teams = [];
-  entries.forEach((g, i) => makeTeam(t, g[0].teamName, g[0].id, g.map(p => p.id), i + 1));
-  t.subs = t.players.filter(p => !p.teamId).map(p => p.id);
-  t.status = 'drafted';
-  return null;
-}
 
 // ---------- API plumbing ----------
 

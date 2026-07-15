@@ -1,0 +1,619 @@
+// ----- report score -----
+
+function reportScore(matchId) {
+  const m = T.matches.find(x => x.id === matchId);
+  if (!m) return;
+  if (m.bracket === 'ffa') return reportFfa(matchId);
+  const maxW = Math.ceil(m.bo / 2);
+  const maps = mapsFor(m.bracket, m.round);
+  modal(`
+    <h3>Report score — ${esc(roundLabel(m))}</h3>
+    <p class="muted small">Best of ${m.bo} — first to ${maxW}.${m.hcap ? ' Upper bracket finalist starts 1-0 up.' : ''}
+    You can save a running score (e.g. 1-0) so everyone can follow along — the match completes automatically when a team reaches ${maxW}.</p>
+    ${maps.length ? '<div class="mapblock"><div class="mapblock-head"><span>MAP POOL</span></div>' + mapRows(maps) + '</div>' : ''}
+    <div class="row">
+      <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="rs1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${m.score1 != null ? m.score1 : (m.hcap ? 1 : 0)}"></div>
+      <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="rs2" min="0" max="${maxW}" value="${m.score2 != null ? m.score2 : 0}"></div>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="rCancel">Cancel</button>
+      <button class="btn primary" id="rGo">Save score</button>
+    </div>`, root => {
+    root.querySelector('#rCancel').onclick = closeModal;
+    root.querySelector('#rGo').onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/report', {
+          matchId,
+          score1: root.querySelector('#rs1').value,
+          score2: root.querySelector('#rs2').value,
+          token: myToken()
+        });
+        closeModal();
+        toast('Score saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+function reportFfa(matchId) {
+  const m = T.matches.find(x => x.id === matchId);
+  if (!m) return;
+  if (T.ffaCfg.mode === 'points' && !m.isFinal) return reportFfaPoints(m);
+  const roundCount = T.matches.filter(x => x.bracket === 'ffa' && x.round === m.round).length;
+  const need = m.isFinal ? 1 : (roundCount === 1 ? 1 : Math.min(T.ffaCfg.advance, m.entrants.length - 1));
+  modal(`
+    <h3>Report result — Lobby ${m.index + 1}</h3>
+    <p class="muted small">Tick the ${need === 1 ? 'winner' : 'top ' + need}.</p>
+    <div class="pick-list" id="ffaWinners">
+      ${m.entrants.map(id => `<button type="button" class="pick-item${m.winners && m.winners.indexOf(id) >= 0 ? ' on' : ''}" data-tid="${id}">${esc(teamName(id))}</button>`).join('')}
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="rCancel">Cancel</button>
+      <button class="btn primary" id="rGo">Save result</button>
+    </div>`, root => {
+    // clicking a name toggles it; don't allow more than the number of winners needed
+    root.querySelectorAll('#ffaWinners .pick-item').forEach(btn => btn.onclick = () => {
+      if (!btn.classList.contains('on') && root.querySelectorAll('#ffaWinners .pick-item.on').length >= need) {
+        return toast('Pick exactly ' + need + ' — unselect one first', true);
+      }
+      btn.classList.toggle('on');
+    });
+    root.querySelector('#rCancel').onclick = closeModal;
+    root.querySelector('#rGo').onclick = async () => {
+      const winners = Array.from(root.querySelectorAll('#ffaWinners .pick-item.on')).map(b => b.dataset.tid);
+      if (winners.length !== need) return toast('Select exactly ' + need, true);
+      try {
+        await api('/api/t/' + T.id + '/report', { matchId, winners, token: myToken() });
+        closeModal();
+        toast('Result saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+function reportFfaPoints(m) {
+  modal(`
+    <h3>Report result — Lobby ${m.index + 1}</h3>
+    <p class="muted small">Enter each ${T.teamSize === 1 ? 'player' : 'team'}'s points for this round (e.g. by placement).</p>
+    ${m.entrants.map(id => `
+      <div class="row" style="align-items:center;gap:10px;margin:8px 0">
+        <div style="flex:1">${esc(teamName(id))}</div>
+        <input type="number" class="ffaPts" data-id="${id}" min="0" max="1000" style="flex:0 0 100px" value="${m.points && m.points[id] != null ? m.points[id] : ''}" placeholder="pts" autocomplete="off">
+      </div>`).join('')}
+    <div class="actions">
+      <button class="btn ghost" id="rCancel">Cancel</button>
+      <button class="btn primary" id="rGo">Save result</button>
+    </div>`, root => {
+    root.querySelector('#rCancel').onclick = closeModal;
+    root.querySelector('#rGo').onclick = async () => {
+      const points = {};
+      for (const inp of root.querySelectorAll('.ffaPts')) {
+        if (inp.value === '') return toast('Enter points for everyone (0 is fine)', true);
+        points[inp.dataset.id] = inp.value;
+      }
+      try {
+        await api('/api/t/' + T.id + '/report', { matchId: m.id, points, token: myToken() });
+        closeModal();
+        toast('Result saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+// ----- standings -----
+
+function drawStandings(el) {
+  if (T.status !== 'running' && T.status !== 'finished') {
+    el.innerHTML = '<div class="panel"><div class="empty">Standings appear once matches begin.</div></div>';
+    return;
+  }
+
+  if (T.bracketType === 'swiss' && T.competition === 'team') {
+    // recompute swiss table client-side
+    const S = {};
+    for (const team of T.teams) S[team.id] = { id: team.id, w: 0, l: 0, gd: 0 };
+    for (const m of T.matches) {
+      if (m.bracket !== 'sw') continue;
+      if (m.status === 'bye') { const id = m.team1 !== 'BYE' ? m.team1 : m.team2; if (S[id]) { S[id].w++; S[id].gd += 1; } }
+      else if (m.status === 'done') {
+        const ws = m.winner === m.team1 ? m.score1 : m.score2;
+        const ls = m.winner === m.team1 ? m.score2 : m.score1;
+        if (S[m.winner]) { S[m.winner].w++; S[m.winner].gd += ws - ls; }
+        if (S[m.loser]) { S[m.loser].l++; S[m.loser].gd -= ws - ls; }
+      }
+    }
+    const rows = Object.values(S).sort((a, b) => b.w - a.w || b.gd - a.gd || teamSeed(a.id) - teamSeed(b.id));
+    el.innerHTML = `<div class="panel section"><h2>Swiss <span class="h2-strong">Standings</span></h2>
+      <table><thead><tr><th>#</th><th>Team</th><th>W</th><th>L</th><th>Game diff</th></tr></thead><tbody>
+      ${rows.map((r, i) => `<tr class="${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
+        <td class="mono">${i + 1}</td><td>${esc(teamName(r.id))}${T.championTeamId === r.id ? ' 🏆' : ''}</td>
+        <td class="mono">${r.w}</td><td class="mono">${r.l}</td><td class="mono">${r.gd > 0 ? '+' : ''}${r.gd}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    return;
+  }
+
+  if (T.competition === 'ffa' && T.ffaCfg.mode === 'points') {
+    const tot = {};
+    for (const team of T.teams) tot[team.id] = 0;
+    for (const m of T.matches) {
+      if (m.bracket !== 'ffa' || !m.points) continue;
+      for (const id of Object.keys(m.points)) if (tot[id] !== undefined) tot[id] += m.points[id];
+    }
+    const rows = T.teams.slice().sort((a, b) =>
+      (T.championTeamId === b.id) - (T.championTeamId === a.id) || tot[b.id] - tot[a.id] || a.seed - b.seed);
+    el.innerHTML = `<div class="panel section"><h2>Points <span class="h2-strong">Standings</span></h2>
+      <table><thead><tr><th>#</th><th>${T.teamSize === 1 ? 'Player' : 'Team'}</th><th>Points</th><th></th></tr></thead><tbody>
+      ${rows.map((team, i) => `<tr class="${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
+        <td class="mono">${i + 1}</td><td>${esc(team.name)}${T.championTeamId === team.id ? ' \ud83c\udfc6' : ''}</td>
+        <td class="mono">${tot[team.id]}</td>
+        <td class="small muted">${team.out ? 'Cut after round ' + team.out.round : ''}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    return;
+  }
+
+  // imported tournaments: use Challonge's final_rank directly (handles ties)
+  if (T.imported) {
+    const rows = T.teams.slice().sort((a, b) => (a.finalRank || 999) - (b.finalRank || 999) || a.seed - b.seed);
+    const html = rows.map(team => {
+      const rk = team.finalRank || '\u2014';
+      const cls = rk === 1 ? 'rank1' : rk === 2 ? 'rank2' : rk === 3 ? 'rank3' : '';
+      const note = team.id === T.championTeamId ? '\ud83c\udfc6 Champion' : '';
+      return `<tr class="${cls}"><td class="mono">${rk}</td><td>${esc(team.name)}</td><td class="small muted">${note}</td></tr>`;
+    }).join('');
+    el.innerHTML = `<div class="panel section"><h2>Final <span class="h2-strong">Standings</span></h2>
+      <table><thead><tr><th>Place</th><th>Team</th><th></th></tr></thead><tbody>${html}</tbody></table></div>`;
+    return;
+  }
+
+  // elimination formats: rank by how far each team got
+  const stage = team => {
+    if (T.championTeamId === team.id) return 1e9;
+    if (!team.out) return 1e8; // still alive
+    if (team.out.bracket === 'gf') return 1e6;
+    if (team.out.bracket === 'lb') return 1000 + team.out.round;
+    return team.out.round; // wb (single elim) or ffa round
+  };
+  const rows = T.teams.slice().sort((a, b) => stage(b) - stage(a) || a.seed - b.seed);
+  let rank = 0, prevStage = null, shown = 0;
+  const html = rows.map(team => {
+    shown++;
+    const st = stage(team);
+    if (st !== prevStage) { rank = shown; prevStage = st; }
+    const label = T.championTeamId === team.id ? '1' : (!team.out ? '—' : String(rank));
+    const note = T.championTeamId === team.id ? '🏆 Champion' : (!team.out ? 'Still in' :
+      team.out.bracket === 'gf' ? 'Lost the final' :
+      'Out in ' + roundKeyLabel(team.out.bracket, team.out.round).toLowerCase());
+    return `<tr class="${label === '1' ? 'rank1' : label === '2' ? 'rank2' : (label === '3' ? 'rank3' : '')}">
+      <td class="mono">${label}</td><td>${esc(team.name)}</td><td class="small muted">${esc(note)}</td></tr>`;
+  }).join('');
+  el.innerHTML = `<div class="panel section"><h2>Standings</h2>
+    <table><thead><tr><th>Place</th><th>${T.teamSize === 1 ? 'Player' : 'Team'}</th><th>Result</th></tr></thead>
+    <tbody>${html}</tbody></table></div>`;
+}
+
+// ----- admin -----
+
+async function drawAdmin(el) {
+  el.innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
+  let secrets = null;
+  try {
+    const at = adminToken();
+    secrets = await api('/api/t/' + T.id + '/secrets' + (at ? '?admin=' + encodeURIComponent(at) : ''));
+  }
+  catch (e) { el.innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
+
+  const base = location.origin + '/t/' + T.id;
+  const copyRow = (label, value) => `
+    <label>${esc(label)}</label>
+    <div class="copybox"><input type="text" readonly value="${esc(value)}"><button class="btn small" data-copy="${esc(value)}">Copy</button></div>`;
+
+  let html = `<div class="panel section"><h2>Share links</h2>
+    ${copyRow('Public link — share with everyone', base)}
+    ${copyRow('Organizer link — makes whoever opens it an organizer (they must log in). KEEP PRIVATE.', base + '?admin=' + secrets.adminToken)}
+    ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
+  </div>`;
+
+  if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
+    const locked = T.status !== 'signup';
+    const boSel = (id, val) => `<select id="${id}">${[1,3,5,7].map(o => '<option value="' + o + '"' + (o === val ? ' selected' : '') + '>Bo' + o + '</option>').join('')}</select>`;
+    const p = T.plan || {};
+    const fc = T.ffaCfg || {};
+    const dis = locked ? ' disabled' : '';
+    html += `<div class="panel section"><h2>Format</h2>
+      ${locked ? '<p class="muted small">Team setup fields are locked while the draft/teams exist \u2014 reopen signups to change them. Bracket, match lengths and caps stay editable until the bracket starts.</p>' : '<p class="muted small">Fix wrong options here. Everything is editable until the bracket starts.</p>'}
+      <label>Competition</label>
+      <select id="af_comp"${dis}><option value="team"${T.competition === 'team' ? ' selected' : ''}>Team bracket</option><option value="ffa"${T.competition === 'ffa' ? ' selected' : ''}>FFA</option></select>
+      <div id="af_team">
+        <label>Team size</label>
+        <select id="af_size"${dis}>${[1,2,3,4,5,6].map(n => '<option value="' + n + '"' + (n === T.teamSize && T.competition === 'team' ? ' selected' : '') + '>' + n + 'v' + n + '</option>').join('')}</select>
+        <div id="af_formWrap">
+          <label>Team formation</label>
+          <select id="af_form"${dis}><option value="draft"${T.formation !== 'premade' ? ' selected' : ''}>Captains draft</option><option value="premade"${T.formation === 'premade' ? ' selected' : ''}>Premade teams</option></select>
+          <div id="af_orderWrap">
+            <label>Draft pick order</label>
+            <select id="af_order"${dis}><option value="linear"${T.draftOrder !== 'snake' ? ' selected' : ''}>Bottom to top, every round</option><option value="snake"${T.draftOrder === 'snake' ? ' selected' : ''}>Snake (1\u2192N, N\u21921, ...)</option></select>
+          </div>
+        </div>
+        <label>Bracket</label>
+        <select id="af_bt"><option value="single"${T.bracketType === 'single' ? ' selected' : ''}>Single elimination</option><option value="double"${T.bracketType === 'double' ? ' selected' : ''}>Double elimination</option><option value="swiss"${T.bracketType === 'swiss' ? ' selected' : ''}>Swiss</option></select>
+        <div id="af_pSingle">
+          <label>Match lengths</label>
+          <div class="row" style="gap:10px">
+            <div style="flex:1"><div class="muted small">Early rounds</div>${boSel('af_early', p.early || 3)}</div>
+            <div style="flex:1"><div class="muted small">Semifinal</div>${boSel('af_semi', p.semi || 3)}</div>
+            <div style="flex:1"><div class="muted small">Final</div>${boSel('af_final', p.final || 5)}</div>
+          </div>
+        </div>
+        <div id="af_pDouble" style="display:none">
+          <label>Match lengths</label>
+          <div class="row" style="gap:10px">
+            <div style="flex:1"><div class="muted small">Winners bracket rounds</div>${boSel('af_wb', p.wb || 3)}</div>
+            <div style="flex:1"><div class="muted small">Winners bracket final</div>${boSel('af_wbf', p.wbFinal || 3)}</div>
+          </div>
+          <div class="row" style="gap:10px;margin-top:8px">
+            <div style="flex:1"><div class="muted small">Losers bracket rounds</div>${boSel('af_lb', p.lb || 3)}</div>
+            <div style="flex:1"><div class="muted small">Losers bracket final</div>${boSel('af_lbf', p.lbFinal || 3)}</div>
+          </div>
+          <div class="row" style="gap:10px;margin-top:8px"><div style="flex:1"><div class="muted small">Grand final</div>${boSel('af_gf', p.gf || 5)}</div></div>
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+            <input type="checkbox" id="af_hcap"${p.lbHandicap || p.lbHandicap === undefined ? ' checked' : ''}> Upper bracket finalist starts the grand final 1-0 up
+          </label>
+        </div>
+        <div id="af_pSwiss" style="display:none">
+          <label>Match lengths</label>
+          <div class="row" style="gap:10px">
+            <div style="flex:1"><div class="muted small">Each match</div><select id="af_swbo"><option value="1"${p.bo === 1 ? ' selected' : ''}>Bo1</option><option value="3"${p.bo !== 1 ? ' selected' : ''}>Bo3</option></select></div>
+            <div style="flex:1"><div class="muted small">Final</div>${boSel('af_swfbo', p.finalBo || 5)}</div>
+          </div>
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+            <input type="checkbox" id="af_swfinal"${p.final === 0 ? '' : ' checked'}> Final between the top 2 after the last round
+          </label>
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
+            <input type="checkbox" id="af_swfast"${p.fast ? ' checked' : ''}> Fast pairing \u2014 next matchup starts as soon as two teams are free
+          </label>
+        </div>
+      </div>
+      <div id="af_ffa" style="display:none">
+        <label>Entrants</label>
+        <select id="af_fsize"${dis}>${[1,2,3].map(n => '<option value="' + n + '"' + (n === T.teamSize && T.competition === 'ffa' ? ' selected' : '') + '>' + (n === 1 ? 'Solo players' : 'Teams of ' + n) + '</option>').join('')}</select>
+        <label id="af_pmLabel">Players per FFA lobby</label>
+        <select id="af_pm"></select>
+        <label>Mode</label>
+        <select id="af_fmode"><option value="points"${fc.mode !== 'elim' ? ' selected' : ''}>Points over rounds</option><option value="elim"${fc.mode === 'elim' ? ' selected' : ''}>Knockout</option></select>
+        <div id="af_fpoints">
+          <label>Number of rounds</label>
+          <input type="number" id="af_frounds" min="1" max="10" value="${fc.rounds || 3}" autocomplete="off">
+          <label>After each round</label>
+          <div class="row" style="gap:10px;align-items:center">
+            <select id="af_fcutmode" style="flex:1"><option value="0"${!fc.cutTo ? ' selected' : ''}>Everyone continues</option><option value="1"${fc.cutTo ? ' selected' : ''}>Cut to the top \u2026</option></select>
+            <input type="number" id="af_fcutto" min="2" max="64" value="${fc.cutTo || 8}" style="flex:0 0 90px;${fc.cutTo ? '' : 'display:none'}" autocomplete="off">
+          </div>
+          <label>After the last round</label>
+          <div class="row" style="gap:10px;align-items:center">
+            <select id="af_ffinalmode" style="flex:1"><option value="0"${!fc.finalSize ? ' selected' : ''}>Highest points is champion</option><option value="1"${fc.finalSize ? ' selected' : ''}>Top \u2026 play a final lobby</option></select>
+            <input type="number" id="af_ffinalsize" min="2" max="16" value="${fc.finalSize || 4}" style="flex:0 0 90px;${fc.finalSize ? '' : 'display:none'}" autocomplete="off">
+          </div>
+        </div>
+        <div id="af_felim" style="display:none">
+          <label>Advancing per lobby</label>
+          <select id="af_fadv">${[1,2,3,4].map(n => '<option value="' + n + '"' + (n === (fc.advance || 1) ? ' selected' : '') + '>' + (n === 1 ? 'Winner only' : 'Top ' + n) + '</option>').join('')}</select>
+        </div>
+      </div>
+      <label>Seeding</label>
+      <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option></select>
+      <label>Max teams / entrants (0 = unlimited)</label>
+      <input type="number" id="af_max" min="0" max="128" value="${T.maxTeams || 0}" autocomplete="off">
+      <div style="margin-top:16px"><button class="btn amber" id="af_save">Save format</button></div>
+    </div>`;
+  }
+
+  if (T.status === 'drafted' && T.competition === 'team' && (T.bracketType === 'single' || T.bracketType === 'double')) {
+    const seeded = T.teams.slice().sort((a, b) => a.seed - b.seed);
+    html += `<div class="panel section"><h2>Seeding</h2>
+      <p class="muted small">Drag to reorder, or use the arrows. Seed 1 is the top seed. This determines the bracket \u2014 fixed once you start it.</p>
+      <div style="margin:10px 0"><button class="btn ghost small" id="seedRandom">\ud83c\udfb2 Randomize</button>
+      ${T.seeding === 'rating' ? '<button class="btn ghost small" id="seedByRating" style="margin-left:8px">Reset to rating order</button>' : ''}</div>
+      <ol id="seedList" class="seedlist">
+        ${seeded.map(tm => `<li class="seeditem" draggable="true" data-tid="${tm.id}">
+          <span class="seednum"></span>
+          <span class="seedname">${esc(tm.name)}</span>
+          <span class="seedbtns"><button class="seedup" title="Move up">\u25b2</button><button class="seeddown" title="Move down">\u25bc</button></span>
+        </li>`).join('')}
+      </ol>
+      <div style="margin-top:12px"><button class="btn amber" id="seedSave">Save seeding</button> <span class="muted small" id="seedDirty"></span></div>
+    </div>`;
+  }
+
+  html += `<div class="panel section"><h2>Game setup</h2>
+    <label>Description</label><textarea id="aiDesc" maxlength="500">${esc(T.description || '')}</textarea>
+    <label>Lobby options</label><textarea id="aiLobby" maxlength="500">${esc(T.lobbyOptions || '')}</textarea>
+    <label>Mods</label><input type="text" id="aiMods" maxlength="500" value="${esc(T.mods || '')}">
+    <div style="margin-top:14px"><button class="btn" id="aiSave">Save setup</button></div>
+  </div>`;
+
+  if (T.status !== 'finished' && T.competition === 'team') {
+    const v = T.veto || { enabled: false, mode: 'upfront' };
+    const pools = T.mapPools || [];
+    const ready = pools.filter(p => (p.sequence || []).length && (p.sequence || []).length === (p.mapIds || []).length - 1);
+    html += `<div class="panel section"><h2>Map vetoes</h2>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="vtEnabled" style="width:auto"${v.enabled ? ' checked' : ''}> Enable map vetoes</label>
+      <div id="vtCfg" style="${v.enabled ? '' : 'display:none;'}margin-top:12px">
+        <p class="muted small">Each match's captains ban/pick from the pool assigned to their match, following that pool's own ban/pick order. Build pools, their orders, and their round assignments on the <strong>Maps</strong> tab.</p>
+        ${pools.length === 0
+          ? '<p class="warn small">No map pools yet — create one on the Maps tab or no vetoes will run.</p>'
+          : '<div class="pool-status">' + pools.map(p => {
+              const steps = (p.sequence || []).length, need = (p.mapIds || []).length - 1;
+              const picks = (p.sequence || []).filter(x => x.action === 'pick').length;
+              const bo = p.bo || 1;
+              const ok = steps > 0 && steps === need && picks === bo - 1;
+              return '<div class="pool-status-row">' + (ok ? '<span class="idbadge verified">ready</span>' : '<span class="idbadge late">needs setup</span>') +
+                ' <strong>' + esc(p.name) + '</strong> <span class="muted small">' + (p.mapIds || []).length + ' maps · ' +
+                (ok ? 'Bo' + bo + ' matches' : (steps === 0 ? 'no ban/pick order set' : 'order needs ' + need + ' steps / ' + (bo - 1) + ' picks')) + '</span></div>';
+            }).join('') + '</div>'}
+        <label style="margin-top:14px">Who is Team A?</label>
+        <select id="vtAb" style="max-width:420px">
+          <option value="lowerA"${(v.abMode || 'lowerA') === 'lowerA' ? ' selected' : ''}>Lower rated is Team A (acts first)</option>
+          <option value="lowerB"${v.abMode === 'lowerB' ? ' selected' : ''}>Lower rated is Team B (higher rated acts first)</option>
+          <option value="random"${v.abMode === 'random' ? ' selected' : ''}>Random per match</option>
+          <option value="manual"${v.abMode === 'manual' ? ' selected' : ''}>I set it myself for every match</option>
+        </select>
+        <div class="muted small" style="margin-top:6px" id="vtAbNote"></div>
+
+        <label style="margin-top:14px">When is the veto done?</label>
+        <select id="vtMode" style="max-width:420px">
+          <option value="upfront"${v.mode !== 'continuous' ? ' selected' : ''}>All upfront — captains complete the whole veto before game 1</option>
+          <option value="continuous"${v.mode === 'continuous' ? ' selected' : ''}>Continuous — reveal steps as games are played</option>
+        </select>
+        <div class="muted small" style="margin-top:8px">Whatever the rule, you can still override A/B on any match from the Vetoes tab before it starts.</div>
+      </div>
+      <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
+    </div>`;
+  }
+
+  html += `<div class="panel section"><h2>Organizer notes</h2>
+    <ul class="muted small">
+      <li>Substitutions: Players tab → Edit next to any player → overwrite name and rating with the sub's. Works mid-tournament.</li>
+      <li>Maps per round: on the Bracket/Rounds tab, each round header has an "edit" link next to the map list.</li>
+      <li>Running scores: reporting 1-0 in a Bo3 keeps the match LIVE; it completes when a team reaches the required wins.</li>
+      <li>Corrections: you can fix a finished match as long as the follow-up match hasn't started.</li>
+      <li>Data lives in the container volume — deleting the volume deletes tournaments.</li>
+    </ul></div>`;
+
+  el.innerHTML = html;
+  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
+    navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
+  });
+
+  // ---- veto config (enable + mode; ban/pick orders live on each pool in the Maps tab) ----
+  const vtEnabled = document.getElementById('vtEnabled');
+  if (vtEnabled) {
+    vtEnabled.onchange = () => { document.getElementById('vtCfg').style.display = vtEnabled.checked ? 'block' : 'none'; };
+    const vtAb = document.getElementById('vtAb');
+    const abNote = () => {
+      const notes = {
+        lowerA: 'The lower rated captain is Team A and takes the first step. Rating comes from the captain, not the team average.',
+        lowerB: 'The lower rated captain is Team B, so the higher rated captain takes the first step. Rating comes from the captain, not the team average.',
+        random: 'A coin flip per match, decided when the match is ready.',
+        manual: 'Nobody can start their veto until you set Team A on that match (Vetoes tab). Use this when you want full control.'
+      };
+      document.getElementById('vtAbNote').textContent = notes[vtAb.value] || '';
+    };
+    if (vtAb) { vtAb.onchange = abNote; abNote(); }
+    document.getElementById('vtSave').onclick = async () => {
+      const enabled = vtEnabled.checked;
+      const mode = document.getElementById('vtMode').value;
+      const abMode = vtAb ? vtAb.value : 'lowerA';
+      if (enabled) {
+        const pools = T.mapPools || [];
+        const ready = pools.filter(p => (p.sequence || []).length && (p.sequence || []).length === (p.mapIds || []).length - 1);
+        if (ready.length === 0) return toast('No pool has a valid ban/pick order yet — set one up on the Maps tab first', true);
+      }
+      try {
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode }, admin: adminToken() });
+        await refresh();
+        toast('Vetoes saved');
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+
+  // ---- seeding editor ----
+  const seedList = document.getElementById('seedList');
+  if (seedList) {
+    const renumber = () => {
+      let i = 1;
+      seedList.querySelectorAll('.seeditem').forEach(li => { li.querySelector('.seednum').textContent = i++; });
+      const sd = document.getElementById('seedDirty'); if (sd) sd.textContent = 'unsaved changes';
+    };
+    renumber();
+    const sd0 = document.getElementById('seedDirty'); if (sd0) sd0.textContent = '';
+
+    // arrow buttons
+    seedList.querySelectorAll('.seedup').forEach(b => b.onclick = e => {
+      const li = e.target.closest('.seeditem'); const prev = li.previousElementSibling;
+      if (prev) { seedList.insertBefore(li, prev); renumber(); }
+    });
+    seedList.querySelectorAll('.seeddown').forEach(b => b.onclick = e => {
+      const li = e.target.closest('.seeditem'); const next = li.nextElementSibling;
+      if (next) { seedList.insertBefore(next, li); renumber(); }
+    });
+
+    // drag and drop
+    let dragEl = null;
+    seedList.querySelectorAll('.seeditem').forEach(li => {
+      li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
+      li.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('dragging'); dragEl = null; renumber(); });
+    });
+    seedList.addEventListener('dragover', e => {
+      e.preventDefault();
+      const after = [...seedList.querySelectorAll('.seeditem:not(.dragging)')].reduce((closest, child) => {
+        const box = child.getBoundingClientRect();
+        const offset = e.clientY - box.top - box.height / 2;
+        if (offset < 0 && offset > closest.offset) return { offset, el: child };
+        return closest;
+      }, { offset: -Infinity, el: null }).el;
+      if (!dragEl) return;
+      if (after == null) seedList.appendChild(dragEl);
+      else seedList.insertBefore(dragEl, after);
+    });
+
+    const saveOrder = async (order, randomize) => {
+      try {
+        await api('/api/t/' + T.id + '/reseed', randomize ? { randomize: 1, admin: adminToken() } : { order, admin: adminToken() });
+        await refresh();
+        toast('Seeding saved');
+      } catch (e) { toast(e.message, true); }
+    };
+    document.getElementById('seedSave').onclick = () => {
+      const order = [...seedList.querySelectorAll('.seeditem')].map(li => li.dataset.tid);
+      saveOrder(order, false);
+    };
+    const rnd = document.getElementById('seedRandom');
+    if (rnd) rnd.onclick = () => saveOrder(null, true);
+    const byr = document.getElementById('seedByRating');
+    if (byr) byr.onclick = async () => {
+      // reset: order teams by their players' avg rating (desc)
+      const withR = T.teams.map(tm => ({ id: tm.id, r: tm.playerIds.reduce((s, pid) => { const p = T.players.find(x => x.id === pid); return s + (p && p.rating || 0); }, 0) }));
+      withR.sort((a, b) => b.r - a.r);
+      saveOrder(withR.map(x => x.id), false);
+    };
+  }
+
+  const afComp = document.getElementById('af_comp');
+  if (afComp) {
+    const g = id => document.getElementById(id);
+    const syncPm = () => {
+      const es = parseInt(g('af_fsize').value, 10);
+      const maxL = Math.max(2, Math.floor(16 / es));
+      g('af_pmLabel').textContent = (es === 1 ? 'Players' : 'Teams') + ' per FFA lobby';
+      const cur = parseInt(g('af_pm').value, 10) || (T.ffaCfg && T.ffaCfg.perMatch) || 6;
+      g('af_pm').innerHTML = '';
+      for (let n = 2; n <= maxL; n++) {
+        const players = es === 1 ? '' : ' (' + (n * es) + ' players)';
+        g('af_pm').innerHTML += '<option value="' + n + '"' + (n === Math.min(cur, maxL) ? ' selected' : '') + '>' + n + players + '</option>';
+      }
+    };
+    const sync = () => {
+      const isFfa = afComp.value === 'ffa';
+      g('af_team').style.display = isFfa ? 'none' : '';
+      g('af_ffa').style.display = isFfa ? '' : 'none';
+      g('af_formWrap').style.display = g('af_size').value === '1' ? 'none' : '';
+      g('af_orderWrap').style.display = (g('af_form').value === 'draft' && g('af_size').value !== '1') ? '' : 'none';
+      g('af_pSingle').style.display = g('af_bt').value === 'single' ? '' : 'none';
+      g('af_pDouble').style.display = g('af_bt').value === 'double' ? '' : 'none';
+      g('af_pSwiss').style.display = g('af_bt').value === 'swiss' ? '' : 'none';
+      g('af_fpoints').style.display = g('af_fmode').value === 'points' ? '' : 'none';
+      g('af_felim').style.display = g('af_fmode').value === 'elim' ? '' : 'none';
+      g('af_fcutto').style.display = g('af_fcutmode').value === '1' ? '' : 'none';
+      g('af_ffinalsize').style.display = g('af_ffinalmode').value === '1' ? '' : 'none';
+      syncPm();
+    };
+    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode']) g(id).onchange = sync;
+    sync();
+
+    g('af_save').onclick = async () => {
+      const isFfa = afComp.value === 'ffa';
+      const body = { admin: adminToken(), maxTeams: g('af_max').value };
+      if (T.status === 'signup') {
+        body.competition = afComp.value;
+        body.teamSize = isFfa ? g('af_fsize').value : g('af_size').value;
+        body.formation = g('af_form').value;
+        body.draftOrder = g('af_order').value;
+        body.seeding = g('af_seed').value;
+      }
+      if (!isFfa) {
+        body.bracketType = g('af_bt').value;
+        if (g('af_bt').value === 'single') body.plan = { early: g('af_early').value, semi: g('af_semi').value, final: g('af_final').value };
+        else if (g('af_bt').value === 'double') body.plan = { wb: g('af_wb').value, wbFinal: g('af_wbf').value, lb: g('af_lb').value, lbFinal: g('af_lbf').value, gf: g('af_gf').value, lbHandicap: g('af_hcap').checked };
+        else body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };
+      } else {
+        body.perMatch = g('af_pm').value;
+        body.mode = g('af_fmode').value;
+        body.rounds = g('af_frounds').value;
+        body.cutTo = g('af_fcutmode').value === '1' ? g('af_fcutto').value : 0;
+        body.finalSize = g('af_ffinalmode').value === '1' ? g('af_ffinalsize').value : 0;
+        body.advance = g('af_fadv').value;
+      }
+      try {
+        await api('/api/t/' + T.id + '/edit_format', body);
+        toast('Format saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+  document.getElementById('aiSave').onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/edit_info', {
+        description: document.getElementById('aiDesc').value,
+        lobbyOptions: document.getElementById('aiLobby').value,
+        mods: document.getElementById('aiMods').value,
+        admin: adminToken()
+      });
+      toast('Setup saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+// ---------- routing ----------
+
+async function refresh() {
+  await loadTournament();
+  lastSnapshot = JSON.stringify(T);
+  drawTournament();
+}
+
+function syncTabURL() {
+  const id = tourneyId();
+  if (!id) return;
+  const url = '/t/' + id + (currentTab && currentTab !== 'overview' ? '?tab=' + currentTab : '');
+  history.replaceState(null, '', url);
+}
+
+function setTitle(name) {
+  document.title = name ? (name + ' \u2014 FAF Tournaments') : 'FAF Tournaments';
+}
+
+function route() {
+  if (location.pathname === '/host') renderHost();
+  else if (location.pathname === '/siteadmin') renderSiteAdmin();
+  else if (tourneyId()) renderTournament();
+  else renderHome();
+}
+
+window.addEventListener('popstate', route);
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[href^="/"]');
+  if (a && !a.dataset.goto) {
+    e.preventDefault();
+    history.pushState(null, '', a.getAttribute('href'));
+    route();
+  }
+});
+
+window.addEventListener('resize', () => { for (const f of connectorRedraws) f(); });
+// mousewheel over a focused number input changes the value and blocks page zoom/scroll
+document.addEventListener('wheel', () => {
+  const a = document.activeElement;
+  if (a && a.tagName === 'INPUT' && a.type === 'number') a.blur();
+}, { passive: true });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { for (const f of connectorRedraws) f(); });
+
+// handle the ?login=... param the OAuth callback appends, then clean it from the URL
+function handleLoginParam() {
+  const q = new URLSearchParams(location.search);
+  const l = q.get('login');
+  if (!l) return;
+  q.delete('login');
+  const clean = location.pathname + (q.toString() ? '?' + q.toString() : '');
+  history.replaceState(null, '', clean);
+  if (l === 'ok') toast('Logged in with FAF' + (me() ? ' as ' + me() : ''));
+  else if (l === 'denied') toast('FAF login was cancelled', true);
+  else if (l === 'expired') toast('Login timed out, please try again', true);
+  else if (l === 'error') toast('FAF login failed, please try again', true);
+}
+
+applyScale();
+refreshFafAuth().then(() => { handleLoginParam(); route(); });
