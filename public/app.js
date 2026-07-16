@@ -434,7 +434,7 @@ function drawTopbar(modeText) {
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
     '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' +
     (me()
-      ? '<button class="btn ghost small" id="cmdrBtn" title="Player account">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + '</button>'
+      ? '<button class="btn ghost small" id="cmdrBtn" title="Your profile - set your Discord handle, log out">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + ((fafAuth.enabled && isFafVerified() && !(fafAuth.user && fafAuth.user.discord)) ? ' <span class="dcpill">\uD83D\uDCAC add Discord</span>' : '') + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
     (siteAdmin()
       ? '<button class="btn ghost small" id="saLink" title="Open the site admin console">SITE ADMIN</button>'
@@ -561,8 +561,8 @@ function loginFlow() {
   if (me()) {
     const curDc = (fafAuth.user && fafAuth.user.discord) || '';
     modal(`
-      <h3>Logged in as ${esc(me())} <span class="verifiedchip">FAF</span></h3>
-      <p class="muted small">Your FAF account is linked. Signup forms use your FAF name.</p>
+      <h3>Your profile</h3>
+      <p class="muted small">Logged in as <strong>${esc(me())}</strong> <span class="verifiedchip">FAF</span>. Signup forms use your FAF name.</p>
       <label>Discord handle <span class="muted small">(optional — shown to organizers and fellow signed-up players so they can reach you)</span></label>
       <p class="muted small" style="margin:4px 0 6px">Enter your Discord <strong>username</strong> — the unique all-lowercase handle shown under Settings → My Account in Discord — not your display name.</p>
       <input type="text" id="lgDiscord" maxlength="40" autocomplete="off" value="${esc(curDc)}">
