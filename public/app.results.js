@@ -22,6 +22,8 @@ function reportScoreAdmin(m) {
       <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="rs1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${m.score1 != null ? m.score1 : (m.hcap ? 1 : 0)}"></div>
       <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="rs2" min="0" max="${maxW}" value="${m.score2 != null ? m.score2 : 0}"></div>
     </div>
+    <label style="margin-top:10px">Replay IDs <span class="muted small">(optional, comma-separated \u2014 one per game, kept for the archive)</span></label>
+    <input type="text" id="rReplays" value="${esc((m.replayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534001, 21534050">
     <div class="actions">
       <button class="btn ghost" id="rCancel">Cancel</button>
       <button class="btn primary" id="rGo">Save score</button>
@@ -39,6 +41,7 @@ function reportScoreAdmin(m) {
           matchId: m.id,
           score1: root.querySelector('#rs1').value,
           score2: root.querySelector('#rs2').value,
+          replayIds: root.querySelector('#rReplays').value.split(',').map(s => s.trim()).filter(Boolean),
           token: myToken()
         });
         closeModal();

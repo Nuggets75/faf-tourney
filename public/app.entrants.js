@@ -28,12 +28,12 @@ function drawPlayers(el) {
       const helpText = T.competition === 'ffa' && T.teamSize === 1 ? 'Every player enters solo. Lobbies are grouped automatically.'
             : T.formation === 'draft' ? 'The organizer picks captains from the player list once signups close, then captains draft their teams.'
             : T.formation === 'open' ? 'After signing up here, go to the Teams tab to create or join a team.'
-            : (T.formation === 'premade' && T.teamSize > 1) ? 'Sign up and enter your team name. Teammates enter the exact same name to be grouped together.'
+            : (T.formation === 'premade' && T.teamSize > 1) ? 'Sign up and enter your team name. Teammates enter the exact same name to be grouped together. You can also set or change it later on the Teams tab.'
             : 'Solo bracket — every signup is an entrant.';
       if (viewerSignedUp() && (() => { const mine = T.players.find(pl => pl.id === T.viewer.signedUpPlayerId); return mine && mine.pending; })()) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="signed-in-note">Your signup request is <strong>waiting for organizer approval</strong>. You'll appear in the player list once accepted.</p>
-          <button class="btn ghost small" id="sWithdraw">Withdraw request</button></div>`;
+          <button class="btn danger small" id="sWithdraw">Withdraw request</button></div>`;
       } else if (viewerSignedUp()) {
         const myDc = (fafAuth.user && fafAuth.user.discord) || '';
         html += `<div class="panel section"><h2>Sign up</h2>
@@ -43,7 +43,7 @@ function drawPlayers(el) {
             : `<div class="dc-nudge"><label>Discord handle <span class="muted small">(optional \u2014 so the organizer and your teammates can reach you)</span></label>
                  <p class="muted small" style="margin:4px 0 6px">Enter your Discord <strong>username</strong> \u2014 the unique all-lowercase handle from Settings \u2192 My Account \u2014 not your display name.</p>
                  <div class="row" style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="sDcAdd" maxlength="40" autocomplete="off" style="max-width:240px"><button class="btn small" id="sDcSave">Save</button></div></div>`) : ''}
-          <button class="btn ghost small" id="sWithdraw" style="margin-top:10px">Withdraw</button></div>`;
+          <button class="btn danger small" id="sWithdraw" style="margin-top:10px">Withdraw</button></div>`;
       } else if ((viewerLoggedIn() || !fafAuth.enabled) && T.signupMode === 'invite' && !(T.viewer && T.viewer.invited) && !admin) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="muted small">This tournament is <strong>invite only</strong>. Ask the organizer for an invite \u2014 once invited, you can sign up here.</p></div>`;
@@ -298,6 +298,9 @@ function editPlayer(p) {
     <p class="muted small">Names come from FAF and can't be changed. You can attach a note (shown in brackets after the name)${canEditRating ? ' and adjust the rating' : ''}.</p>
     <label>Note <span class="muted small">(optional, e.g. "sub for X" or "streamer")</span></label>
     <input type="text" id="epNote" maxlength="40" value="${esc(p.note || '')}" autocomplete="off">
+    ${(T.formation === 'premade' && T.teamSize > 1 && T.status === 'signup')
+      ? '<label>Team name <span class="muted small">(groups players with the same name; empty = substitute)</span></label><input type="text" id="epTeam" maxlength="30" value="' + esc((p.teamName || '').trim()) + '" autocomplete="off">'
+      : ''}
     ${canEditRating
       ? '<label>Rating</label><input type="number" id="epRating" min="0" max="4000" value="' + (p.rating != null ? p.rating : '') + '" autocomplete="off">'
       : '<p class="muted small">Rating: <strong>' + (p.rating != null ? p.rating : '\u2014') + '</strong> \u2014 fetched from FAF, not editable.</p>'}
@@ -311,6 +314,8 @@ function editPlayer(p) {
         const body = { playerId: p.id, note: root.querySelector('#epNote').value, admin: adminToken() };
         const rEl = root.querySelector('#epRating');
         if (rEl) body.rating = rEl.value;
+        const tEl = root.querySelector('#epTeam');
+        if (tEl) body.teamName = tEl.value.trim();
         await api('/api/t/' + T.id + '/edit_player', body);
         closeModal();
         toast('Player updated');
@@ -566,8 +571,60 @@ function drawTeams(el) {
           <p class="muted small">${T.teamSize === 1 ? 'Every signed-up player becomes an entrant.' : 'Teams are grouped by the team name players entered at signup. Players without a team name become substitutes.'}</p>
           <button class="btn amber" id="formTeams">Close signups &amp; lock ${T.teamSize === 1 ? 'entrants' : 'teams'}</button></div>`;
       }
-    } else {
+    } else if (!(T.formation === 'premade' && T.teamSize > 1)) {
       html += '<div class="panel section"><div class="empty">Teams appear here once the organizer closes signups.</div></div>';
+    }
+    // Premade: teams take shape during signups — show them live, and let a signed-up
+    // player set or change their team name here (previously withdraw + re-signup was
+    // the only way, which cost people their slot).
+    if (T.formation === 'premade' && T.teamSize > 1) {
+      const myPid = T.viewer && T.viewer.signedUpPlayerId;
+      const myP = myPid ? T.players.find(p => p.id === myPid) : null;
+      if (myP) {
+        const cur = (myP.teamName || '').trim();
+        html += `<div class="panel section"><h2>Your team name</h2>
+          <p class="muted small">${cur ? 'You entered <strong>' + esc(cur) + '</strong>. Teammates must enter the exact same name to be grouped with you.' : 'You haven\u2019t entered a team name yet \u2014 without one you become a substitute when signups close. Enter the exact name your teammates use to join their team, or a new name to start one.'}</p>
+          <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
+            <input type="text" id="pmName" maxlength="30" autocomplete="off" style="max-width:240px" value="${esc(cur)}" placeholder="Team name">
+            <button class="btn primary small" id="pmSave">Save</button>
+          </div></div>`;
+      }
+      // live grouping preview (players still pending approval are excluded)
+      const eligible = T.players.filter(p => !p.pending);
+      const groups = {};
+      for (const p of eligible) {
+        const key = (p.teamName || '').trim().toLowerCase();
+        if (!key) continue;
+        (groups[key] = groups[key] || []).push(p);
+      }
+      const keys = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length || a.localeCompare(b));
+      const noTeam = eligible.filter(p => !(p.teamName || '').trim());
+      if (keys.length) {
+        html += `<div class="panel section"><h2>Forming <span class="h2-strong">(${keys.length})</span></h2>
+          <p class="muted small" style="margin-bottom:8px">Grouped by team name as entered at signup. Teams need exactly ${T.teamSize} players; extras and players without a full team become substitutes when signups close.</p>
+          <div class="teamgrid">`;
+        for (const k of keys) {
+          const mems = groups[k];
+          const dispName = (mems[0].teamName || '').trim();
+          const n = mems.length, sz = T.teamSize;
+          const cls = n === sz ? 'full' : 'open';
+          const over = n > sz;
+          html += `<div class="teamcard ${cls}">
+            <div class="tc-head"><span class="tc-name">${esc(dispName)}</span><span class="tc-count ${n === sz ? 'ok' : ''}">${n}/${sz}${over ? ' \u26A0' : ''}</span></div>
+            <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}${admin ? ' <a href="#" class="muted small" data-pmedit="' + m.id + '">edit</a>' : ''}</div>`).join('')}</div>
+            ${over ? '<div class="warn small" style="margin-top:6px">Too many players \u2014 only the first ' + sz + ' by signup order enter; the rest become substitutes.</div>' : ''}
+          </div>`;
+        }
+        html += '</div></div>';
+      }
+      if (noTeam.length) {
+        html += `<div class="panel section"><h2>No team name yet <span class="h2-strong">(${noTeam.length})</span></h2>
+          <p class="muted small" style="margin-bottom:8px">These players become substitutes unless they enter a team name before signups close.</p>
+          <div class="unteamed">${noTeam.map(p => `<span class="unteamed-chip">${esc(p.name)}${admin ? ' <a href="#" class="assign-hint" data-pmedit="' + p.id + '">set team\u2192</a>' : ''}</span>`).join('')}</div></div>`;
+      }
+      if (!keys.length && !noTeam.length && !myP) {
+        html += '<div class="panel section"><div class="empty">No signups yet.</div></div>';
+      }
     }
   }
 
@@ -707,6 +764,35 @@ function drawTeams(el) {
     try { await api('/api/t/' + T.id + '/phase', { action: 'form_teams', admin: adminToken() }); await refresh(); }
     catch (e) { toast(e.message, true); }
   };
+
+  // premade: player sets/changes their own team name during signup
+  const pmSave = document.getElementById('pmSave');
+  if (pmSave) pmSave.onclick = async () => {
+    const v = document.getElementById('pmName').value.trim();
+    try {
+      await api('/api/t/' + T.id + '/set_team_name', { teamName: v });
+      toast(v ? 'Team name saved' : 'Team name cleared');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  // premade: organizer edits any player's team name from the preview
+  el.querySelectorAll('[data-pmedit]').forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    const p = T.players.find(x => x.id === a.dataset.pmedit);
+    if (!p) return;
+    modal(`<h3>Team name \u2014 ${esc(p.name)}</h3>
+      <label>Team name <span class="muted small">(empty makes them a substitute)</span></label>
+      <input type="text" id="pmeName" maxlength="30" autocomplete="off" value="${esc((p.teamName || '').trim())}">
+      <div class="actions"><button class="btn ghost" id="pmeCancel">Cancel</button><button class="btn primary" id="pmeGo">Save</button></div>`, root => {
+      root.querySelector('#pmeCancel').onclick = closeModal;
+      root.querySelector('#pmeGo').onclick = async () => {
+        try {
+          await api('/api/t/' + T.id + '/set_team_name', { playerId: p.id, teamName: root.querySelector('#pmeName').value.trim(), admin: adminToken() });
+          closeModal(); toast('Saved'); await refresh();
+        } catch (e2) { toast(e2.message, true); }
+      };
+    });
+  });
 
   const undoBtn = document.getElementById('undoPickBtn');
   if (undoBtn) undoBtn.onclick = async () => {

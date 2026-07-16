@@ -224,6 +224,8 @@ function matchBox(m) {
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
     vetoIndicator(m) +
+    ((m.status === 'done' && m.replayIds && m.replayIds.length)
+      ? '<div class="replayline" title="FAF replay IDs, in game order">Replays: ' + m.replayIds.map(esc).join(', ') + '</div>' : '') +
     ((canReport || canCorrect || m.pendingReport)
       ? `<div class="bfoot">${prTag}${(canReport || canCorrect) ? `<button class="btn ${canReport ? 'amber' : 'ghost'} small">${prMine ? 'Confirm score' : canReport ? (viewerIsOrganizer() ? 'Report score' : 'Submit score') : 'Correct'}</button>` : ''}</div>` : '');
   const btn = box.querySelector('.bfoot button');

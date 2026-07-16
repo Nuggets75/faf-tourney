@@ -1482,6 +1482,27 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // Premade: a signed-up player sets or changes their team name while signups are open.
+    // Entering the same name as someone else is how teammates group up, so matching an
+    // existing name is deliberate and allowed. Empty clears it (player becomes a sub).
+    if (sub === 'set_team_name') {
+      if (t.formation !== 'premade' || t.teamSize < 2) return bad(res, 'This tournament does not use team names');
+      if (t.status !== 'signup') return bad(res, 'Signups are closed \u2014 ask the organizer to move players instead');
+      let p = null;
+      if (b.playerId !== undefined) {
+        if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+        p = playerById(t, b.playerId);
+        if (!p) return bad(res, 'Player not found');
+      } else {
+        const sess = currentSession(req);
+        if (sess) p = t.players.find(x => x.fafId === sess.fafId);
+        if (!p) return bad(res, 'Sign up first, then set your team name');
+      }
+      p.teamName = cleanName(b.teamName, 30) || '';
+      saveDB();
+      return json(res, 200, { ok: true, teamName: p.teamName });
+    }
+
     if (sub === 'remove') {
       const p0 = playerById(t, b.playerId);
       // a player may withdraw themselves (by FAF id) while signups are open; organizers can remove anyone
@@ -1944,6 +1965,9 @@ async function handleAPI(req, res, url) {
         return bad(res, 'Players cannot be renamed \u2014 names come from FAF. Add a note instead.');
       }
       if (b.note !== undefined) p.note = cleanName(b.note, 40) || null;
+      if (b.teamName !== undefined && t.formation === 'premade' && t.teamSize > 1 && t.status === 'signup') {
+        p.teamName = cleanName(b.teamName, 30) || '';
+      }
       if (b.rating !== undefined && String(b.rating) !== String(p.rating)) {
         if (t.ratingType && t.ratingType !== 'none') return bad(res, 'Ratings are fetched from FAF for this tournament and cannot be edited');
         const rating = parseInt(b.rating, 10);
@@ -2640,6 +2664,12 @@ async function handleAPI(req, res, url) {
       if (s1 === maxW && s2 === maxW) return bad(res, 'Both teams cannot reach ' + maxW);
 
       m.pendingReport = null;   // organizer word overrides any pending player submission
+      // Optional: organizer can record/correct the replay IDs (kept for the archive).
+      // Sending the key replaces the stored set; an empty list clears it.
+      if (Array.isArray(b.replayIds)) {
+        m.replayIds = b.replayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
+        if (!m.replayIds.length) delete m.replayIds;
+      }
       if (s1 === maxW || s2 === maxW) {
         finalizeMatch(t, m, s1, s2);
       } else {

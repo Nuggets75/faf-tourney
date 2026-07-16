@@ -75,6 +75,9 @@ async function refreshPending() {
   };
 }
 function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
+// The bar above is otherwise only drawn on navigation, so its "your turn to ban/pick" text
+// could go stale while a veto progresses elsewhere. Keep it current.
+setInterval(() => { try { refreshPending(); } catch (e) {} }, 30000);
 // FAF login state, populated by refreshFafAuth() on load. fafAuth = { enabled, user:{fafId,fafName}|null }
 let fafAuth = { enabled: false, user: null };
 // the effective logged-in name: a verified FAF session wins over the manual name
