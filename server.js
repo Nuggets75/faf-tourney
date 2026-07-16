@@ -533,45 +533,78 @@ async function fafFetchIdentity(accessToken) {
 }
 
 // FAF leaderboard ids (from /data/leaderboard): global=1, ladder_1v1=2, tmm_2v2=3, tmm_3v3=6, tmm_4v4_full_share=4.
-const FAF_LEADERBOARD_ID = { global: 1, '1v1': 2, '2v2': 3, '3v3': 6, '4v4': 4 };
+// FAF leaderboard technicalName per rating category (the working downloader filters by this).
+const FAF_LEADERBOARD_NAME = { global: 'global', '1v1': 'ladder_1v1', '2v2': 'tmm_2v2', '3v3': 'tmm_3v3', '4v4': 'tmm_4v4_full_share' };
 
-// RSQL timestamp exactly as the working downloader formats it: quoted, no milliseconds.
-function fafIso(ms) {
+// End of the given UTC day, formatted like the downloader: "YYYY-MM-DDT23:59:59Z".
+function fafDayEndIso(ms) {
   const d = new Date(ms), p = n => String(n).padStart(2, '0');
-  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + 'T' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + 'Z';
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + 'T23:59:59Z';
+}
+function rsqlQuote(v) { return '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
+
+// Return a currently-valid FAF access token for this session, refreshing via the stored
+// refresh token if it has expired. Null if the session predates token storage (re-login needed).
+async function fafValidToken(sess) {
+  if (!sess || !sess.faf) return null;
+  if (sess.faf.access && sess.faf.exp && Date.now() < sess.faf.exp - 30000) return sess.faf.access;
+  if (!sess.faf.refresh) return sess.faf.access || null;
+  try {
+    const form = new URLSearchParams({
+      grant_type: 'refresh_token', refresh_token: sess.faf.refresh,
+      client_id: FAF_CLIENT_ID, client_secret: FAF_CLIENT_SECRET
+    }).toString();
+    const r = await httpsRequest({
+      host: 'hydra.faforever.com', path: '/oauth2/token', method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }
+    }, form);
+    if (r.status !== 200) return sess.faf.access || null;
+    const j = JSON.parse(r.text);
+    if (j.access_token) sess.faf.access = j.access_token;
+    if (j.refresh_token) sess.faf.refresh = j.refresh_token;
+    sess.faf.exp = Date.now() + ((j.expires_in || 3600) * 1000);
+    saveDB();
+    return sess.faf.access;
+  } catch (e) { return sess.faf.access || null; }
 }
 
-// One journal lookup; returns full detail for diagnostics. rating = round(mean - 3*deviation)
-// of the newest rating-change on or before the cutoff.
-async function fafJournalRating(playerFilter, lb, isoQuoted) {
-  const filter = playerFilter + ';leaderboard.id==' + lb + ';createTime=le=' + isoQuoted;
-  const path = '/data/leaderboardRatingJournal?filter=' + encodeURIComponent(filter) + '&sort=-createTime&page%5Bsize%5D=1';
-  const r = await httpsRequest({ host: 'api.faforever.com', path, method: 'GET', headers: { 'Accept': 'application/vnd.api+json' } });
+// One journal lookup, mirroring the FAF downloader's Rating-lookup tab. rating = the entry's
+// `rating` attribute if present, else round(mean - 3*deviation); newest entry on/before the cutoff.
+async function fafJournalRating(playerFilter, lbName, cutoffIso, token) {
+  const filter = playerFilter + ';leaderboard.technicalName==' + rsqlQuote(lbName) + ';createTime=le=' + rsqlQuote(cutoffIso);
+  const path = '/data/leaderboardRatingJournal?filter=' + encodeURIComponent(filter) + '&sort=-createTime&page%5Bsize%5D=1&include=leaderboard';
+  const headers = { 'Accept': 'application/vnd.api+json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const r = await httpsRequest({ host: 'api.faforever.com', path, method: 'GET', headers });
   let rating = null;
   try {
     if (r.status === 200) {
       const row = (JSON.parse(r.text).data || [])[0];
       if (row && row.attributes) {
-        const mean = Number(row.attributes.meanAfter), dev = Number(row.attributes.deviationAfter);
-        if (isFinite(mean) && isFinite(dev)) rating = Math.max(0, Math.round(mean - 3 * dev));
+        const a = row.attributes;
+        if (a.rating != null && isFinite(Number(a.rating))) rating = Math.round(Number(a.rating));
+        else {
+          const mean = Number(a.meanAfter), dev = Number(a.deviationAfter);
+          if (isFinite(mean) && isFinite(dev)) rating = Math.max(0, Math.round(mean - 3 * dev));
+        }
       }
     }
   } catch (e) {}
   return { filter, status: r.status, rating, body: (r.text || '').slice(0, 500) };
 }
 
-// Try the player path via gamePlayerStats first, then a direct player filter. Returns a detailed
-// probe object (used by both the signup fetch and the /api/my/rating-debug diagnostic).
-async function fafRatingProbe(fafId, ratingType, asOfMs) {
-  const lb = FAF_LEADERBOARD_ID[ratingType];
-  const out = { fafId, ratingType, leaderboardId: lb || null, cutoff: null, attempts: [], rating: null };
-  if (!lb || !fafId) return out;
-  const isoQuoted = '"' + fafIso(asOfMs || Date.now()) + '"';
-  out.cutoff = isoQuoted;
+// Player path via gamePlayerStats (the downloader's confirmed filter), with a direct player.id
+// fallback. Returns a detailed probe (used by signup and the /api/my/rating-debug diagnostic).
+async function fafRatingProbe(fafId, ratingType, asOfMs, token) {
+  const lbName = FAF_LEADERBOARD_NAME[ratingType];
+  const out = { fafId, ratingType, leaderboard: lbName || null, cutoff: null, hasToken: !!token, attempts: [], rating: null };
+  if (!lbName || !fafId) return out;
+  const cutoffIso = fafDayEndIso(asOfMs || Date.now());
+  out.cutoff = cutoffIso;
   const filters = ['gamePlayerStats.player.id==' + fafId, 'player.id==' + fafId];
   for (const pf of filters) {
     let a;
-    try { a = await fafJournalRating(pf, lb, isoQuoted); }
+    try { a = await fafJournalRating(pf, lbName, cutoffIso, token); }
     catch (e) { a = { filter: pf, status: 'error', rating: null, body: String(e && e.message) }; }
     out.attempts.push(a);
     if (a.rating != null) { out.rating = a.rating; break; }
@@ -579,8 +612,8 @@ async function fafRatingProbe(fafId, ratingType, asOfMs) {
   return out;
 }
 
-async function fafFetchRating(fafId, ratingType, asOfMs) {
-  try { return (await fafRatingProbe(fafId, ratingType, asOfMs)).rating; }
+async function fafFetchRating(fafId, ratingType, asOfMs, token) {
+  try { return (await fafRatingProbe(fafId, ratingType, asOfMs, token)).rating; }
   catch (e) { return null; }
 }
 
@@ -650,18 +683,23 @@ async function handleAuth(req, res, url) {
       return redirect(res, '/?login=error');
     }
     if (tokenResp.status !== 200) return redirect(res, '/?login=error');
-    let accessToken;
-    try { accessToken = JSON.parse(tokenResp.text).access_token; } catch (e) { return redirect(res, '/?login=error'); }
+    let tok;
+    try { tok = JSON.parse(tokenResp.text); } catch (e) { return redirect(res, '/?login=error'); }
+    const accessToken = tok.access_token;
     if (!accessToken) return redirect(res, '/?login=error');
 
     // resolve identity
     const ident = await fafFetchIdentity(accessToken);
     if (!ident.fafId && !ident.fafName) return redirect(res, '/?login=error');
 
-    // create a server-side session, hand the browser an httpOnly cookie
+    // create a server-side session, hand the browser an httpOnly cookie.
+    // Keep the FAF token bundle so we can read the player's own data (e.g. rating) on their behalf.
     pruneSessions();
     const sid = randToken(32);
-    db.sessions[sid] = { fafId: ident.fafId, fafName: ident.fafName, exp: Date.now() + SESSION_TTL_MS };
+    db.sessions[sid] = {
+      fafId: ident.fafId, fafName: ident.fafName, exp: Date.now() + SESSION_TTL_MS,
+      faf: { access: accessToken, refresh: tok.refresh_token || null, exp: Date.now() + ((tok.expires_in || 3600) * 1000) }
+    };
     saveDB();
     setSessionCookie(res, sid, SESSION_TTL_MS);
     const dest = (pending.returnTo && pending.returnTo.charAt(0) === '/') ? pending.returnTo : '/';
@@ -1024,7 +1062,8 @@ async function handleAPI(req, res, url) {
     const type = url.searchParams.get('type') || 'global';
     const dateStr = url.searchParams.get('date');
     const asOfMs = dateStr ? (new Date(dateStr).getTime() || Date.now()) : Date.now();
-    const probe = await fafRatingProbe(sess.fafId, type, asOfMs);
+    const token = await fafValidToken(sess);
+    const probe = await fafRatingProbe(sess.fafId, type, asOfMs, token);
     return json(res, 200, probe);
   }
 
@@ -1234,8 +1273,9 @@ async function handleAPI(req, res, url) {
 
       let rating;
       if (t.ratingType && t.ratingType !== 'none') {
-        // Rating is fetched from FAF as of the tournament's rating date; players can't enter it.
-        rating = fafId ? await fafFetchRating(fafId, t.ratingType, t.ratingDate) : null;
+        // Rating is fetched from FAF (as the signing-up player) as of the tournament's date.
+        const token = await fafValidToken(sess);
+        rating = fafId ? await fafFetchRating(fafId, t.ratingType, t.ratingDate, token) : null;
       } else {
         rating = parseInt(b.rating, 10);
         if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a FAF rating (0\u20134000)');
