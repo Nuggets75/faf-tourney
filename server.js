@@ -88,6 +88,7 @@ function loadDB() {
   if (!Array.isArray(db.hostRequests)) db.hostRequests = [];
   if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
   if (!Array.isArray(db.articles)) db.articles = [];
+  if (!db.profiles || typeof db.profiles !== 'object') db.profiles = {};   // per-FAF-account profile (e.g. discord handle)
   // migrate v1 records so old test tournaments don't crash the client
   let changed = false;
   for (const t of Object.values(db.tournaments)) {
@@ -689,9 +690,10 @@ async function handleAuth(req, res, url) {
   // status endpoint always works (tells the client whether to show the FAF button + who's logged in)
   if (sub === 'me') {
     const sess = currentSession(req);
+    const prof = sess ? (db.profiles[sess.fafId] || {}) : {};
     return json(res, 200, {
       enabled: FAF_OAUTH_ON,
-      user: sess ? { fafId: sess.fafId, fafName: sess.fafName } : null
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '' } : null
     });
   }
 
@@ -1120,6 +1122,19 @@ async function handleAPI(req, res, url) {
     return json(res, 200, arts);
   }
 
+  if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'profile' && method === 'POST') {
+    const sess = currentSession(req);
+    if (!sess || !sess.fafId) return json(res, 401, { error: 'Log in with FAF first' });
+    const b = await readBody(req);
+    // permissive: Discord handles are 2-32 chars (legacy Name#1234 allowed); strip HTML-dangerous chars
+    const discord = String(b.discord || '').trim().replace(/[<>"'&\\]/g, '').slice(0, 40);
+    if (!db.profiles[sess.fafId]) db.profiles[sess.fafId] = {};
+    db.profiles[sess.fafId].discord = discord;   // empty string clears it
+    db.profiles[sess.fafId].updatedAt = Date.now();
+    saveDB();
+    return json(res, 200, { ok: true, discord });
+  }
+
   if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'pending' && method === 'GET') {
     const sess = currentSession(req);
     const out = [];
@@ -1174,6 +1189,14 @@ async function handleAPI(req, res, url) {
         const mine = t.players.find(p => p.fafId === sess.fafId);
         if (mine) signedUpId = mine.id;
       }
+      // Discord handles are contact info: visible to organizers and fellow signed-up players,
+      // never to the anonymous public. Copy the player objects so the db is never mutated.
+      const canSeeContacts = organizer || !!signedUpId;
+      view.players = t.players.map(p => {
+        const c = Object.assign({}, p);
+        if (canSeeContacts && p.fafId && db.profiles[p.fafId] && db.profiles[p.fafId].discord) c.discord = db.profiles[p.fafId].discord;
+        return c;
+      });
       view.viewer = {
         admin: isAdmin(t, tok) ? 1 : 0,
         organizer: organizer ? 1 : 0,

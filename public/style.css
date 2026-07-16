@@ -284,6 +284,7 @@ tbody tr:hover { background: #ffffff05; }
 .datebar button { margin-left: auto; }
 .tdate { color: var(--amber); }
 .tcat { color: var(--amber); font-size: 13px; font-weight: normal; }
+.dctag { color: var(--muted, #8a97a8); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
 .seedlist { list-style: none; margin: 0; padding: 0; }
 .seeditem { display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin-bottom: 6px; background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 4px; cursor: grab; }
 .seeditem.dragging { opacity: .5; border-color: var(--amber); }

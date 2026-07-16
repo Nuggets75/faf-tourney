@@ -559,14 +559,25 @@ function openImportWindow() {
 
 function loginFlow() {
   if (me()) {
+    const curDc = (fafAuth.user && fafAuth.user.discord) || '';
     modal(`
       <h3>Logged in as ${esc(me())} <span class="verifiedchip">FAF</span></h3>
       <p class="muted small">Your FAF account is linked. Signup forms use your FAF name.</p>
+      <label>Discord handle <span class="muted small">(optional — shown to organizers and fellow signed-up players so they can reach you)</span></label>
+      <input type="text" id="lgDiscord" maxlength="40" autocomplete="off" placeholder="e.g. nuggets" value="${esc(curDc)}">
       <div class="actions">
         <button class="btn ghost" id="lgClose">Close</button>
+        <button class="btn primary" id="lgSaveDc">Save</button>
         <button class="btn danger" id="lgOut">Log out</button>
       </div>`, root => {
       root.querySelector('#lgClose').onclick = closeModal;
+      root.querySelector('#lgSaveDc').onclick = async () => {
+        try {
+          await api('/api/my/profile', { discord: root.querySelector('#lgDiscord').value });
+          await refreshFafAuth();
+          closeModal(); toast('Saved'); route();
+        } catch (e) { toast(e.message, true); }
+      };
       root.querySelector('#lgOut').onclick = async () => {
         try { await fetch('/auth/faf/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
         fafAuth.user = null;

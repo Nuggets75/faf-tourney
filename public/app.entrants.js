@@ -76,7 +76,7 @@ function drawPlayers(el) {
     const canReplace = admin && p.teamId;
     tr.innerHTML = `
       <td class="mono muted">${i + 1}</td>
-      <td>${esc(p.name)}${badge}</td>
+      <td>${esc(p.name)}${badge}${p.discord ? ' <span class="dctag" title="Discord — reach this player here">\uD83D\uDCAC ' + esc(p.discord) + '</span>' : ''}</td>
       <td class="mono">${p.rating != null ? p.rating : '<span class="muted">—</span>'}</td>
       ${T.teamSize > 1 ? `<td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>` : ''}
       ${admin ? `<td style="text-align:right;white-space:nowrap">
@@ -264,7 +264,7 @@ function drawOpenTeams(el) {
     const isCap = myTeam.captainId === myPlayer.id;
     const full = myTeam.playerIds.length >= size;
     html += `<div class="panel section"><h2>Your team: ${esc(myTeam.name)} ${full ? '<span class="idbadge verified">full</span>' : '<span class="idbadge late">' + myTeam.playerIds.length + '/' + size + '</span>'}</h2>
-      <div class="teammates">${mates.map(m => `<div class="teammate">${esc(m.name)}${m.id === myTeam.captainId ? ' <span class="cap-tag">captain</span>' : ''}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}</div>`).join('')}</div>
+      <div class="teammates">${mates.map(m => `<div class="teammate">${esc(m.name)}${m.id === myTeam.captainId ? ' <span class="cap-tag">captain</span>' : ''}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div style="margin-top:10px">${myTeam.checkedIn ? '<span class="idbadge verified">Checked in \u2713</span> <button class="btn ghost small" id="otUncheck" style="margin-left:6px">Undo check-in</button>' : '<button class="btn primary small" id="otCheckin">Check in</button> <span class="muted small" style="margin-left:8px">Any team member can check in.</span>'}</div>` : ''}
       <div style="margin-top:12px">
         <button class="btn ghost small" id="otLeave">Leave team</button>
@@ -314,7 +314,7 @@ function drawOpenTeams(el) {
     const openSlots = size - tm.playerIds.length;
     return `<div class="teamcard ${full ? 'full' : 'open'}">
       <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
-      <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}</div>`).join('')}</div>
+      <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
       ${canJoin && !full ? ((tm.joinRequests || []).some(r => r.playerId === myPlayer.id)
         ? `<div class="tc-pending"><span class="muted small">Request pending</span> <button class="btn ghost small" data-cancel-join="${tm.id}">Cancel</button></div>`
