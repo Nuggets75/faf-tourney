@@ -9,23 +9,12 @@ async function renderHome() {
   let list = [];
   try { list = await api('/api/tournaments'); } catch (e) {}
 
-  const loginPanel = me() ? '' : (fafAuth.enabled ? `
+  const loginPanel = me() ? '' : `
     <div class="panel section">
       <h2>Log <span class="h2-strong">In</span></h2>
       <p class="muted small" style="margin-bottom:10px">Log in with your FAF account to sign up and take part. You act as yourself only.</p>
       <button class="btn faf" id="homeLgFaf" style="max-width:280px">Log in with FAF</button>
-    </div>` : `
-    <div class="panel section">
-      <h2>Log <span class="h2-strong">In</span></h2>
-      <div class="row" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
-        <div style="flex:1;min-width:220px">
-          <label style="margin-top:0">FAF name</label>
-          <input type="text" id="homeLgName" maxlength="30" placeholder="Your in-game name" autocomplete="off">
-        </div>
-        <button class="btn primary" id="homeLgGo" style="padding-top:10px;padding-bottom:10px">Log in</button>
-      </div>
-      <div class="muted small" style="margin-top:10px">Your name pre-fills every signup form.</div>
-    </div>`);
+    </div>`;
 
   const completed = list.filter(t => t.status === 'finished')
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
@@ -41,18 +30,6 @@ async function renderHome() {
       <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
     </div>`).join('') + '</div>';
 
-  const hlName = document.getElementById('homeLgName');
-  if (hlName) {
-    const go = () => {
-      const n = hlName.value.trim();
-      if (!n) return toast('Enter your name', true);
-      localStorage.setItem('cmdrName', n);
-      toast('Logged in as ' + n);
-      route();
-    };
-    hlName.onkeydown = e => { if (e.key === 'Enter') go(); };
-    document.getElementById('homeLgGo').onclick = go;
-  }
   const hlFaf = document.getElementById('homeLgFaf');
   if (hlFaf) hlFaf.onclick = () => {
     const returnTo = location.pathname + location.search;
@@ -72,6 +49,7 @@ async function renderHome() {
           <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px">
+          ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
           <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
           ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}
         </span>`;
@@ -229,6 +207,16 @@ async function renderHost() {
         <select id="cSeed">
           <option value="rating" selected>By rating (entered at signup)</option>
           <option value="random">Random</option>
+          <option value="manual">Manual (organizer arranges the seeds)</option>
+        </select>
+
+        <label>Rating used</label>
+        <select id="cRatingType">
+          <option value="global" selected>Global</option>
+          <option value="1v1">1v1 (ladder)</option>
+          <option value="2v2">2v2</option>
+          <option value="3v3">3v3</option>
+          <option value="4v4">4v4</option>
         </select>
         <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
           <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
@@ -313,6 +301,8 @@ async function renderHost() {
         cutTo: cutMode.value === '1' ? document.getElementById('cFfaCutTo').value : 0,
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value,
+        ratingType: document.getElementById('cRatingType').value,
+        admin: siteAdmin() || undefined,
         veto: { enabled: document.getElementById('cVeto').checked, mode: 'upfront' },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
       });

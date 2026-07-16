@@ -46,9 +46,8 @@ function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
 let fafAuth = { enabled: false, user: null };
 // the effective logged-in name: a verified FAF session wins over the manual name
 function me() {
-  if (fafAuth.user && fafAuth.user.fafName) return fafAuth.user.fafName;
-  if (fafAuth.enabled) return '';   // FAF login configured: identity comes only from FAF, never a stored name
-  return localStorage.getItem('cmdrName') || '';
+  // Identity comes only from FAF login. There is no name-based login anymore.
+  return (fafAuth.user && fafAuth.user.fafName) || '';
 }
 function isFafVerified() { return !!(fafAuth.user && fafAuth.user.fafName); }
 async function refreshFafAuth() {
@@ -424,7 +423,7 @@ function drawTopbar(modeText) {
   document.getElementById('importBtn').onclick = importFlow;
   document.getElementById('hostBtn').onclick = async () => {
     // hosting requires FAF login (when configured)
-    if (fafAuth.enabled && !isFafVerified()) {
+    if (fafAuth.enabled && !isFafVerified() && !siteAdmin()) {
       toast('Log in with FAF to host a tournament', true);
       return requireLoginThen();
     }
@@ -526,110 +525,36 @@ function openImportWindow() {
 }
 
 function loginFlow() {
-  // Already logged in — show status and the right logout control.
   if (me()) {
-    const verified = isFafVerified();
     modal(`
-      <h3>Logged in as ${esc(me())}${verified ? ' <span class="verifiedchip">FAF verified</span>' : ''}</h3>
-      <p class="muted small">${verified ? 'Your FAF account is linked. Signup forms use your FAF name.' : 'Signup forms use this name automatically.'}</p>
+      <h3>Logged in as ${esc(me())} <span class="verifiedchip">FAF</span></h3>
+      <p class="muted small">Your FAF account is linked. Signup forms use your FAF name.</p>
       <div class="actions">
         <button class="btn ghost" id="lgClose">Close</button>
         <button class="btn danger" id="lgOut">Log out</button>
       </div>`, root => {
       root.querySelector('#lgClose').onclick = closeModal;
       root.querySelector('#lgOut').onclick = async () => {
-        if (isFafVerified()) {
-          try { await fetch('/auth/faf/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
-          fafAuth.user = null;
-        }
-        localStorage.removeItem('cmdrName');
+        try { await fetch('/auth/faf/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
+        fafAuth.user = null;
         closeModal(); route();
       };
     });
     return;
   }
-  // Not logged in.
-  if (fafAuth.enabled) {
-    // FAF login is the only way in.
-    modal(`
-      <h3>Log in</h3>
-      <p class="muted small">Log in with your FAF account. This verifies your identity — you sign up and act as yourself only.</p>
-      <button class="btn faf" id="lgFaf">Log in with FAF</button>
-      <div class="actions"><button class="btn ghost" id="lgCancel">Cancel</button></div>`, root => {
-      root.querySelector('#lgCancel').onclick = closeModal;
-      root.querySelector('#lgFaf').onclick = () => {
-        const returnTo = location.pathname + location.search;
-        location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
-      };
-    });
-    return;
-  }
-  // Legacy fallback (FAF login not configured on this server): manual name.
+  // Not logged in — FAF is the only way in.
   modal(`
     <h3>Log in</h3>
-    <p class="muted small">Your name pre-fills every signup form.</p>
-    <label>FAF name</label>
-    <input type="text" id="lgName" maxlength="30" autocomplete="off">
-    <div class="actions">
-      <button class="btn ghost" id="lgCancel">Cancel</button>
-      <button class="btn primary" id="lgGo">Use this name</button>
-    </div>`, root => {
-    const inp = root.querySelector('#lgName');
-    inp.focus();
-    const go = () => {
-      const n = inp.value.trim();
-      if (!n) return toast('Enter your name', true);
-      localStorage.setItem('cmdrName', n);
-      closeModal();
-      toast('Logged in as ' + n);
-      route();
-    };
-    inp.onkeydown = e => { if (e.key === 'Enter') go(); };
+    <p class="muted small">Log in with your FAF account. You sign up and act as yourself only.</p>
+    <button class="btn faf" id="lgFaf">Log in with FAF</button>
+    <div class="actions"><button class="btn ghost" id="lgCancel">Cancel</button></div>`, root => {
     root.querySelector('#lgCancel').onclick = closeModal;
-    root.querySelector('#lgGo').onclick = go;
+    root.querySelector('#lgFaf').onclick = () => {
+      const returnTo = location.pathname + location.search;
+      location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(returnTo);
+    };
   });
 }
-
-// ---- site admin console: /siteadmin ----
-let saTab = 'requests';
-let saData = null;
-
-async function renderSiteAdmin() {
-  setTitle('Site admin');
-  drawTopbar('');
-  const app = document.getElementById('app');
-  if (!siteAdmin()) {
-    app.innerHTML = `<div class="page"><div class="panel"><div class="empty">
-      Site admin only — use the lock button in the top right to log in.</div></div></div>`;
-    return;
-  }
-  app.innerHTML = `<div class="page">
-    <h1 style="margin:0 0 14px">Site admin</h1>
-    <div class="tabs" style="margin-bottom:14px">
-      <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && (saData.requests || []).filter(r => r.status === 'pending').length) ? ' (' + saData.requests.filter(r => r.status === 'pending').length + ')' : ''}</button>
-      <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
-      <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
-      <button class="tab ${saTab === 'articles' ? 'active' : ''}" data-satab="articles">Articles</button>
-    </div>
-    <div id="saBody"><div class="panel"><div class="empty">Loading…</div></div></div>
-  </div>`;
-  app.querySelectorAll('[data-satab]').forEach(b => b.onclick = () => { saTab = b.dataset.satab; renderSiteAdmin(); });
-
-  try {
-    const r = await fetch('/api/siteadmin/data', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: siteAdmin() })
-    });
-    saData = await r.json();
-    if (!r.ok) throw new Error(saData.error || 'Failed to load');
-  } catch (e) {
-    document.getElementById('saBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>';
-    return;
-  }
-  const body = document.getElementById('saBody');
-  if (saTab === 'requests') drawSaRequests(body); else if (saTab === 'archived') drawSaArchived(body); else if (saTab === 'articles') drawSaArticles(body); else drawSaLogs(body);
-}
-
 function drawSaRequests(el) {
   const reqs = saData.requests || [];
   const pending = reqs.filter(r => r.status === 'pending');

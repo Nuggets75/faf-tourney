@@ -321,7 +321,7 @@ function publicView(t) {
     teamSize: t.teamSize, draftOrder: t.draftOrder,
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
-    cfg: t.cfg || null, seeding: t.seeding,
+    cfg: t.cfg || null, seeding: t.seeding, ratingType: t.ratingType || 'global',
     veto: t.veto || { enabled: false, mode: 'upfront' },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
@@ -639,7 +639,7 @@ async function handleAPI(req, res, url) {
     // Hosting requires a FAF login (unless FAF login isn't configured yet, in which case
     // the legacy flow still applies so the site keeps working before go-live).
     const hostSess = currentSession(req);
-    if (FAF_OAUTH_ON && !hostSess) return json(res, 401, { error: 'Log in with FAF to host a tournament' });
+    if (FAF_OAUTH_ON && !hostSess && !(GADMIN && b.admin === GADMIN)) return json(res, 401, { error: 'Log in with FAF to host a tournament' });
     // Once FAF login is live, hosting is approval-only: the site admin grants it per account.
     if (!canHost(req, b.admin)) {
       const pending = (db.hostRequests || []).some(r => r.fafId === (hostSess && hostSess.fafId) && r.status === 'pending');
@@ -698,7 +698,8 @@ async function handleAPI(req, res, url) {
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
       plan, maxTeams,
       cfg: null, maps: {}, mapDb: [], mapPools: [], poolAssign: {},
-      seeding: (b.seeding === 'rating') ? 'rating' : 'random',
+      seeding: (['rating', 'random', 'manual'].indexOf(b.seeding) >= 0) ? b.seeding : 'rating',
+      ratingType: (['global', '1v1', '2v2', '3v3', '4v4'].indexOf(b.ratingType) >= 0) ? b.ratingType : 'global',
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
@@ -905,11 +906,14 @@ async function handleAPI(req, res, url) {
   }
 
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
+    const sess = currentSession(req);
+    const myFid = sess && sess.fafId;
     const list = Object.values(db.tournaments)
-      .filter(t => t.published !== false && !t.archived)   // drafts and archived are hidden from the public list
+      .filter(t => !t.archived && (t.published !== false || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0)))   // drafts hidden from the public, but the organizer sees their own
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
         id: t.id, name: t.name, status: t.status, category: t.category || null,
+        published: t.published !== false ? 1 : 0,
         competition: t.competition, bracketType: t.bracketType,
         teamSize: t.teamSize, players: t.players.length,
         teams: t.teams.length, createdAt: t.createdAt,
@@ -1554,7 +1558,7 @@ async function handleAPI(req, res, url) {
       t.teamSize = teamSize;
       t.formation = formation;
       if (b.draftOrder !== undefined) t.draftOrder = b.draftOrder === 'snake' ? 'snake' : 'linear';
-      if (b.seeding !== undefined) t.seeding = b.seeding === 'rating' ? 'rating' : 'random';
+      if (b.seeding !== undefined) t.seeding = ['rating', 'random', 'manual'].indexOf(b.seeding) >= 0 ? b.seeding : t.seeding;
       if (b.maxTeams !== undefined) t.maxTeams = intIn(b.maxTeams, 0, 128, t.maxTeams);
 
       if (competition === 'team') {

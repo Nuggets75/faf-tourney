@@ -5,7 +5,7 @@ function drawPlayers(el) {
   let html = '';
 
   if (T.status === 'signup') {
-    const teamReg = (T.formation === 'premade' && T.teamSize > 1);
+    const teamReg = (T.formation === 'premade' && T.teamSize > 1) && !fafAuth.enabled;
     if (teamReg) {
       const rows = [];
       for (let i = 0; i < T.teamSize; i++) {
@@ -28,6 +28,7 @@ function drawPlayers(el) {
       const helpText = T.competition === 'ffa' && T.teamSize === 1 ? 'Every player enters solo. Lobbies are grouped automatically.'
             : T.formation === 'draft' ? 'The organizer picks captains from the player list once signups close, then captains draft their teams.'
             : T.formation === 'open' ? 'After signing up here, go to the Teams tab to create or join a team.'
+            : (T.formation === 'premade' && T.teamSize > 1) ? 'Sign up and enter your team name. Teammates enter the exact same name to be grouped together.'
             : 'Solo bracket — every signup is an entrant.';
       if (viewerSignedUp()) {
         html += `<div class="panel section"><h2>Sign up</h2>
@@ -39,7 +40,8 @@ function drawPlayers(el) {
           <div class="grid2">
             <div>
               ${fafAuth.enabled ? '<p class="muted small">Signing up as <strong>' + esc(me()) + '</strong> (your FAF account).</p>' : '<label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">'}
-              <label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
+              ${(T.formation === 'premade' && T.teamSize > 1) ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Your team name" autocomplete="off">' : ''}
+              <label>Rating${T.ratingType && T.ratingType !== 'global' ? ' (' + esc(T.ratingType) + ')' : ' (global)'}</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
               <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
             </div>
             <div class="muted small" style="align-self:end">${esc(helpText)}</div>
@@ -54,7 +56,7 @@ function drawPlayers(el) {
   }
 
   html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.length})</span></h2>
-    <table><thead><tr><th>#</th><th>Name</th><th>Rating</th>${T.formation === 'premade' && T.teamSize > 1 ? '<th>Signup team</th>' : ''}<th>Status</th>${admin ? '<th></th>' : ''}</tr></thead>
+    <table><thead><tr><th>#</th><th>Name</th><th>Rating</th>${T.teamSize > 1 ? '<th>Team</th>' : ''}${admin ? '<th></th>' : ''}</tr></thead>
     <tbody id="pRows"></tbody></table>
     ${T.players.length ? '' : '<div class="empty">No signups yet.</div>'}</div>`;
 
@@ -63,11 +65,10 @@ function drawPlayers(el) {
   const rows = document.getElementById('pRows');
   T.players.forEach((p, i) => {
     const tr = document.createElement('tr');
-    const inTeam = p.teamId ? teamName(p.teamId) : (T.subs && T.subs.includes(p.id) ? 'Substitute' : '—');
+    const inTeam = p.teamId ? teamName(p.teamId) : (p.teamName || (T.subs && T.subs.includes(p.id) ? 'Substitute' : '—'));
     // identity badges
     let badge = '';
-    if (p.fafId) badge = ' <span class="idbadge verified" title="Verified FAF account">\u2713</span>';
-    else if (p.manual) badge = ' <span class="idbadge manual" title="Added manually by organizer">M</span>';
+    if (p.manual) badge = ' <span class="idbadge manual" title="Added manually by organizer">M</span>';
     if (p.late) badge += ' <span class="idbadge late" title="Late signup">late</span>';
     // replace button: for players currently IN a team (mid-tournament drop-out replacement)
     const canReplace = admin && p.teamId;
@@ -75,8 +76,7 @@ function drawPlayers(el) {
       <td class="mono muted">${i + 1}</td>
       <td>${esc(p.name)}${badge}</td>
       <td class="mono">${p.rating != null ? p.rating : '<span class="muted">—</span>'}</td>
-      ${T.formation === 'premade' && T.teamSize > 1 ? `<td>${esc(p.teamName || '—')}</td>` : ''}
-      <td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>
+      ${T.teamSize > 1 ? `<td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>` : ''}
       ${admin ? `<td style="text-align:right;white-space:nowrap">
         ${canReplace ? `<button class="btn ghost small" data-replace="${p.id}">Replace</button>` : ''}
         <button class="btn ghost small" data-edit="${p.id}">Edit</button>
