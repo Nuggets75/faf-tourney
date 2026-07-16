@@ -1274,8 +1274,17 @@ async function handleAPI(req, res, url) {
       let rating;
       if (t.ratingType && t.ratingType !== 'none') {
         // Rating is fetched from FAF (as the signing-up player) as of the tournament's date.
+        // If it can't be fetched, the signup is refused rather than creating an unrated entry.
+        if (!fafId) return bad(res, 'Your FAF identity is missing \u2014 please log in again');
         const token = await fafValidToken(sess);
-        rating = fafId ? await fafFetchRating(fafId, t.ratingType, t.ratingDate, token) : null;
+        if (!token) return json(res, 409, { error: 'This tournament pulls your rating from FAF. Please log out and log back in (top-right), then sign up again.', needsRelogin: 1 });
+        const probe = await fafRatingProbe(fafId, t.ratingType, t.ratingDate, token);
+        if (probe.rating == null) {
+          const any200 = probe.attempts.some(a => a.status === 200);
+          if (any200) return bad(res, 'FAF has no ' + t.ratingType + ' rating for your account as of the tournament date \u2014 you may not have played ranked ' + t.ratingType + ' games by then.');
+          return bad(res, 'Could not fetch your rating from FAF right now \u2014 please try again in a moment.');
+        }
+        rating = probe.rating;
       } else {
         rating = parseInt(b.rating, 10);
         if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a FAF rating (0\u20134000)');
