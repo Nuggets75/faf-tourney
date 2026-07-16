@@ -854,7 +854,7 @@ async function handleAPI(req, res, url) {
 
   // ---- site admin data + decisions ----
   if (parts.length === 3 && parts[1] === 'siteadmin' && method === 'POST') {
-    const b = await readBody(req);
+    const b = await readBody(req, 8 * 1024 * 1024);   // article_image carries base64 images up to 5MB
     if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
     if (b.password !== GADMIN) return json(res, 403, { error: 'Wrong password' });
     const act = parts[2];
@@ -1354,6 +1354,7 @@ async function handleAPI(req, res, url) {
       } else {
         return bad(res, 'Players already on a team can\u2019t be removed \u2014 use Edit to substitute them instead');
       }
+      clearJoinRequests(p.id);
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -1374,9 +1375,15 @@ async function handleAPI(req, res, url) {
         const mine = t.players.find(p => p.fafId === sess.fafId);
         if (mine) return mine;
       }
-      // pre-go-live / organizer-specified fallback
-      if (reqBody && reqBody.playerId) return playerById(t, reqBody.playerId);
+      // A raw playerId is only trusted pre-go-live (no FAF login) or from an organizer.
+      // Without this check anyone could act as any player just by sending their id.
+      if (reqBody && reqBody.playerId && (!FAF_OAUTH_ON || canOrganize(t, req, reqBody))) return playerById(t, reqBody.playerId);
       return null;
+    }
+
+    // drop a player's pending join requests everywhere (they got a team, withdrew, or were removed)
+    function clearJoinRequests(playerId) {
+      (t.teams || []).forEach(tm => { if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== playerId); });
     }
 
     if (sub === 'create_team') {
@@ -1391,6 +1398,7 @@ async function handleAPI(req, res, url) {
       const team = { id: 't' + uid(4), name, seed: 0, captainId: me.id, playerIds: [me.id], captainToken: uid(10), eliminated: false, out: null, createdAt: now(), checkedIn: false };
       t.teams.push(team);
       me.teamId = team.id;
+      clearJoinRequests(me.id);
       saveDB();
       return json(res, 200, { ok: true, teamId: team.id });
     }
@@ -1425,6 +1433,7 @@ async function handleAPI(req, res, url) {
       const team = { id: 't' + uid(4), name, seed: 0, captainId: p.id, playerIds: [p.id], captainToken: uid(10), eliminated: false, out: null, createdAt: now(), checkedIn: false };
       t.teams.push(team);
       p.teamId = team.id;
+      clearJoinRequests(p.id);
       saveDB();
       return json(res, 200, { ok: true, teamId: team.id });
     }
@@ -1568,6 +1577,7 @@ async function handleAPI(req, res, url) {
         if (dest.playerIds.length >= t.teamSize) return bad(res, 'That team is full');
         dest.playerIds.push(p.id);
         p.teamId = dest.id;
+        clearJoinRequests(p.id);
       }
       saveDB();
       return json(res, 200, { ok: true });
