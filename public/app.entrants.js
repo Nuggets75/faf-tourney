@@ -42,7 +42,7 @@ function drawPlayers(el) {
               ${fafAuth.enabled ? '<p class="muted small">Signing up as <strong>' + esc(me()) + '</strong> (your FAF account).</p>' : '<label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">'}
               ${(T.formation === 'premade' && T.teamSize > 1) ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Your team name" autocomplete="off">' : ''}
               ${(T.ratingType && T.ratingType !== 'none')
-                ? '<p class="muted small">Your <strong>' + esc(T.ratingType === 'global' ? 'Global' : T.ratingType === '1v1' ? '1v1 / ladder' : T.ratingType) + '</strong> rating' + (T.ratingDate ? ' as of ' + new Date(T.ratingDate).toLocaleDateString() : '') + ' is pulled from FAF automatically when you sign up.</p>'
+                ? '<p class="muted small">Rating for this tournament: <strong>' + esc(ratingTypeLabel(T.ratingType)) + '</strong>, taken <strong>' + (T.ratingDate ? 'as of ' + new Date(T.ratingDate).toLocaleDateString() : 'at signup time') + '</strong>. It is pulled from FAF automatically \u2014 you don\u2019t enter it.</p>'
                 : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
               <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
             </div>

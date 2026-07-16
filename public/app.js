@@ -42,6 +42,12 @@ function tourneyId() {
   return m ? m[1] : null;
 }
 
+function ratingTypeLabel(rt) {
+  return rt === 'global' ? 'Global' : rt === '1v1' ? '1v1 / ladder'
+       : rt === 'rc' ? "Fearghal's RC (best of 2v2/3v3/4v4/Global, blended to 300 games)"
+       : rt || 'Global';
+}
+
 // Cross-tournament "waiting on you" banner: join requests to approve, your draft pick,
 // your veto turn, check-in. The current tournament is excluded (its own in-page banner covers it).
 async function refreshPending() {
@@ -572,7 +578,7 @@ function loginFlow() {
   // Not logged in — FAF is the only way in.
   modal(`
     <h3>Log in</h3>
-    <p class="muted small">Log in with your FAF account. You sign up and act as yourself only.</p>
+    <p class="muted small">Log in with your FAF account.</p>
     <button class="btn faf" id="lgFaf">Log in with FAF</button>
     <div class="actions"><button class="btn ghost" id="lgCancel">Cancel</button></div>`, root => {
     root.querySelector('#lgCancel').onclick = closeModal;

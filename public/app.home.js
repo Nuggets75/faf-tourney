@@ -12,7 +12,7 @@ async function renderHome() {
   const loginPanel = me() ? '' : `
     <div class="panel section">
       <h2>Log <span class="h2-strong">In</span></h2>
-      <p class="muted small" style="margin-bottom:10px">Log in with your FAF account to sign up and take part. You act as yourself only.</p>
+      <p class="muted small" style="margin-bottom:10px">Log in with your FAF account to sign up and take part.</p>
       <button class="btn faf" id="homeLgFaf" style="max-width:280px">Log in with FAF</button>
     </div>`;
 
@@ -217,6 +217,7 @@ async function renderHost() {
           <option value="2v2">2v2 (fetched)</option>
           <option value="3v3">3v3 (fetched)</option>
           <option value="4v4">4v4 (fetched)</option>
+          <option value="rc">Fearghal's RC — best of 2v2/3v3/4v4/Global, blended to 300 games (fetched)</option>
           <option value="none">None — players enter their own rating</option>
         </select>
 
@@ -590,7 +591,7 @@ function drawTournament() {
 function gameInfoPanel() {
   const cells = [];
   if (T.category) cells.push(['Type', T.category === 'official' ? 'Official' : 'Community']);
-  if (T.ratingType && T.ratingType !== 'none') cells.push(['Rating', (T.ratingType === 'global' ? 'Global' : T.ratingType === '1v1' ? '1v1 / ladder' : T.ratingType) + (T.ratingDate ? ', as of ' + new Date(T.ratingDate).toLocaleDateString() : ' (at signup)') + ' — pulled from FAF']);
+  if (T.ratingType && T.ratingType !== 'none') cells.push(['Rating', ratingTypeLabel(T.ratingType) + (T.ratingDate ? ', taken as of ' + new Date(T.ratingDate).toLocaleDateString() : ', taken at signup time') + ' — pulled from FAF']);
   else cells.push(['Rating', 'Entered by players']);
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
   if (T.description) cells.push(['Briefing', T.description]);

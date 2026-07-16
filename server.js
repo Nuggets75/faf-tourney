@@ -570,16 +570,19 @@ async function fafValidToken(sess) {
 
 // One journal lookup, mirroring the FAF downloader's Rating-lookup tab. rating = the entry's
 // `rating` attribute if present, else round(mean - 3*deviation); newest entry on/before the cutoff.
+// With page[totals], meta.page.totalRecords = number of journal entries up to the cutoff, i.e.
+// the player's rated-game count on that board as of that date (each entry is one rated game).
 async function fafJournalRating(playerFilter, lbName, cutoffIso, token) {
   const filter = playerFilter + ';leaderboard.technicalName==' + rsqlQuote(lbName) + ';createTime=le=' + rsqlQuote(cutoffIso);
-  const path = '/data/leaderboardRatingJournal?filter=' + encodeURIComponent(filter) + '&sort=-createTime&page%5Bsize%5D=1&include=leaderboard';
+  const path = '/data/leaderboardRatingJournal?filter=' + encodeURIComponent(filter) + '&sort=-createTime&page%5Bsize%5D=1&page%5Btotals%5D&include=leaderboard';
   const headers = { 'Accept': 'application/vnd.api+json' };
   if (token) headers['Authorization'] = 'Bearer ' + token;
   const r = await httpsRequest({ host: 'api.faforever.com', path, method: 'GET', headers });
-  let rating = null;
+  let rating = null, games = null;
   try {
     if (r.status === 200) {
-      const row = (JSON.parse(r.text).data || [])[0];
+      const j = JSON.parse(r.text);
+      const row = (j.data || [])[0];
       if (row && row.attributes) {
         const a = row.attributes;
         if (a.rating != null && isFinite(Number(a.rating))) rating = Math.round(Number(a.rating));
@@ -588,9 +591,18 @@ async function fafJournalRating(playerFilter, lbName, cutoffIso, token) {
           if (isFinite(mean) && isFinite(dev)) rating = Math.max(0, Math.round(mean - 3 * dev));
         }
       }
+      // the journal entry carries the running game count (proven live via the downloader);
+      // page-totals meta is the backup
+      if (row && row.attributes && row.attributes.totalGames != null && isFinite(Number(row.attributes.totalGames))) {
+        games = Number(row.attributes.totalGames);
+      }
+      if (games == null) {
+        const tot = j.meta && j.meta.page && j.meta.page.totalRecords;
+        if (tot != null && isFinite(Number(tot))) games = Number(tot);
+      }
     }
   } catch (e) {}
-  return { filter, status: r.status, rating, body: (r.text || '').slice(0, 500) };
+  return { filter, status: r.status, rating, games, body: (r.text || '').slice(0, 500) };
 }
 
 // Player path via gamePlayerStats (the downloader's confirmed filter), with a direct player.id
@@ -613,8 +625,60 @@ async function fafRatingProbe(fafId, ratingType, asOfMs, token) {
 }
 
 async function fafFetchRating(fafId, ratingType, asOfMs, token) {
-  try { return (await fafRatingProbe(fafId, ratingType, asOfMs, token)).rating; }
+  try {
+    if (ratingType === 'rc') return (await fafRcProbe(fafId, asOfMs, token)).rating;
+    return (await fafRatingProbe(fafId, ratingType, asOfMs, token)).rating;
+  }
   catch (e) { return null; }
+}
+
+// ---- Fearghal's RC rating ----
+// The player's highest rating among 2v2 / 3v3 / 4v4 / (Global - 50); 1v1 is excluded.
+// If the top board has fewer than 300 games, the next-highest boards' ratings are blended in,
+// weighted by the games taken from each, until 300 games are covered (or history runs out).
+const RC_BOARDS = ['2v2', '3v3', '4v4', 'global'];
+const RC_TARGET_GAMES = 300;
+const RC_GLOBAL_PENALTY = 50;
+
+function computeRC(boards) {
+  // boards: [{ rating, games }] with the global penalty already applied; ignore empty boards
+  const usable = boards.filter(x => x && x.rating != null && x.games > 0)
+    .sort((a, b) => b.rating - a.rating);
+  if (!usable.length) return null;
+  let sum = 0, used = 0;
+  for (const x of usable) {
+    if (used >= RC_TARGET_GAMES) break;
+    const g = Math.min(x.games, RC_TARGET_GAMES - used);
+    sum += x.rating * g;
+    used += g;
+  }
+  // fewer than 300 total games: average over the history that exists
+  return Math.round(sum / used);
+}
+
+async function fafRcProbe(fafId, asOfMs, token) {
+  const out = { fafId, ratingType: 'rc', cutoff: null, boards: {}, rating: null };
+  if (!fafId) return out;
+  const cutoffIso = fafDayEndIso(asOfMs || Date.now());
+  out.cutoff = cutoffIso;
+  const collected = [];
+  for (const key of RC_BOARDS) {
+    const lbName = FAF_LEADERBOARD_NAME[key];
+    let a = null;
+    try {
+      a = await fafJournalRating('gamePlayerStats.player.id==' + fafId, lbName, cutoffIso, token);
+      if (a.rating == null && a.status !== 200) a = await fafJournalRating('player.id==' + fafId, lbName, cutoffIso, token);
+    } catch (e) { a = { status: 'error', rating: null, games: null }; }
+    let rating = a.rating, games = a.games;
+    if (rating != null && key === 'global') rating -= RC_GLOBAL_PENALTY;
+    // count unknown (shouldn't happen — the journal entry carries totalGames): assume a full
+    // history so the board still counts (top board alone) rather than vanishing from the blend
+    if (rating != null && (games == null || !isFinite(games))) games = RC_TARGET_GAMES;
+    out.boards[key] = { rating, games, status: a.status };
+    if (rating != null) collected.push({ rating, games });
+  }
+  out.rating = computeRC(collected);
+  return out;
 }
 
 // ---------- auth routes ----------
@@ -790,7 +854,7 @@ async function handleAPI(req, res, url) {
       plan, maxTeams,
       cfg: null, maps: {}, mapDb: [], mapPools: [], poolAssign: {},
       seeding: (['rating', 'random', 'manual'].indexOf(b.seeding) >= 0) ? b.seeding : 'rating',
-      ratingType: (['global', '1v1', '2v2', '3v3', '4v4'].indexOf(b.ratingType) >= 0) ? b.ratingType : (b.ratingType === 'none' ? 'none' : 'global'),
+      ratingType: (['global', '1v1', '2v2', '3v3', '4v4', 'rc'].indexOf(b.ratingType) >= 0) ? b.ratingType : (b.ratingType === 'none' ? 'none' : 'global'),
       ratingDate: b.ratingDate ? (new Date(b.ratingDate).getTime() || null) : null,
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
@@ -1267,10 +1331,15 @@ async function handleAPI(req, res, url) {
         if (!fafId) return bad(res, 'Your FAF identity is missing \u2014 please log in again');
         const token = await fafValidToken(sess);
         if (!token) return json(res, 409, { error: 'This tournament pulls your rating from FAF. Please log out and log back in (top-right), then sign up again.', needsRelogin: 1 });
-        const probe = await fafRatingProbe(fafId, t.ratingType, t.ratingDate, token);
+        const probe = (t.ratingType === 'rc')
+          ? await fafRcProbe(fafId, t.ratingDate, token)
+          : await fafRatingProbe(fafId, t.ratingType, t.ratingDate, token);
         if (probe.rating == null) {
-          const any200 = probe.attempts.some(a => a.status === 200);
-          if (any200) return bad(res, 'FAF has no ' + t.ratingType + ' rating for your account as of the tournament date \u2014 you may not have played ranked ' + t.ratingType + ' games by then.');
+          const parts2 = probe.attempts || Object.values(probe.boards || {});
+          const any200 = parts2.some(a => a.status === 200);
+          if (any200) return bad(res, t.ratingType === 'rc'
+            ? 'FAF has no rated 2v2/3v3/4v4/Global games for your account as of the tournament date, so no RC rating can be calculated.'
+            : 'FAF has no ' + t.ratingType + ' rating for your account as of the tournament date \u2014 you may not have played ranked ' + t.ratingType + ' games by then.');
           return bad(res, 'Could not fetch your rating from FAF right now \u2014 please try again in a moment.');
         }
         rating = probe.rating;
