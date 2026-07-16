@@ -30,10 +30,23 @@ function drawPlayers(el) {
             : T.formation === 'open' ? 'After signing up here, go to the Teams tab to create or join a team.'
             : (T.formation === 'premade' && T.teamSize > 1) ? 'Sign up and enter your team name. Teammates enter the exact same name to be grouped together.'
             : 'Solo bracket — every signup is an entrant.';
-      if (viewerSignedUp()) {
+      if (viewerSignedUp() && (() => { const mine = T.players.find(pl => pl.id === T.viewer.signedUpPlayerId); return mine && mine.pending; })()) {
+        html += `<div class="panel section"><h2>Sign up</h2>
+          <p class="signed-in-note">Your signup request is <strong>waiting for organizer approval</strong>. You'll appear in the player list once accepted.</p>
+          <button class="btn ghost small" id="sWithdraw">Withdraw request</button></div>`;
+      } else if (viewerSignedUp()) {
+        const myDc = (fafAuth.user && fafAuth.user.discord) || '';
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="signed-in-note">You're signed up as <strong>${esc(me())}</strong>. ${esc(helpText)}</p>
-          <button class="btn ghost small" id="sWithdraw">Withdraw</button></div>`;
+          ${fafAuth.enabled ? (myDc
+            ? '<p class="muted small">Discord: <span class="dctag">\uD83D\uDCAC ' + esc(myDc) + '</span> <a href="#" id="sDcEdit">change</a></p>'
+            : `<div class="dc-nudge"><label>Discord handle <span class="muted small">(optional \u2014 so the organizer and your teammates can reach you)</span></label>
+                 <p class="muted small" style="margin:4px 0 6px">Enter your Discord <strong>username</strong> \u2014 the unique all-lowercase handle from Settings \u2192 My Account \u2014 not your display name.</p>
+                 <div class="row" style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="sDcAdd" maxlength="40" autocomplete="off" style="max-width:240px"><button class="btn small" id="sDcSave">Save</button></div></div>`) : ''}
+          <button class="btn ghost small" id="sWithdraw" style="margin-top:10px">Withdraw</button></div>`;
+      } else if ((viewerLoggedIn() || !fafAuth.enabled) && T.signupMode === 'invite' && !(T.viewer && T.viewer.invited) && !admin) {
+        html += `<div class="panel section"><h2>Sign up</h2>
+          <p class="muted small">This tournament is <strong>invite only</strong>. Ask the organizer for an invite \u2014 once invited, you can sign up here.</p></div>`;
       } else if (viewerLoggedIn() || !fafAuth.enabled) {
         // logged in (or pre-go-live): self-signup, name is your FAF identity
         html += `<div class="panel section"><h2>Sign up</h2>
@@ -41,10 +54,12 @@ function drawPlayers(el) {
             <div>
               ${fafAuth.enabled ? '<p class="muted small">Signing up as <strong>' + esc(me()) + '</strong> (your FAF account).</p>' : '<label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">'}
               ${(T.formation === 'premade' && T.teamSize > 1) ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Your team name" autocomplete="off">' : ''}
+              ${fafAuth.enabled ? '<label>Discord handle <span class="muted small">(optional \u2014 so the organizer and teammates can reach you)</span></label><p class="muted small" style="margin:4px 0 6px">Your Discord <strong>username</strong> \u2014 the unique all-lowercase handle from Settings \u2192 My Account \u2014 not your display name. Saved to your account for all tournaments.</p><input type="text" id="sDiscord" maxlength="40" autocomplete="off" value="' + esc((fafAuth.user && fafAuth.user.discord) || '') + '">' : ''}
               ${(T.ratingType && T.ratingType !== 'none')
                 ? '<p class="muted small">Rating for this tournament: <strong>' + esc(ratingTypeLabel(T.ratingType)) + '</strong>, taken <strong>' + (T.ratingDate ? 'as of ' + new Date(T.ratingDate).toLocaleDateString() : 'at signup time') + '</strong>. It is pulled from FAF automatically \u2014 you don\u2019t enter it.</p>'
                 : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
-              <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
+              ${T.signupMode === 'request' && !admin ? '<p class="muted small">This tournament is <strong>request only</strong>: an organizer approves your signup before you appear in the list.</p>' : ''}
+              <div style="margin-top:16px"><button class="btn primary" id="sGo">${T.signupMode === 'request' && !admin ? 'Request to sign up' : 'Sign up'}${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
             </div>
             <div class="muted small" style="align-self:end">${esc(helpText)}</div>
           </div></div>`;
@@ -57,7 +72,20 @@ function drawPlayers(el) {
     }
   }
 
-  html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.length})</span></h2>
+  if (admin && T.status === 'signup') {
+    const pendingReqs = T.players.filter(pl => pl.pending);
+    html += `<div class="panel section"><h2>Organizer <span class="h2-strong">tools</span></h2>
+      <label>FAF player lookup <span class="muted small">(exact FAF name \u2014 verified against FAF, rating pulled per this tournament's settings)</span></label>
+      <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="text" id="ogName" maxlength="40" autocomplete="off" style="max-width:240px">
+        <button class="btn small" id="ogLookup">Look up</button>
+      </div>
+      <div id="ogResult" style="margin-top:8px"></div>
+      ${T.signupMode === 'invite' && (T.invites || []).length ? '<div style="margin-top:12px"><div class="ic-label">Invited (' + T.invites.length + ')</div>' + T.invites.map(i => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(i.name) + '</div></div><div class="sa-req-act"><button class="btn ghost small" data-uninvite="' + esc(i.fafId) + '">Uninvite</button></div></div>').join('') + '</div>' : ''}
+      ${pendingReqs.length ? '<div style="margin-top:12px"><div class="ic-label">Signup requests (' + pendingReqs.length + ')</div>' + pendingReqs.map(pl => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(pl.name) + (pl.rating != null ? ' <span class="muted mono small">' + pl.rating + '</span>' : '') + '</div></div><div class="sa-req-act"><button class="btn primary small" data-sapprove="' + pl.id + '">Accept</button><button class="btn ghost small" data-sdecline="' + pl.id + '">Decline</button></div></div>').join('') + '</div>' : ''}
+    </div>`;
+  }
+  html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.filter(pl => !pl.pending).length})</span></h2>
     <table><thead><tr><th>#</th><th>Name</th><th>Rating</th>${T.teamSize > 1 ? '<th>Team</th>' : ''}${admin ? '<th></th>' : ''}</tr></thead>
     <tbody id="pRows"></tbody></table>
     ${T.players.length ? '' : '<div class="empty">No signups yet.</div>'}</div>`;
@@ -76,7 +104,7 @@ function drawPlayers(el) {
     const canReplace = admin && p.teamId;
     tr.innerHTML = `
       <td class="mono muted">${i + 1}</td>
-      <td>${esc(p.name)}${badge}${p.discord ? ' <span class="dctag" title="Discord — reach this player here">\uD83D\uDCAC ' + esc(p.discord) + '</span>' : ''}</td>
+      <td>${esc(p.name)}${p.note ? ' <span class="muted small">(' + esc(p.note) + ')</span>' : ''}${p.pending ? ' <span class="idbadge late" title="Signup request — awaiting organizer approval">pending</span>' : ''}${badge}${p.discord ? ' <span class="dctag" title="Discord — reach this player here">\uD83D\uDCAC ' + esc(p.discord) + '</span>' : ''}</td>
       <td class="mono">${p.rating != null ? p.rating : '<span class="muted">—</span>'}</td>
       ${T.teamSize > 1 ? `<td class="small muted" style="white-space:nowrap">${esc(inTeam)}</td>` : ''}
       ${admin ? `<td style="text-align:right;white-space:nowrap">
@@ -147,6 +175,45 @@ function drawPlayers(el) {
   const sLogin = document.getElementById('sLogin');
   if (sLogin) sLogin.onclick = requireLoginThen;
 
+  // organizer tools: verified lookup -> add / invite; requests; uninvite
+  const ogLookup = document.getElementById('ogLookup');
+  if (ogLookup) ogLookup.onclick = async () => {
+    const name = document.getElementById('ogName').value.trim();
+    if (!name) return toast('Enter a FAF name', true);
+    const box = document.getElementById('ogResult');
+    box.innerHTML = '<span class="muted small">Looking up\u2026</span>';
+    try {
+      const r = await api('/api/t/' + T.id + '/faf_lookup', { name, admin: adminToken() });
+      const needManualRating = !T.ratingType || T.ratingType === 'none';
+      box.innerHTML = '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(r.name) + ' <span class="muted mono small">id ' + esc(r.fafId) + '</span></div>' +
+        '<div class="muted small">' + (r.rating != null ? 'Rating (' + esc(T.ratingType || 'global') + '): ' + r.rating : 'No fetched rating') + (r.globalRating != null && T.ratingType !== 'global' ? ' \u00b7 global: ' + r.globalRating : '') + '</div></div>' +
+        '<div class="sa-req-act">' + (needManualRating ? '<input type="number" id="ogRating" min="0" max="4000" placeholder="rating" style="width:90px">' : '') +
+        (T.signupMode === 'invite' ? '<button class="btn amber small" id="ogInvite">Invite</button>' : '') +
+        '<button class="btn primary small" id="ogAdd">Add to tournament</button></div></div>';
+      const doCall = async (path, extra) => {
+        try { await api('/api/t/' + T.id + '/' + path, Object.assign({ name: r.name, admin: adminToken() }, extra || {})); toast('Done'); await refresh(); }
+        catch (e) { toast(e.message, true); }
+      };
+      const inv = document.getElementById('ogInvite'); if (inv) inv.onclick = () => doCall('invite_player');
+      const add = document.getElementById('ogAdd'); if (add) add.onclick = () => {
+        const rEl = document.getElementById('ogRating');
+        doCall('org_add_player', rEl ? { rating: rEl.value } : {});
+      };
+    } catch (e) { box.innerHTML = ''; toast(e.message, true); }
+  };
+  el.querySelectorAll('[data-uninvite]').forEach(b => b.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/uninvite_player', { fafId: b.dataset.uninvite, admin: adminToken() }); toast('Uninvited'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-sapprove]').forEach(b => b.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/respond_signup', { playerId: b.dataset.sapprove, accept: 1, admin: adminToken() }); toast('Accepted'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-sdecline]').forEach(b => b.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/respond_signup', { playerId: b.dataset.sdecline, accept: 0, admin: adminToken() }); toast('Declined'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+
   const sWithdraw = document.getElementById('sWithdraw');
   if (sWithdraw) sWithdraw.onclick = async () => {
     const pid = T.viewer && T.viewer.signedUpPlayerId;
@@ -171,11 +238,26 @@ function drawPlayers(el) {
     }
     if (rEl && rEl.value === '') return toast('Enter your rating — it is used for balancing and seeding', true);
     try {
+      const dcEl = document.getElementById('sDiscord');
+      if (dcEl) {
+        const cur = (fafAuth.user && fafAuth.user.discord) || '';
+        if (dcEl.value.trim() !== cur) { await api('/api/my/profile', { discord: dcEl.value }); await refreshFafAuth(); }
+      }
       await api('/api/t/' + T.id + '/signup', body);
       toast('Signed up — good luck, commander');
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+
+  const sDcSave = document.getElementById('sDcSave');
+  if (sDcSave) sDcSave.onclick = async () => {
+    const v = document.getElementById('sDcAdd').value.trim();
+    if (!v) return toast('Enter your Discord username', true);
+    try { await api('/api/my/profile', { discord: v }); await refreshFafAuth(); toast('Saved'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const sDcEdit = document.getElementById('sDcEdit');
+  if (sDcEdit) sDcEdit.onclick = (e) => { e.preventDefault(); loginFlow(); };
 }
 
 function replacePlayer(outP) {
@@ -210,11 +292,15 @@ function replacePlayer(outP) {
 }
 
 function editPlayer(p) {
+  const canEditRating = !T.ratingType || T.ratingType === 'none';
   modal(`
     <h3>Edit player</h3>
-    <p class="muted small">To substitute a player who can't play, just overwrite the name and rating with the sub's — team spots and match history stay intact.</p>
-    <label>FAF name</label><input type="text" id="epName" maxlength="30" value="${esc(p.name)}" autocomplete="off">
-    <label>Rating</label><input type="number" id="epRating" min="0" max="4000" value="${p.rating != null ? p.rating : ''}" autocomplete="off">
+    <p class="muted small">Names come from FAF and can't be changed. You can attach a note (shown in brackets after the name)${canEditRating ? ' and adjust the rating' : ''}.</p>
+    <label>Note <span class="muted small">(optional, e.g. "sub for X" or "streamer")</span></label>
+    <input type="text" id="epNote" maxlength="40" value="${esc(p.note || '')}" autocomplete="off">
+    ${canEditRating
+      ? '<label>Rating</label><input type="number" id="epRating" min="0" max="4000" value="' + (p.rating != null ? p.rating : '') + '" autocomplete="off">'
+      : '<p class="muted small">Rating: <strong>' + (p.rating != null ? p.rating : '\u2014') + '</strong> \u2014 fetched from FAF, not editable.</p>'}
     <div class="actions">
       <button class="btn ghost" id="epCancel">Cancel</button>
       <button class="btn primary" id="epGo">Save</button>
@@ -222,12 +308,10 @@ function editPlayer(p) {
     root.querySelector('#epCancel').onclick = closeModal;
     root.querySelector('#epGo').onclick = async () => {
       try {
-        await api('/api/t/' + T.id + '/edit_player', {
-          playerId: p.id,
-          name: root.querySelector('#epName').value,
-          rating: root.querySelector('#epRating').value,
-          admin: adminToken()
-        });
+        const body = { playerId: p.id, note: root.querySelector('#epNote').value, admin: adminToken() };
+        const rEl = root.querySelector('#epRating');
+        if (rEl) body.rating = rEl.value;
+        await api('/api/t/' + T.id + '/edit_player', body);
         closeModal();
         toast('Player updated');
         await refresh();

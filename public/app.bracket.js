@@ -186,10 +186,16 @@ function requireLoginThen() {
 }
 function canReportMatch(m) {
   const v = T.viewer || {};
-  if (v.admin) return true;
-  if (!v.teamId) return false;
-  if (m.bracket === 'ffa') return m.entrants.indexOf(v.teamId) >= 0;
-  return m.team1 === v.teamId || m.team2 === v.teamId;
+  if (v.admin || v.organizer) return true;
+  if (m.bracket === 'ffa') return !!v.teamId && m.entrants.indexOf(v.teamId) >= 0;
+  if (!T.playerReporting) return false;                 // players can't report at all
+  const mine = v.memberTeamId || v.teamId;              // ANY member of a team may submit
+  return !!mine && (m.team1 === mine || m.team2 === mine);
+}
+function myMatchTeam(m) {
+  const v = T.viewer || {};
+  const mine = v.memberTeamId || v.teamId;
+  return mine && (m.team1 === mine || m.team2 === mine) ? mine : null;
 }
 
 function matchBox(m) {
@@ -211,13 +217,15 @@ function matchBox(m) {
       <span class="bscore">${score != null ? score : ''}</span></div>`;
   };
   const canReport = !T.imported && (m.status === 'ready' || m.status === 'live') && canReportMatch(m);
+  const prMine = m.pendingReport && myMatchTeam(m) && m.pendingReport.byTeam !== myMatchTeam(m);
+  const prTag = m.pendingReport ? '<span class="pr-tag" title="A score was submitted and awaits the opponent\u2019s confirmation">\u23F3 ' + m.pendingReport.score1 + '\u2013' + m.pendingReport.score2 + ' unconfirmed</span>' : '';
   const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
   box.dataset.mid = m.id;
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
     vetoIndicator(m) +
-    ((canReport || canCorrect)
-      ? `<div class="bfoot"><button class="btn ${canReport ? 'amber' : 'ghost'} small">${canReport ? 'Report score' : 'Correct'}</button></div>` : '');
+    ((canReport || canCorrect || m.pendingReport)
+      ? `<div class="bfoot">${prTag}${(canReport || canCorrect) ? `<button class="btn ${canReport ? 'amber' : 'ghost'} small">${prMine ? 'Confirm score' : canReport ? (viewerIsOrganizer() ? 'Report score' : 'Submit score') : 'Correct'}</button>` : ''}</div>` : '');
   const btn = box.querySelector('.bfoot button');
   if (btn) btn.onclick = () => reportScore(m.id);
   const vlink = box.querySelector('[data-veto-link]');

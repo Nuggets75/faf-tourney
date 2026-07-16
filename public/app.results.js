@@ -4,12 +4,19 @@ function reportScore(matchId) {
   const m = T.matches.find(x => x.id === matchId);
   if (!m) return;
   if (m.bracket === 'ffa') return reportFfa(matchId);
+  if (viewerIsOrganizer()) return reportScoreAdmin(m);
+  return reportScorePlayer(m);
+}
+
+// organizer: direct report (overrides anything, clears pending submissions)
+function reportScoreAdmin(m) {
   const maxW = Math.ceil(m.bo / 2);
   const maps = mapsFor(m.bracket, m.round);
+  const pr = m.pendingReport;
   modal(`
     <h3>Report score — ${esc(roundLabel(m))}</h3>
-    <p class="muted small">Best of ${m.bo} — first to ${maxW}.${m.hcap ? ' Upper bracket finalist starts 1-0 up.' : ''}
-    You can save a running score (e.g. 1-0) so everyone can follow along — the match completes automatically when a team reaches ${maxW}.</p>
+    <p class="muted small">Best of ${m.bo} — first to ${maxW}.${m.hcap ? ' Upper bracket finalist starts 1-0 up.' : ''} Organizer report: applies immediately and overrides player submissions.</p>
+    ${pr ? '<p class="warn small">Pending player submission: ' + pr.score1 + '–' + pr.score2 + ' by ' + esc(pr.byName || '') + ' — <button class="btn primary small" id="rAccept">Accept it</button> <button class="btn ghost small" id="rReject">Reject it</button></p>' : ''}
     ${maps.length ? '<div class="mapblock"><div class="mapblock-head"><span>MAP POOL</span></div>' + mapRows(maps) + '</div>' : ''}
     <div class="row">
       <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="rs1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${m.score1 != null ? m.score1 : (m.hcap ? 1 : 0)}"></div>
@@ -20,16 +27,109 @@ function reportScore(matchId) {
       <button class="btn primary" id="rGo">Save score</button>
     </div>`, root => {
     root.querySelector('#rCancel').onclick = closeModal;
+    const conf = async (accept) => {
+      try { await api('/api/t/' + T.id + '/report_confirm', { matchId: m.id, accept: accept ? 1 : 0, admin: adminToken(), token: myToken() }); closeModal(); toast(accept ? 'Accepted' : 'Rejected'); await refresh(); }
+      catch (e) { toast(e.message, true); }
+    };
+    const ra = root.querySelector('#rAccept'); if (ra) ra.onclick = () => conf(true);
+    const rr = root.querySelector('#rReject'); if (rr) rr.onclick = () => conf(false);
     root.querySelector('#rGo').onclick = async () => {
       try {
         await api('/api/t/' + T.id + '/report', {
-          matchId,
+          matchId: m.id,
           score1: root.querySelector('#rs1').value,
           score2: root.querySelector('#rs2').value,
           token: myToken()
         });
         closeModal();
         toast('Score saved');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+}
+
+// player: submit with replay IDs -> opponent confirms
+function reportScorePlayer(m) {
+  const mine = myMatchTeam(m);
+  if (!mine) return;
+  const pr = m.pendingReport;
+  // pending against MY team -> confirm/reject screen
+  if (pr && pr.byTeam !== mine) {
+    modal(`
+      <h3>Confirm score — ${esc(roundLabel(m))}</h3>
+      <p><strong>${esc(teamName(pr.byTeam))}</strong> reported <strong>${esc(teamName(m.team1))} ${pr.score1} – ${pr.score2} ${esc(teamName(m.team2))}</strong>.</p>
+      <p class="muted small">Replay ID${pr.replayIds.length === 1 ? '' : 's'}: ${pr.replayIds.map(esc).join(', ')}</p>
+      <div class="actions">
+        <button class="btn ghost" id="rcNo">Reject</button>
+        <button class="btn primary" id="rcYes">Confirm</button>
+      </div>`, root => {
+      const act = async (accept) => {
+        try { await api('/api/t/' + T.id + '/report_confirm', { matchId: m.id, accept: accept ? 1 : 0, token: myToken() }); closeModal(); toast(accept ? 'Confirmed' : 'Rejected'); await refresh(); }
+        catch (e) { toast(e.message, true); }
+      };
+      root.querySelector('#rcYes').onclick = () => act(true);
+      root.querySelector('#rcNo').onclick = () => act(false);
+    });
+    return;
+  }
+  if (pr) {
+    modal(`<h3>Score submitted</h3>
+      <p class="muted small">Your team reported <strong>${pr.score1} – ${pr.score2}</strong>. Waiting for the opponent (or an organizer) to confirm. Submitting again replaces it.</p>
+      <div class="actions"><button class="btn ghost" id="rcClose">Close</button><button class="btn primary" id="rcAgain">Submit a new score</button></div>`, root => {
+      root.querySelector('#rcClose').onclick = closeModal;
+      root.querySelector('#rcAgain').onclick = () => { closeModal(); openPlayerSubmit(m, mine); };
+    });
+    return;
+  }
+  openPlayerSubmit(m, mine);
+}
+
+function openPlayerSubmit(m, mine) {
+  const maxW = Math.ceil(m.bo / 2);
+  const cur1 = m.score1 != null ? m.score1 : (m.hcap ? 1 : 0);
+  const cur2 = m.score2 != null ? m.score2 : 0;
+  const maps = mapsFor(m.bracket, m.round);
+  modal(`
+    <h3>Submit score — ${esc(roundLabel(m))}</h3>
+    <p class="muted small">Best of ${m.bo} — first to ${maxW}. Confirmed so far: <strong>${cur1} – ${cur2}</strong>.
+    Enter the score as it stands now; you must give one <strong>replay ID</strong> per new game, and the opponent confirms before it counts.</p>
+    ${maps.length ? '<div class="mapblock"><div class="mapblock-head"><span>MAP POOL</span></div>' + mapRows(maps) + '</div>' : ''}
+    <div class="row">
+      <div style="flex:1"><label>${esc(teamName(m.team1))}</label><input type="number" id="ps1" min="${m.hcap ? 1 : 0}" max="${maxW}" value="${cur1}"></div>
+      <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="ps2" min="0" max="${maxW}" value="${cur2}"></div>
+    </div>
+    <div id="psReplays" style="margin-top:10px"></div>
+    <div class="actions">
+      <button class="btn ghost" id="psCancel">Cancel</button>
+      <button class="btn primary" id="psGo">Submit for confirmation</button>
+    </div>`, root => {
+    const wrap = root.querySelector('#psReplays');
+    const redraw = () => {
+      const s1 = parseInt(root.querySelector('#ps1').value, 10) || 0;
+      const s2 = parseInt(root.querySelector('#ps2').value, 10) || 0;
+      const n = Math.max(0, (s1 + s2) - (cur1 + cur2));
+      wrap.innerHTML = n ? '<label>Replay ID' + (n === 1 ? '' : 's') + ' <span class="muted small">(one per new game, from the FAF client or replay vault)</span></label>' +
+        Array.from({ length: n }, (_, i) => '<input type="text" class="psRid" maxlength="24" placeholder="Replay ID for game ' + (cur1 + cur2 + i + 1) + '" autocomplete="off" style="margin-bottom:6px">').join('')
+        : '<p class="muted small">Raise a score to report new games.</p>';
+    };
+    redraw();
+    root.querySelector('#ps1').addEventListener('input', redraw);
+    root.querySelector('#ps2').addEventListener('input', redraw);
+    root.querySelector('#psCancel').onclick = closeModal;
+    root.querySelector('#psGo').onclick = async () => {
+      const replayIds = Array.from(root.querySelectorAll('.psRid')).map(i => i.value.trim());
+      if (replayIds.some(v => !v)) return toast('Fill in every replay ID', true);
+      try {
+        await api('/api/t/' + T.id + '/report_submit', {
+          matchId: m.id,
+          score1: root.querySelector('#ps1').value,
+          score2: root.querySelector('#ps2').value,
+          replayIds,
+          token: myToken()
+        });
+        closeModal();
+        toast('Submitted — waiting for the opponent to confirm');
         await refresh();
       } catch (e) { toast(e.message, true); }
     };
@@ -306,6 +406,13 @@ async function drawAdmin(el) {
       <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option></select>
       <label>Max teams / entrants (0 = unlimited)</label>
       <input type="number" id="af_max" min="0" max="128" value="${T.maxTeams || 0}" autocomplete="off">
+      <label>Signups</label>
+      <select id="af_signupMode">
+        <option value="open"${(T.signupMode || 'open') === 'open' ? ' selected' : ''}>Open — anyone can sign up</option>
+        <option value="request"${T.signupMode === 'request' ? ' selected' : ''}>Request only — organizer approves</option>
+        <option value="invite"${T.signupMode === 'invite' ? ' selected' : ''}>Invite only</option>
+      </select>
+      <label style="display:block;margin-top:10px"><input type="checkbox" id="af_playerReporting"${T.playerReporting ? ' checked' : ''}> Allow players to submit scores <span class="muted small">(replay IDs + opponent confirmation)</span></label>
       <div style="margin-top:16px"><button class="btn amber" id="af_save">Save format</button></div>
     </div>`;
   }
@@ -549,7 +656,8 @@ async function drawAdmin(el) {
 
     g('af_save').onclick = async () => {
       const isFfa = afComp.value === 'ffa';
-      const body = { admin: adminToken(), maxTeams: g('af_max').value };
+      const body = { admin: adminToken(), maxTeams: g('af_max').value,
+        signupMode: g('af_signupMode').value, playerReporting: g('af_playerReporting').checked ? 1 : 0 };
       if (T.status === 'signup') {
         body.competition = afComp.value;
         body.teamSize = isFfa ? g('af_fsize').value : g('af_size').value;

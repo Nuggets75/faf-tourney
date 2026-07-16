@@ -7,7 +7,11 @@ async function renderHome() {
   stopPoll();
   drawTopbar('');
   let list = [];
-  try { list = await api('/api/tournaments'); } catch (e) {}
+  try {
+    const r = await fetch('/api/tournaments', siteAdmin() ? { headers: { 'x-site-admin': siteAdmin() } } : undefined);
+    list = await r.json();
+    if (!r.ok) list = [];
+  } catch (e) {}
 
   const loginPanel = me() ? '' : `
     <div class="panel section">
@@ -223,6 +227,15 @@ async function renderHost() {
 
         <label>Rating date <span class="muted small">(rating taken as of this day; blank = at signup time)</span></label>
         <input type="date" id="cRatingDate">
+
+        <label>Signups</label>
+        <select id="cSignupMode">
+          <option value="open" selected>Open — anyone with a FAF login can sign up</option>
+          <option value="request">Request only — players request, an organizer approves</option>
+          <option value="invite">Invite only — only players you invite can sign up</option>
+        </select>
+
+        <label style="display:block;margin-top:10px"><input type="checkbox" id="cPlayerReporting" checked> Allow players to submit scores <span class="muted small">(must provide replay IDs and be confirmed by the opponent; organizers can always report)</span></label>
         <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
           <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
         </label>
@@ -308,6 +321,8 @@ async function renderHost() {
         seeding: document.getElementById('cSeed').value,
         ratingType: document.getElementById('cRatingType').value,
         ratingDate: document.getElementById('cRatingDate').value || null,
+        signupMode: document.getElementById('cSignupMode').value,
+        playerReporting: document.getElementById('cPlayerReporting').checked ? 1 : 0,
         admin: siteAdmin() || undefined,
         veto: { enabled: document.getElementById('cVeto').checked, mode: 'upfront' },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
@@ -443,6 +458,17 @@ async function renderTournament() {
 function myTurnInfo() {
   const me = T.viewer || {};
   const myTeam = me.teamId || null;
+  // score submissions awaiting MY team's confirmation
+  const memberTeam = me.memberTeamId || me.teamId;
+  if (memberTeam && T.matches) {
+    const pm = T.matches.find(m => m.pendingReport && (m.pendingReport.byTeam === m.team1 ? m.team2 : m.team1) === memberTeam && m.pendingReport.byTeam !== memberTeam);
+    if (pm) return { text: 'Your opponent reported ' + pm.pendingReport.score1 + '\u2013' + pm.pendingReport.score2 + ' \u2014 confirm or reject it.', tab: 'bracket', cta: 'Review score' };
+  }
+  // organizer: signup requests waiting
+  if (me.organizer && T.status === 'signup') {
+    const nReq = (T.players || []).filter(p => p.pending).length;
+    if (nReq) return { text: nReq + ' signup request' + (nReq === 1 ? '' : 's') + ' await your review.', tab: 'players', cta: 'Review requests' };
+  }
   // 0. join requests awaiting the captain
   if (myTeam && T.status === 'signup' && T.teams) {
     const capT = T.teams.find(x => x.id === myTeam);
@@ -589,20 +615,24 @@ function drawTournament() {
 // ----- overview -----
 
 function gameInfoPanel() {
+  // Type + rating are one-liners: fixed text above the boxes, not boxes of their own.
+  const typeTxt = T.category ? (T.category === 'official' ? 'Official' : 'Community') + ' tournament' : '';
+  const ratingTxt = (T.ratingType && T.ratingType !== 'none')
+    ? 'Rating: ' + ratingTypeLabel(T.ratingType) + (T.ratingDate ? ', taken as of ' + new Date(T.ratingDate).toLocaleDateString() : ', taken at signup time') + ' — pulled from FAF'
+    : 'Rating: entered by players';
+  const headline = [typeTxt, ratingTxt].filter(Boolean).join(' · ');
   const cells = [];
-  if (T.category) cells.push(['Type', T.category === 'official' ? 'Official' : 'Community']);
-  if (T.ratingType && T.ratingType !== 'none') cells.push(['Rating', ratingTypeLabel(T.ratingType) + (T.ratingDate ? ', taken as of ' + new Date(T.ratingDate).toLocaleDateString() : ', taken at signup time') + ' — pulled from FAF']);
-  else cells.push(['Rating', 'Entered by players']);
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
-  if (T.description) cells.push(['Briefing', T.description]);
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);
   const imgs = (T.descImages || []);
   const gallery = imgs.length ? `<div class="desc-gallery">${imgs.map(f => `<a href="/desc-images/${encodeURIComponent(f)}" target="_blank" rel="noopener"><img src="/desc-images/${encodeURIComponent(f)}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
-  if (!cells.length && !imgs.length) return '';
-  return `<div class="panel section"><h2>Game <span class="h2-strong">Setup</span></h2><div class="infogrid">
+  if (!cells.length && !imgs.length && !T.description && !headline) return '';
+  return `<div class="panel section"><h2>Game <span class="h2-strong">Setup</span></h2>
+    ${headline ? '<p class="setup-headline">' + esc(headline) + '</p>' : ''}
+    <div class="infogrid">
     ${cells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
-  </div>${gallery}</div>`;
+  </div>${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + esc(T.description) + '</div></div>' : ''}${gallery}</div>`;
 }
 
 function drawOverview(el) {

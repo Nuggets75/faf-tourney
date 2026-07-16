@@ -623,3 +623,7 @@ tr.pickrow.on td:nth-child(2) { color: var(--green); font-weight: 600; }
 .log-new { color: var(--green); }
 .log-del { color: var(--red, #d9534f); }
 @media (max-width: 640px) { .sa-req { flex-wrap: wrap; } }
+.dc-nudge { margin: 10px 0; padding: 10px 12px; border: 1px dashed var(--line-solid); border-radius: 4px; }
+.setup-headline { color: var(--amber); font-size: 13px; margin: 0 0 12px; }
+.briefing-wide { margin-top: 14px; }
+.pr-tag { color: var(--amber); font-size: 11px; font-family: var(--mono); margin-right: 8px; }

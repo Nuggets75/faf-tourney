@@ -323,6 +323,8 @@ function publicView(t) {
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
     cfg: t.cfg || null, seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
+    signupMode: t.signupMode || 'open',
+    playerReporting: t.playerReporting === undefined ? 1 : (t.playerReporting ? 1 : 0),
     veto: t.veto || { enabled: false, mode: 'upfront' },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
@@ -633,6 +635,26 @@ async function fafFetchRating(fafId, ratingType, asOfMs, token) {
   catch (e) { return null; }
 }
 
+// Look up a FAF player by exact login. Returns { fafId, name } or null. Needs a token.
+async function fafLookupPlayer(login, token) {
+  const path = '/data/player?filter=' + encodeURIComponent('login==' + rsqlQuote(login)) + '&page%5Bsize%5D=1';
+  const headers = { 'Accept': 'application/vnd.api+json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const r = await httpsRequest({ host: 'api.faforever.com', path, method: 'GET', headers });
+  if (r.status !== 200) return { error: 'FAF lookup failed (' + r.status + ')' };
+  let row;
+  try { row = (JSON.parse(r.text).data || [])[0]; } catch (e) { return { error: 'FAF lookup failed' }; }
+  if (!row) return null;
+  return { fafId: String(row.id), name: (row.attributes && row.attributes.login) || login };
+}
+
+// Rating for a player per this tournament's settings (null for 'none' — organizer supplies it).
+async function ratingPerSettings(t, fafId, token) {
+  if (!t.ratingType || t.ratingType === 'none') return null;
+  if (t.ratingType === 'rc') return (await fafRcProbe(fafId, t.ratingDate, token)).rating;
+  return (await fafRatingProbe(fafId, t.ratingType, t.ratingDate, token)).rating;
+}
+
 // ---- Fearghal's RC rating ----
 // The player's highest rating among 2v2 / 3v3 / 4v4 / (Global - 50); 1v1 is excluded.
 // If the top board has fewer than 300 games, the next-highest boards' ratings are blended in,
@@ -858,6 +880,9 @@ async function handleAPI(req, res, url) {
       seeding: (['rating', 'random', 'manual'].indexOf(b.seeding) >= 0) ? b.seeding : 'rating',
       ratingType: (['global', '1v1', '2v2', '3v3', '4v4', 'rc'].indexOf(b.ratingType) >= 0) ? b.ratingType : (b.ratingType === 'none' ? 'none' : 'global'),
       ratingDate: b.ratingDate ? (new Date(b.ratingDate).getTime() || null) : null,
+      signupMode: (['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) ? b.signupMode : 'open',
+      playerReporting: b.playerReporting === undefined ? true : !!b.playerReporting,
+      invites: [],
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
@@ -1067,7 +1092,9 @@ async function handleAPI(req, res, url) {
     const sess = currentSession(req);
     const myFid = sess && sess.fafId;
     const list = Object.values(db.tournaments)
-      .filter(t => !t.archived && (t.published !== false || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0)))   // drafts hidden from the public, but the organizer sees their own
+      .filter(t => !t.archived && (t.published !== false
+        || (GADMIN && req.headers['x-site-admin'] === GADMIN)   // site admin sees every draft
+        || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0)))   // organizers see their own
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
         id: t.id, name: t.name, status: t.status, category: t.category || null,
@@ -1142,7 +1169,27 @@ async function handleAPI(req, res, url) {
       for (const t of Object.values(db.tournaments)) {
         if (t.archived || t.published === false) continue;
         const meP = (t.players || []).find(p => p.fafId === sess.fafId);
+        // invited but not signed up yet
+        if (!meP && t.status === 'signup' && (t.invites || []).some(i => i.fafId === sess.fafId)) {
+          out.push({ tId: t.id, tName: t.name, type: 'invite', tab: 'players', text: 'You are invited \u2014 sign up now' });
+        }
+        // organizer: signup requests waiting for review
+        if (Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0) {
+          const nReq = (t.players || []).filter(p => p.pending).length;
+          if (nReq) out.push({ tId: t.id, tName: t.name, type: 'requests', tab: 'players', text: nReq + ' signup request' + (nReq === 1 ? '' : 's') + ' await your review' });
+        }
         if (!meP) continue;
+        // score submissions awaiting MY team's confirmation
+        if (meP.teamId && Array.isArray(t.matches)) {
+          for (const m of t.matches) {
+            if (!m.pendingReport) continue;
+            const other = m.pendingReport.byTeam === m.team1 ? m.team2 : m.team1;
+            if (other === meP.teamId) {
+              out.push({ tId: t.id, tName: t.name, type: 'confirm', tab: 'bracket', text: 'Confirm the reported score (' + m.pendingReport.score1 + '\u2013' + m.pendingReport.score2 + ')' });
+              break;
+            }
+          }
+        }
         const capTeam = (t.teams || []).find(tm => tm.captainId === meP.id);
         const myTeam = meP.teamId ? (t.teams || []).find(tm => tm.id === meP.teamId) : null;
         // join requests awaiting the captain
@@ -1192,11 +1239,20 @@ async function handleAPI(req, res, url) {
       // Discord handles are contact info: visible to organizers and fellow signed-up players,
       // never to the anonymous public. Copy the player objects so the db is never mutated.
       const canSeeContacts = organizer || !!signedUpId;
-      view.players = t.players.map(p => {
-        const c = Object.assign({}, p);
-        if (canSeeContacts && p.fafId && db.profiles[p.fafId] && db.profiles[p.fafId].discord) c.discord = db.profiles[p.fafId].discord;
-        return c;
-      });
+      view.players = t.players
+        .filter(p => !p.pending || organizer || (sess && p.fafId === sess.fafId))   // pending requests: organizer + the requester only
+        .map(p => {
+          const c = Object.assign({}, p);
+          if (canSeeContacts && p.fafId && db.profiles[p.fafId] && db.profiles[p.fafId].discord) c.discord = db.profiles[p.fafId].discord;
+          return c;
+        });
+      // team the viewer is a MEMBER of (reporting rights), as opposed to captain-of (viewer.teamId)
+      let memberTeamId = null;
+      if (sess && sess.fafId) {
+        const mineM = t.players.find(p => p.fafId === sess.fafId);
+        if (mineM && mineM.teamId) memberTeamId = mineM.teamId;
+      }
+      view.invites = organizer ? (t.invites || []).slice() : undefined;
       view.viewer = {
         admin: isAdmin(t, tok) ? 1 : 0,
         organizer: organizer ? 1 : 0,
@@ -1205,6 +1261,8 @@ async function handleAPI(req, res, url) {
         fafId: sess ? sess.fafId : null,
         fafName: sess ? sess.fafName : null,
         signedUpPlayerId: signedUpId,
+        memberTeamId: memberTeamId,
+        invited: (sess && (t.invites || []).some(i => i.fafId === sess.fafId)) ? 1 : 0,
         oauthEnabled: FAF_OAUTH_ON ? 1 : 0
       };
       // Hide prep from non-organizers: unpublished maps and unpublished pools.
@@ -1319,6 +1377,12 @@ async function handleAPI(req, res, url) {
 
     if (sub === 'signup') {
       if (!FAF_OAUTH_ON && t.formation === 'premade' && t.teamSize > 1) return bad(res, 'This tournament uses whole-team registration \u2014 one player registers the full team');
+      // signup mode gates (self-signups only; organizer direct-add uses org_add_player)
+      const sessMode = currentSession(req);
+      if (t.signupMode === 'invite' && !canOrganize(t, req, b)) {
+        const inv = sessMode && (t.invites || []).some(i => i.fafId === sessMode.fafId);
+        if (!inv) return json(res, 403, { error: 'This tournament is invite-only. Ask the organizer for an invite.' });
+      }
 
       const sess = currentSession(req);
       const adminAdding = isAdmin(t, b.admin) || canOrganize(t, req, b);
@@ -1376,9 +1440,10 @@ async function handleAPI(req, res, url) {
         teamName: (t.formation === 'premade') ? cleanName(b.teamName, 30) : '',
         teamId: null, signedAt: now()
       };
+      if (t.signupMode === 'request' && !canOrganize(t, req, b)) p.pending = 1;
       t.players.push(p);
       saveDB();
-      return json(res, 200, { ok: true, playerId: p.id });
+      return json(res, 200, { ok: true, playerId: p.id, pending: p.pending ? 1 : 0 });
     }
 
     if (sub === 'signup_team') {
@@ -1790,26 +1855,100 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    if (sub === 'faf_lookup') {
+      // Organizer looks up a FAF player by exact name; returns id + rating per this tournament's
+      // settings (plus current global for context). Uses the organizer's own FAF token.
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const login = cleanName(b.name, 40);
+      if (!login) return bad(res, 'Enter a FAF name');
+      const token = await fafValidToken(currentSession(req));
+      if (!token) return json(res, 409, { error: 'FAF lookups need your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
+      const found = await fafLookupPlayer(login, token);
+      if (found && found.error) return bad(res, found.error);
+      if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
+      const rating = await ratingPerSettings(t, found.fafId, token);
+      let globalRating = null;
+      try { globalRating = (t.ratingType === 'global') ? rating : (await fafRatingProbe(found.fafId, 'global', null, token)).rating; } catch (e) {}
+      return json(res, 200, { ok: true, fafId: found.fafId, name: found.name, rating, globalRating });
+    }
+
+    if (sub === 'org_add_player') {
+      // Organizer adds a VERIFIED player (existence + rating checked against FAF) — no free-typed names.
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (t.status !== 'signup') return bad(res, 'Signups are closed \u2014 use the late-signup link instead');
+      const login = cleanName(b.name, 40);
+      if (!login) return bad(res, 'Enter a FAF name');
+      const token = await fafValidToken(currentSession(req));
+      if (!token) return json(res, 409, { error: 'Adding players needs your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
+      const found = await fafLookupPlayer(login, token);
+      if (found && found.error) return bad(res, found.error);
+      if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
+      if (t.players.some(x => x.fafId === found.fafId)) return bad(res, found.name + ' is already signed up');
+      let rating;
+      if (t.ratingType && t.ratingType !== 'none') {
+        rating = await ratingPerSettings(t, found.fafId, token);
+        if (rating == null) return bad(res, 'Could not fetch a ' + t.ratingType + ' rating for ' + found.name + ' \u2014 they may have no ranked games for it');
+      } else {
+        rating = parseInt(b.rating, 10);
+        if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a rating (0\u20134000) for this player');
+      }
+      const p = { id: 'p' + uid(4), name: found.name, rating, fafId: found.fafId, manual: false,
+        late: 0, teamName: cleanName(b.teamName, 30) || null, teamId: null, signedAt: now(), addedBy: 'organizer' };
+      t.players.push(p);
+      saveDB();
+      return json(res, 200, { ok: true, playerId: p.id });
+    }
+
+    if (sub === 'invite_player') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const login = cleanName(b.name, 40);
+      if (!login) return bad(res, 'Enter a FAF name');
+      const token = await fafValidToken(currentSession(req));
+      if (!token) return json(res, 409, { error: 'Invites need your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
+      const found = await fafLookupPlayer(login, token);
+      if (found && found.error) return bad(res, found.error);
+      if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
+      t.invites = t.invites || [];
+      if (t.invites.some(i => i.fafId === found.fafId)) return bad(res, found.name + ' is already invited');
+      t.invites.push({ fafId: found.fafId, name: found.name, at: now() });
+      saveDB();
+      return json(res, 200, { ok: true, fafId: found.fafId, name: found.name });
+    }
+
+    if (sub === 'uninvite_player') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      t.invites = (t.invites || []).filter(i => i.fafId !== String(b.fafId));
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'respond_signup') {
+      // Organizer approves or declines a pending (request-mode) signup.
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const p = playerById(t, b.playerId);
+      if (!p || !p.pending) return bad(res, 'That request is no longer pending');
+      if (b.accept) { delete p.pending; }
+      else { t.players = t.players.filter(x => x.id !== p.id); clearJoinRequests(p.id); }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'edit_player') {
+      // Renaming is gone: identity comes from FAF. Organizers can attach a visible note
+      // (shown in brackets after the name) and can only edit the rating when the
+      // tournament doesn't fetch ratings from FAF (ratingType 'none').
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const p = playerById(t, b.playerId);
       if (!p) return bad(res, 'Player not found');
-      const name = cleanName(b.name, 30);
-      if (!name) return bad(res, 'Name required');
-      if (t.players.some(x => x.id !== p.id && x.name.toLowerCase() === name.toLowerCase())) {
-        return bad(res, 'Another player already has that name');
+      if (b.name !== undefined && cleanName(b.name, 30) !== p.name) {
+        return bad(res, 'Players cannot be renamed \u2014 names come from FAF. Add a note instead.');
       }
-      const rating = parseInt(b.rating, 10);
-      if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Rating must be 0\u20134000');
-      const oldName = p.name;
-      p.name = name;
-      p.rating = rating;
-      // keep auto-derived team names in sync
-      for (const team of t.teams) {
-        if (team.captainId === p.id) {
-          if (team.name === 'Team ' + oldName) team.name = 'Team ' + name;
-          if (team.name === oldName) team.name = name; // solo teams
-        }
+      if (b.note !== undefined) p.note = cleanName(b.note, 40) || null;
+      if (b.rating !== undefined && String(b.rating) !== String(p.rating)) {
+        if (t.ratingType && t.ratingType !== 'none') return bad(res, 'Ratings are fetched from FAF for this tournament and cannot be edited');
+        const rating = parseInt(b.rating, 10);
+        if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Rating must be 0\u20134000');
+        p.rating = rating;
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -1904,6 +2043,8 @@ async function handleAPI(req, res, url) {
       if (b.description !== undefined) t.description = cleanName(b.description, 500);
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
+      if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
+      if (b.playerReporting !== undefined) t.playerReporting = !!b.playerReporting;
       if (b.checkInDeadline !== undefined) {
         if (!b.checkInDeadline) t.checkInDeadline = null;
         else { const ms = new Date(b.checkInDeadline).getTime(); t.checkInDeadline = isNaN(ms) ? null : ms; }
@@ -2118,6 +2259,14 @@ async function handleAPI(req, res, url) {
         return json(res, 200, { ok: true });
       }
 
+      // request-mode signups that were never approved don't enter the tournament
+      if (a === 'form_teams' || a === 'generate' || a === 'close') {
+        const dropped = t.players.filter(p => p.pending);
+        if (dropped.length) {
+          dropped.forEach(p => clearJoinRequests(p.id));
+          t.players = t.players.filter(p => !p.pending);
+        }
+      }
       if (a === 'form_teams') {
         if (t.formation === 'draft') return bad(res, 'This tournament drafts teams');
         if (t.status !== 'signup') return bad(res, 'Teams already formed');
@@ -2317,13 +2466,91 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // team of which the logged-in viewer (or captain token) is a MEMBER — reporting rights
+    function memberTeamOf(reqBody) {
+      const byTok = teamOfCaptainToken(t, reqBody && reqBody.token);
+      if (byTok) return byTok;
+      const sess = currentSession(req);
+      if (!sess || !sess.fafId) return null;
+      const mine = t.players.find(pl => pl.fafId === sess.fafId);
+      if (!mine || !mine.teamId) return null;
+      return teamById(t, mine.teamId);
+    }
+
+    if (sub === 'report_submit') {
+      // A member of either team submits a (running) score with replay IDs for the new games.
+      // It only counts once a member of the OTHER team (or the organizer) confirms it.
+      if (t.playerReporting === false) return bad(res, 'Only the organizer reports scores in this tournament');
+      if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
+      const m = matchById(t, b.matchId);
+      if (!m) return bad(res, 'Match not found');
+      if (m.bracket === 'ffa') return bad(res, 'FFA results are reported by captains or the organizer directly');
+      const myTeam = memberTeamOf(b);
+      if (!myTeam || (myTeam.id !== m.team1 && myTeam.id !== m.team2)) {
+        return json(res, 403, { error: 'Only players in this match can submit its score' });
+      }
+      if (m.status === 'done') return bad(res, 'The series is decided \u2014 only the organizer can correct it');
+      if (m.status !== 'ready' && m.status !== 'live') return bad(res, 'Match not ready yet');
+      const maxW = Math.ceil(m.bo / 2);
+      const s1 = parseInt(b.score1, 10), s2 = parseInt(b.score2, 10);
+      if (!(s1 >= 0 && s2 >= 0 && s1 <= maxW && s2 <= maxW)) return bad(res, 'Scores must be between 0 and ' + maxW);
+      if (m.hcap && s1 < 1) return bad(res, 'This grand final starts 1-0 (upper bracket advantage)');
+      if (s1 === maxW && s2 === maxW) return bad(res, 'Both teams cannot reach ' + maxW);
+      const cur1 = m.score1 != null ? m.score1 : (m.hcap ? 1 : 0);
+      const cur2 = m.score2 != null ? m.score2 : 0;
+      if (s1 < cur1 || s2 < cur2) return bad(res, 'Scores can only go up from the confirmed ' + cur1 + '\u2013' + cur2 + ' \u2014 ask the organizer to correct a wrong score');
+      const newGames = (s1 + s2) - (cur1 + cur2);
+      if (newGames < 1) return bad(res, 'Nothing new to report \u2014 the confirmed score is already ' + cur1 + '\u2013' + cur2);
+      // replay IDs: exactly one per newly reported game
+      let ids = Array.isArray(b.replayIds) ? b.replayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean) : [];
+      if (ids.length !== newGames) return bad(res, 'Provide exactly ' + newGames + ' replay ID' + (newGames === 1 ? '' : 's') + ' \u2014 one for each newly reported game');
+      m.pendingReport = { score1: s1, score2: s2, replayIds: ids, byTeam: myTeam.id, byName: actorOf(req, b).name || myTeam.name, at: now() };
+      saveDB();
+      return json(res, 200, { ok: true, pending: 1 });
+    }
+
+    if (sub === 'report_confirm') {
+      // A member of the OTHER team (or the organizer) accepts or rejects the pending submission.
+      if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
+      const m = matchById(t, b.matchId);
+      if (!m) return bad(res, 'Match not found');
+      if (!m.pendingReport) return bad(res, 'Nothing awaiting confirmation on this match');
+      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      if (!admin) {
+        const myTeam = memberTeamOf(b);
+        const other = m.pendingReport.byTeam === m.team1 ? m.team2 : m.team1;
+        if (!myTeam || myTeam.id !== other) return json(res, 403, { error: 'Only the opposing team (or the organizer) can confirm this score' });
+      }
+      const pr = m.pendingReport;
+      m.pendingReport = null;
+      if (!b.accept) { saveDB(); return json(res, 200, { ok: true, rejected: 1 }); }
+      if (m.status === 'done') return bad(res, 'The series was decided in the meantime');
+      m.replayIds = (m.replayIds || []).concat(pr.replayIds);
+      const maxW = Math.ceil(m.bo / 2);
+      if (pr.score1 === maxW || pr.score2 === maxW) {
+        finalizeMatch(t, m, pr.score1, pr.score2);
+      } else {
+        m.score1 = pr.score1; m.score2 = pr.score2;
+        m.status = 'live';
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'report') {
       if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
       const m = matchById(t, b.matchId);
       if (!m) return bad(res, 'Match not found');
       const admin = isAdmin(t, b.token) || isOrganizer(t, req);
-      // a captain may report their own match: by token (legacy) or by FAF identity (new)
+      // Players no longer report directly: they submit via report_submit and the opponent
+      // confirms (report_confirm). Direct /report is the organizer override. FFA keeps the
+      // captain path (winner selection, no scores/replays).
       const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
+      if (!admin && m.bracket !== 'ffa') {
+        return json(res, 403, { error: t.playerReporting === false
+          ? 'Only the organizer reports scores in this tournament'
+          : 'Submit your score with the report button \u2014 it needs replay IDs and your opponent\u2019s confirmation' });
+      }
 
       // ---- FFA ----
       if (m.bracket === 'ffa') {
@@ -2412,6 +2639,7 @@ async function handleAPI(req, res, url) {
       if (m.hcap && s1 < 1) return bad(res, 'This grand final starts 1-0 (upper bracket advantage)');
       if (s1 === maxW && s2 === maxW) return bad(res, 'Both teams cannot reach ' + maxW);
 
+      m.pendingReport = null;   // organizer word overrides any pending player submission
       if (s1 === maxW || s2 === maxW) {
         finalizeMatch(t, m, s1, s2);
       } else {

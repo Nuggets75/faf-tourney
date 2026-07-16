@@ -564,7 +564,8 @@ function loginFlow() {
       <h3>Logged in as ${esc(me())} <span class="verifiedchip">FAF</span></h3>
       <p class="muted small">Your FAF account is linked. Signup forms use your FAF name.</p>
       <label>Discord handle <span class="muted small">(optional — shown to organizers and fellow signed-up players so they can reach you)</span></label>
-      <input type="text" id="lgDiscord" maxlength="40" autocomplete="off" placeholder="e.g. nuggets" value="${esc(curDc)}">
+      <p class="muted small" style="margin:4px 0 6px">Enter your Discord <strong>username</strong> — the unique all-lowercase handle shown under Settings → My Account in Discord — not your display name.</p>
+      <input type="text" id="lgDiscord" maxlength="40" autocomplete="off" value="${esc(curDc)}">
       <div class="actions">
         <button class="btn ghost" id="lgClose">Close</button>
         <button class="btn primary" id="lgSaveDc">Save</button>
