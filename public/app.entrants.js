@@ -313,7 +313,10 @@ function drawOpenTeams(el) {
       <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
       <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
-      ${canJoin && !full ? `<button class="btn amber small tc-join" data-join="${tm.id}">Join (${openSlots} open)</button>` : ''}
+      ${canJoin && !full ? ((tm.joinRequests || []).some(r => r.playerId === myPlayer.id)
+        ? `<div class="tc-pending"><span class="muted small">Request pending</span> <button class="btn ghost small" data-cancel-join="${tm.id}">Cancel</button></div>`
+        : `<button class="btn amber small tc-join" data-request-join="${tm.id}">Request to join (${openSlots} open)</button>`) : ''}
+      ${(((myPlayer && tm.captainId === myPlayer.id) || admin) && (tm.joinRequests || []).length) ? `<div class="tc-requests">${tm.joinRequests.map(r => `<div class="tc-req"><span>${esc(r.name)} wants to join</span><span class="tc-req-btns"><button class="btn primary small" data-approve="${tm.id}:${r.playerId}">Accept</button> <button class="btn ghost small" data-decline="${tm.id}:${r.playerId}">Decline</button></span></div>`).join('')}</div>` : ''}
       ${admin ? `<div class="tc-admin">${full ? `<button class="btn ghost small" data-checkin="${tm.id}" data-val="${tm.checkedIn ? 0 : 1}">${tm.checkedIn ? 'Un-check' : 'Check in'}</button>` : ''}<button class="btn ghost small" data-arename="${tm.id}">Rename</button><button class="btn danger small" data-adisband="${tm.id}">Disband</button></div>` : ''}
     </div>`;
   };
@@ -383,7 +386,10 @@ function drawOpenTeams(el) {
     const name = prompt('New team name:', myTeam.name);
     if (name && name.trim()) call('/rename_team', { teamId: myTeam.id, name: name.trim(), admin: adminToken() }, 'Renamed');
   };
-  el.querySelectorAll('[data-join]').forEach(b => b.onclick = () => call('/join_team', { teamId: b.dataset.join }, 'Joined team'));
+  el.querySelectorAll('[data-request-join]').forEach(b => b.onclick = () => call('/request_join', { teamId: b.dataset.requestJoin }, 'Request sent — the captain will approve it'));
+  el.querySelectorAll('[data-cancel-join]').forEach(b => b.onclick = () => call('/cancel_join', { teamId: b.dataset.cancelJoin }, 'Request withdrawn'));
+  el.querySelectorAll('[data-approve]').forEach(b => b.onclick = () => { const [teamId, playerId] = b.dataset.approve.split(':'); call('/respond_join', { teamId, playerId, accept: 1 }, 'Added to your team'); });
+  el.querySelectorAll('[data-decline]').forEach(b => b.onclick = () => { const [teamId, playerId] = b.dataset.decline.split(':'); call('/respond_join', { teamId, playerId, accept: 0 }, 'Declined'); });
   el.querySelectorAll('[data-adisband]').forEach(b => b.onclick = () => { if (confirm('Disband this team?')) call('/disband_team', { teamId: b.dataset.adisband }, 'Team disbanded'); });
   el.querySelectorAll('[data-arename]').forEach(b => b.onclick = () => {
     const tm = T.teams.find(x => x.id === b.dataset.arename);

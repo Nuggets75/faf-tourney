@@ -437,6 +437,14 @@ async function renderTournament() {
 function myTurnInfo() {
   const me = T.viewer || {};
   const myTeam = me.teamId || null;
+  // 0. join requests awaiting the captain
+  if (myTeam && T.status === 'signup' && T.teams) {
+    const capT = T.teams.find(x => x.id === myTeam);
+    if (capT && (capT.joinRequests || []).length) {
+      const n = capT.joinRequests.length;
+      return { text: n + ' player' + (n === 1 ? '' : 's') + ' want to join your team — accept or decline.', tab: 'teams', cta: 'Review requests' };
+    }
+  }
   // 1. captain's draft pick
   if (T.status === 'draft' && T.draft && T.draft.order) {
     const turnTeam = T.draft.order[T.draft.current];

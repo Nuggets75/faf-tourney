@@ -338,6 +338,7 @@ function publicView(t) {
       division: x.division || 0,
       checkedIn: x.checkedIn ? 1 : 0, createdAt: x.createdAt || 0,
       captainRenamed: x.captainRenamed ? 1 : 0,
+      joinRequests: (x.joinRequests || []).map(r => ({ playerId: r.playerId, name: r.name, at: r.at || 0 })),
       eliminated: x.eliminated || false,
       out: x.out || null,
       finalRank: x.finalRank || null
@@ -964,6 +965,43 @@ async function handleAPI(req, res, url) {
     return json(res, 200, arts);
   }
 
+  if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'pending' && method === 'GET') {
+    const sess = currentSession(req);
+    const out = [];
+    if (sess && sess.fafId) {
+      for (const t of Object.values(db.tournaments)) {
+        if (t.archived || t.published === false) continue;
+        const meP = (t.players || []).find(p => p.fafId === sess.fafId);
+        if (!meP) continue;
+        const capTeam = (t.teams || []).find(tm => tm.captainId === meP.id);
+        const myTeam = meP.teamId ? (t.teams || []).find(tm => tm.id === meP.teamId) : null;
+        // join requests awaiting the captain
+        if (capTeam && t.status === 'signup' && (capTeam.joinRequests || []).length) {
+          const n = capTeam.joinRequests.length;
+          out.push({ tId: t.id, tName: t.name, type: 'join', tab: 'teams', text: n + ' player' + (n === 1 ? '' : 's') + ' want to join ' + capTeam.name });
+        }
+        // captains-draft pick on the clock
+        if (t.status === 'draft' && t.draft && t.draft.order && capTeam && t.draft.order[t.draft.current] === capTeam.id) {
+          out.push({ tId: t.id, tName: t.name, type: 'draft', tab: 'teams', text: "It's your pick in the captains draft" });
+        }
+        // map-veto step
+        if (capTeam && Array.isArray(t.matches)) {
+          for (const m of t.matches) {
+            const v = m.veto; if (!v || v.done || !v.teamA || !v.teamB) continue;
+            const step = v.sequence[v.stepIndex]; if (!step) continue;
+            const turn = step.team === 'A' ? v.teamA : v.teamB;
+            if (turn === capTeam.id) { out.push({ tId: t.id, tName: t.name, type: 'veto', tab: 'vetoes', text: 'Your turn to ' + (step.action === 'ban' ? 'ban' : 'pick') + ' a map' }); break; }
+          }
+        }
+        // check-in before the deadline (any member of a full, unchecked team)
+        if (myTeam && t.status === 'signup' && t.checkInDeadline && Date.now() < t.checkInDeadline && myTeam.playerIds.length >= t.teamSize && !myTeam.checkedIn) {
+          out.push({ tId: t.id, tName: t.name, type: 'checkin', tab: 'teams', text: 'Check in ' + myTeam.name + ' before the deadline' });
+        }
+      }
+    }
+    return json(res, 200, { pending: out });
+  }
+
   if (parts.length >= 3 && parts[1] === 't') {
     const t = getT(parts[2]);
     if (!t) return json(res, 404, { error: 'Tournament not found' });
@@ -1217,7 +1255,7 @@ async function handleAPI(req, res, url) {
     // rename the dropped player to the sub's FAF name and fix the rating
     // ===== open-team management (formation === 'open') =====
     // helper checks live here so they can reference the request session
-    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'checkin_team', 'org_create_team'].indexOf(sub) >= 0) {
+    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'checkin_team', 'org_create_team', 'request_join', 'respond_join', 'cancel_join'].indexOf(sub) >= 0) {
       if (t.formation !== 'open') return bad(res, 'This tournament does not use open team signups');
       if (t.status !== 'signup') return bad(res, 'Teams are locked once the tournament starts');
     }
@@ -1285,14 +1323,54 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'join_team') {
+      // Instant self-join is gone: players request, the captain approves.
+      return bad(res, 'Send a join request — the team captain approves it.');
+    }
+
+    if (sub === 'request_join') {
       const me = actingPlayer(b);
       if (!me) return json(res, 401, { error: 'Sign up first' });
       if (me.teamId) return bad(res, 'Leave your current team first');
       const team = teamById(t, b.teamId);
       if (!team) return bad(res, 'Team not found');
       if (team.playerIds.length >= t.teamSize) return bad(res, 'That team is full');
-      team.playerIds.push(me.id);
-      me.teamId = team.id;
+      team.joinRequests = team.joinRequests || [];
+      if (team.joinRequests.some(r => r.playerId === me.id)) return json(res, 200, { ok: true, already: 1 });
+      team.joinRequests.push({ playerId: me.id, name: me.name, at: now() });
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'cancel_join') {
+      const me = actingPlayer(b);
+      if (!me) return json(res, 401, { error: 'Sign up first' });
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      team.joinRequests = (team.joinRequests || []).filter(r => r.playerId !== me.id);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'respond_join') {
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      const me = actingPlayer(b);
+      const isCap = !!(me && team.captainId === me.id);
+      if (!isCap && !canOrganize(t, req, b)) return json(res, 403, { error: 'Only the team captain or an organizer can respond to join requests' });
+      team.joinRequests = team.joinRequests || [];
+      const idx = team.joinRequests.findIndex(r => r.playerId === b.playerId);
+      if (idx < 0) return bad(res, 'That request is no longer pending');
+      const jr = team.joinRequests.splice(idx, 1)[0];
+      if (b.accept) {
+        const p = playerById(t, jr.playerId);
+        if (!p) return bad(res, 'That player is no longer signed up');
+        if (p.teamId) return bad(res, 'That player already joined another team');
+        if (team.playerIds.length >= t.teamSize) return bad(res, 'Your team is already full');
+        team.playerIds.push(p.id);
+        p.teamId = team.id;
+        // once they're on a team, drop their pending requests everywhere
+        t.teams.forEach(tm => { if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== p.id); });
+      }
       saveDB();
       return json(res, 200, { ok: true });
     }

@@ -617,6 +617,7 @@ function route() {
   else if (location.pathname === '/faq') renderFaq();
   else if (tourneyId()) renderTournament();
   else renderHome();
+  refreshPending();
 }
 
 async function renderHall() {

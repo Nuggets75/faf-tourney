@@ -466,6 +466,13 @@ tbody tr:hover { background: #ffffff05; }
 .desc-gallery img { max-height: 130px; max-width: 220px; border-radius: 4px; border: 1px solid var(--line-solid); object-fit: cover; display: block; }
 .desc-thumb { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .tc-checkin { margin-top: 6px; }
+.pending-bar { display: flex; align-items: center; gap: 12px; background: rgba(245,180,60,0.12); border-bottom: 1px solid var(--amber); padding: 8px 16px; font-size: 13px; }
+.pending-bar .pending-text { flex: 1; }
+.pending-more { color: var(--muted, #8a97a8); font-size: 12px; }
+.tc-requests { margin-top: 8px; border-top: 1px solid var(--line-solid); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tc-req { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.tc-req-btns { white-space: nowrap; }
+.tc-pending { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
 .modal-wide { max-width: 760px; }
 .ic-body .art-img, .art-preview .art-img { display: block; max-width: 100%; max-height: 420px; border-radius: 4px; border: 1px solid var(--line-solid); margin: 8px 0; }
 .art-preview { margin-top: 6px; padding: 12px 14px; border: 1px solid var(--line-solid); border-radius: 4px; background: #0c121980; min-height: 60px; }

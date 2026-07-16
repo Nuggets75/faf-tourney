@@ -41,6 +41,33 @@ function tourneyId() {
   const m = location.pathname.match(/^\/t\/([a-z0-9]+)/i);
   return m ? m[1] : null;
 }
+
+// Cross-tournament "waiting on you" banner: join requests to approve, your draft pick,
+// your veto turn, check-in. The current tournament is excluded (its own in-page banner covers it).
+async function refreshPending() {
+  let bar = document.getElementById('pendingBar');
+  if (!bar) {
+    const app = document.getElementById('app');
+    if (!app || !app.parentNode) return;
+    bar = document.createElement('div'); bar.id = 'pendingBar';
+    app.parentNode.insertBefore(bar, app);
+  }
+  if (!fafAuth.enabled || !me()) { bar.innerHTML = ''; return; }
+  let items = [];
+  try { const d = await (await fetch('/api/my/pending', { credentials: 'same-origin' })).json(); items = (d && d.pending) || []; }
+  catch (e) { bar.innerHTML = ''; return; }
+  const cur = tourneyId();
+  const shown = items.filter(it => it.tId !== cur);
+  if (!shown.length) { bar.innerHTML = ''; return; }
+  const it = shown[0];
+  const more = shown.length > 1 ? '<span class="pending-more">+' + (shown.length - 1) + ' more</span>' : '';
+  bar.innerHTML = '<div class="pending-bar"><span class="pending-text">\u26A1 ' + esc(it.text) + ' \u2014 <strong>' + esc(it.tName) + '</strong></span>' +
+    '<button class="btn small" id="pendingGo">Go</button>' + more + '</div>';
+  bar.querySelector('#pendingGo').onclick = () => {
+    history.pushState(null, '', '/t/' + it.tId + (it.tab && it.tab !== 'overview' ? '?tab=' + it.tab : ''));
+    route();
+  };
+}
 function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
 // FAF login state, populated by refreshFafAuth() on load. fafAuth = { enabled, user:{fafId,fafName}|null }
 let fafAuth = { enabled: false, user: null };
@@ -403,20 +430,20 @@ function drawTopbar(modeText) {
     (me()
       ? '<button class="btn ghost small" id="cmdrBtn" title="Player account">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
-    (mode ? '<span>' + esc(mode) + '</span>' : '') +
-    '<button class="gearbtn" id="lockBtn" title="Site admin">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
+    (siteAdmin()
+      ? '<button class="btn ghost small" id="saLink" title="Open the site admin console">SITE ADMIN</button>'
+      : (mode ? '<span>' + esc(mode) + '</span>' : '')) +
+    '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Log out of site admin' : 'Site admin log in') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
+  const saLink = document.getElementById('saLink');
+  if (saLink) saLink.onclick = () => { history.pushState(null, '', '/siteadmin'); route(); };
   const goTo = p => { history.pushState(null, '', p); route(); };
   document.getElementById('navStart').onclick = () => goTo('/');
   document.getElementById('navHall').onclick = () => goTo('/hall');
   document.getElementById('navFaq').onclick = () => goTo('/faq');
   document.getElementById('lockBtn').onclick = () => {
-    // already logged in? go to the console (log out from there)
-    if (siteAdmin()) {
-      if (location.pathname === '/siteadmin') { siteAdminFlow(); return; }  // toggles off
-      history.pushState(null, '', '/siteadmin'); route(); return;
-    }
+    // Log in if logged out, log out if logged in. Opening the console is the "SITE ADMIN" link's job.
     siteAdminFlow();
   };
   document.getElementById('cmdrBtn').onclick = loginFlow;
@@ -555,6 +582,48 @@ function loginFlow() {
     };
   });
 }
+let saTab = 'requests';
+let saData = null;
+
+async function renderSiteAdmin() {
+  setTitle('Site admin');
+  drawTopbar('');
+  const app = document.getElementById('app');
+  if (!siteAdmin()) {
+    app.innerHTML = `<div class="page"><div class="panel"><div class="empty">
+      Site admin only - use the lock button in the top right to log in.</div></div></div>`;
+    return;
+  }
+  app.innerHTML = `<div class="page">
+    <h1 style="margin:0 0 14px">Site admin</h1>
+    <div class="tabs" style="margin-bottom:14px">
+      <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && (saData.requests || []).filter(r => r.status === 'pending').length) ? ' (' + saData.requests.filter(r => r.status === 'pending').length + ')' : ''}</button>
+      <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
+      <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
+      <button class="tab ${saTab === 'articles' ? 'active' : ''}" data-satab="articles">Articles</button>
+    </div>
+    <div id="saBody"><div class="panel"><div class="empty">Loading…</div></div></div>
+  </div>`;
+  app.querySelectorAll('[data-satab]').forEach(b => b.onclick = () => { saTab = b.dataset.satab; renderSiteAdmin(); });
+
+  try {
+    const r = await fetch('/api/siteadmin/data', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: siteAdmin() })
+    });
+    saData = await r.json();
+    if (!r.ok) throw new Error(saData.error || 'Failed to load');
+  } catch (e) {
+    document.getElementById('saBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>';
+    return;
+  }
+  const body = document.getElementById('saBody');
+  if (saTab === 'requests') drawSaRequests(body);
+  else if (saTab === 'archived') drawSaArchived(body);
+  else if (saTab === 'articles') drawSaArticles(body);
+  else drawSaLogs(body);
+}
+
 function drawSaRequests(el) {
   const reqs = saData.requests || [];
   const pending = reqs.filter(r => r.status === 'pending');
@@ -817,7 +886,6 @@ function siteAdminFlow() {
         localStorage.setItem('siteAdmin', inp.value);
         closeModal();
         toast('Site admin on');
-        history.pushState(null, '', '/siteadmin');
         route();
       } catch (e) { toast(e.message, true); }
     };
