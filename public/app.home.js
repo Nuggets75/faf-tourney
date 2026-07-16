@@ -563,8 +563,9 @@ function drawTournament() {
         </div>
         <span class="pill ${T.status}">${esc(statusLabel(T.status))}</span>
       </div>
-      <div class="stepper">
-        ${steps.map((s, i) => `<div class="step ${i < phaseIdx ? 'done' : i === phaseIdx ? 'now' : ''}">${s}</div>`).join('')}
+      <div class="stepper" title="The tournament's progress through its stages">
+        <span class="stepper-label">Stage</span>
+        ${steps.map((s, i) => `<div class="step ${i < phaseIdx ? 'done' : i === phaseIdx ? 'now' : ''}" title="${i < phaseIdx ? 'Completed' : i === phaseIdx ? 'Current stage' : 'Upcoming'}">${s}</div>`).join('<span class="step-arrow">\u25B8</span>')}
       </div>
       <div class="tabs">
         ${tabs.map(tb => `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}</button>`).join('')}

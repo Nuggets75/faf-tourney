@@ -143,10 +143,14 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* phase stepper */
-.stepper { display: flex; gap: 6px; margin: 18px 0 24px; font-family: var(--display); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
-.step { flex: 1; text-align: center; padding: 8px 4px 9px; color: var(--muted); position: relative; background: #141d2880; border: 1px solid var(--line-solid); border-radius: 3px; }
-.step.done { color: var(--blue); border-color: #5c9ee84d; background: #5c9ee80f; }
-.step.now { color: var(--amber); border-color: #ffb44766; background: var(--amber-dim); box-shadow: 0 0 16px #ffb44722, inset 0 -2px 0 var(--amber); }
+.stepper { display: flex; align-items: center; gap: 0; margin: 18px 0 24px; font-family: var(--display); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+.stepper-label { flex: none; font-family: var(--mono); font-size: 10px; letter-spacing: 2px; color: var(--muted); margin-right: 12px; opacity: .8; }
+.step-arrow { flex: none; color: var(--muted); padding: 0 8px; opacity: .6; font-size: 13px; }
+.step { flex: 1; text-align: center; padding: 8px 4px 9px; color: var(--muted); position: relative; background: transparent; border: 1px dashed var(--line-solid); border-radius: 2px; opacity: .75; }
+.step.done { color: var(--blue); border: 1px solid #5c9ee84d; background: #5c9ee80f; opacity: 1; }
+.step.done::before { content: '\2713 '; color: var(--green); }
+.step.now { color: var(--amber); border: 1px solid #ffb44766; background: var(--amber-dim); box-shadow: 0 0 16px #ffb44722, inset 0 -2px 0 var(--amber); opacity: 1; }
+.step.now::before { content: '\25B8 '; }
 
 /* tabs — bordered pills */
 .tabs { display: flex; gap: 8px; margin: 22px 0 22px; flex-wrap: wrap; }
@@ -501,7 +505,9 @@ tbody tr:hover { background: #ffffff05; }
   h2 { font-size: 14px; }
 
   /* stepper + tabs scroll horizontally instead of squishing */
-  .stepper { overflow-x: auto; gap: 4px; -webkit-overflow-scrolling: touch; }
+  .stepper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .stepper-label { display: none; }
+  .step-arrow { padding: 0 5px; }
   .step { flex: 0 0 auto; padding: 7px 12px; }
   .tabs { flex-wrap: nowrap; overflow-x: auto; gap: 6px; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
   .tab { flex: 0 0 auto; padding: 8px 14px; }
