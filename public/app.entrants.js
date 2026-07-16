@@ -41,7 +41,9 @@ function drawPlayers(el) {
             <div>
               ${fafAuth.enabled ? '<p class="muted small">Signing up as <strong>' + esc(me()) + '</strong> (your FAF account).</p>' : '<label>FAF name</label><input type="text" id="sName" maxlength="30" placeholder="Your in-game name" autocomplete="off">'}
               ${(T.formation === 'premade' && T.teamSize > 1) ? '<label>Team name</label><input type="text" id="sTeam" maxlength="30" placeholder="Your team name" autocomplete="off">' : ''}
-              <label>Rating${T.ratingType && T.ratingType !== 'global' ? ' (' + esc(T.ratingType) + ')' : ' (global)'}</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">
+              ${(T.ratingType && T.ratingType !== 'none')
+                ? '<p class="muted small">Your <strong>' + esc(T.ratingType === 'global' ? 'Global' : T.ratingType === '1v1' ? '1v1 / ladder' : T.ratingType) + '</strong> rating' + (T.ratingDate ? ' as of ' + new Date(T.ratingDate).toLocaleDateString() : '') + ' is pulled from FAF automatically when you sign up.</p>'
+                : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
               <div style="margin-top:16px"><button class="btn primary" id="sGo">Sign up${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
             </div>
             <div class="muted small" style="align-self:end">${esc(helpText)}</div>
@@ -157,16 +159,17 @@ function drawPlayers(el) {
   const go = document.getElementById('sGo');
   if (go) go.onclick = async () => {
     const nameEl = document.getElementById('sName'); // only present pre-go-live (no OAuth)
+    const rEl = document.getElementById('sRating');  // absent when the rating is auto-fetched
     const body = {
-      rating: document.getElementById('sRating').value,
       teamName: document.getElementById('sTeam') ? document.getElementById('sTeam').value : ''
     };
+    if (rEl) body.rating = rEl.value;
     if (nameEl) {
       const name = (nameEl.value || '').trim();
       if (!name) return toast('Enter your FAF name', true);
       body.name = name;
     }
-    if (document.getElementById('sRating').value === '') return toast('Enter your rating — it is used for balancing and seeding', true);
+    if (rEl && rEl.value === '') return toast('Enter your rating — it is used for balancing and seeding', true);
     try {
       await api('/api/t/' + T.id + '/signup', body);
       toast('Signed up — good luck, commander');

@@ -212,12 +212,16 @@ async function renderHost() {
 
         <label>Rating used</label>
         <select id="cRatingType">
-          <option value="global" selected>Global</option>
-          <option value="1v1">1v1 (ladder)</option>
-          <option value="2v2">2v2</option>
-          <option value="3v3">3v3</option>
-          <option value="4v4">4v4</option>
+          <option value="global" selected>Global (fetched from FAF)</option>
+          <option value="1v1">1v1 / ladder (fetched)</option>
+          <option value="2v2">2v2 (fetched)</option>
+          <option value="3v3">3v3 (fetched)</option>
+          <option value="4v4">4v4 (fetched)</option>
+          <option value="none">None — players enter their own rating</option>
         </select>
+
+        <label>Rating date <span class="muted small">(rating taken as of this day; blank = at signup time)</span></label>
+        <input type="date" id="cRatingDate">
         <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
           <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
         </label>
@@ -302,6 +306,7 @@ async function renderHost() {
         finalSize: finalMode.value === '1' ? document.getElementById('cFfaFinalSize').value : 0,
         seeding: document.getElementById('cSeed').value,
         ratingType: document.getElementById('cRatingType').value,
+        ratingDate: document.getElementById('cRatingDate').value || null,
         admin: siteAdmin() || undefined,
         veto: { enabled: document.getElementById('cVeto').checked, mode: 'upfront' },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
@@ -585,6 +590,8 @@ function drawTournament() {
 function gameInfoPanel() {
   const cells = [];
   if (T.category) cells.push(['Type', T.category === 'official' ? 'Official' : 'Community']);
+  if (T.ratingType && T.ratingType !== 'none') cells.push(['Rating', (T.ratingType === 'global' ? 'Global' : T.ratingType === '1v1' ? '1v1 / ladder' : T.ratingType) + (T.ratingDate ? ', as of ' + new Date(T.ratingDate).toLocaleDateString() : ' (at signup)') + ' — pulled from FAF']);
+  else cells.push(['Rating', 'Entered by players']);
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
   if (T.description) cells.push(['Briefing', T.description]);
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);

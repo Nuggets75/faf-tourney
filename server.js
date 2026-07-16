@@ -321,7 +321,7 @@ function publicView(t) {
     teamSize: t.teamSize, draftOrder: t.draftOrder,
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
     plan: t.plan || null, maxTeams: t.maxTeams || 0,
-    cfg: t.cfg || null, seeding: t.seeding, ratingType: t.ratingType || 'global',
+    cfg: t.cfg || null, seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
     veto: t.veto || { enabled: false, mode: 'upfront' },
     status: t.status, createdAt: t.createdAt,
     eventDate: t.eventDate || null,
@@ -532,6 +532,39 @@ async function fafFetchIdentity(accessToken) {
   return { fafId: fafId ? String(fafId) : null, fafName: fafName ? String(fafName) : null };
 }
 
+// FAF leaderboard ids (from /data/leaderboard): global=1, ladder_1v1=2, tmm_2v2=3, tmm_3v3=6, tmm_4v4_full_share=4.
+const FAF_LEADERBOARD_ID = { global: 1, '1v1': 2, '2v2': 3, '3v3': 6, '4v4': 4 };
+
+// One journal lookup. Returns { status, rating }. rating = round(mean - 3*deviation) of the
+// newest rating-change on or before the cutoff (FAF's displayed rating; formula confirmed against
+// the LeaderboardRating sample). The journal has no player_id column, so the player is reached via
+// gamePlayerStats; if the API rejects that path we retry with a direct player filter.
+async function fafJournalRating(playerFilter, lb, iso) {
+  const filter = playerFilter + ';leaderboard.id==' + lb + ';createTime=le=' + iso;
+  const path = '/data/leaderboardRatingJournal?filter=' + encodeURIComponent(filter) + '&sort=-createTime&page%5Bsize%5D=1';
+  const r = await httpsRequest({ host: 'api.faforever.com', path, method: 'GET', headers: { 'Accept': 'application/vnd.api+json' } });
+  if (r.status !== 200) return { status: r.status, rating: null };
+  const j = JSON.parse(r.text);
+  const row = j && j.data && j.data[0];
+  if (!row || !row.attributes) return { status: 200, rating: null };
+  const mean = Number(row.attributes.meanAfter), dev = Number(row.attributes.deviationAfter);
+  if (!isFinite(mean) || !isFinite(dev)) return { status: 200, rating: null };
+  return { status: 200, rating: Math.max(0, Math.round(mean - 3 * dev)) };
+}
+
+// A single player's rating for a leaderboard AS OF a date (blank/now => current). Runs on the live
+// server (which can reach api.faforever.com); no auth needed for this public read.
+async function fafFetchRating(fafId, ratingType, asOfMs) {
+  const lb = FAF_LEADERBOARD_ID[ratingType];
+  if (!lb || !fafId) return null;
+  const iso = new Date(asOfMs || Date.now()).toISOString();
+  try {
+    let res = await fafJournalRating('gamePlayerStats.player.id==' + fafId, lb, iso);
+    if (res.status !== 200) res = await fafJournalRating('player.id==' + fafId, lb, iso);
+    return res.rating;
+  } catch (e) { return null; }
+}
+
 // ---------- auth routes ----------
 async function handleAuth(req, res, url) {
   const parts = url.pathname.split('/').filter(Boolean); // ['auth','faf',...]
@@ -700,7 +733,8 @@ async function handleAPI(req, res, url) {
       plan, maxTeams,
       cfg: null, maps: {}, mapDb: [], mapPools: [], poolAssign: {},
       seeding: (['rating', 'random', 'manual'].indexOf(b.seeding) >= 0) ? b.seeding : 'rating',
-      ratingType: (['global', '1v1', '2v2', '3v3', '4v4'].indexOf(b.ratingType) >= 0) ? b.ratingType : 'global',
+      ratingType: (['global', '1v1', '2v2', '3v3', '4v4'].indexOf(b.ratingType) >= 0) ? b.ratingType : (b.ratingType === 'none' ? 'none' : 'global'),
+      ratingDate: b.ratingDate ? (new Date(b.ratingDate).getTime() || null) : null,
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
@@ -1140,7 +1174,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'signup') {
-      if (t.formation === 'premade' && t.teamSize > 1) return bad(res, 'This tournament uses whole-team registration \u2014 one player registers the full team');
+      if (!FAF_OAUTH_ON && t.formation === 'premade' && t.teamSize > 1) return bad(res, 'This tournament uses whole-team registration \u2014 one player registers the full team');
 
       const sess = currentSession(req);
       const adminAdding = isAdmin(t, b.admin) || canOrganize(t, req, b);
@@ -1169,10 +1203,16 @@ async function handleAPI(req, res, url) {
       if (fafId && t.players.some(p => p.fafId === fafId)) return bad(res, 'You are already signed up');
       if (t.players.some(p => p.name.toLowerCase() === name.toLowerCase())) return bad(res, manual ? 'That name is already signed up' : 'You are already signed up');
 
-      const rating = parseInt(b.rating, 10);
-      if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a FAF rating (0\u20134000)');
+      let rating;
+      if (t.ratingType && t.ratingType !== 'none') {
+        // Rating is fetched from FAF as of the tournament's rating date; players can't enter it.
+        rating = fafId ? await fafFetchRating(fafId, t.ratingType, t.ratingDate) : null;
+      } else {
+        rating = parseInt(b.rating, 10);
+        if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a FAF rating (0\u20134000)');
+      }
       const p = {
-        id: 'p' + uid(4), name, rating, fafId: fafId, manual: manual,
+        id: 'p' + uid(4), name, rating: (rating != null ? rating : null), fafId: fafId, manual: manual,
         late: (t.status !== 'signup') ? 1 : 0,
         teamName: (t.formation === 'premade') ? cleanName(b.teamName, 30) : '',
         teamId: null, signedAt: now()
