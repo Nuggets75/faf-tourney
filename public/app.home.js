@@ -45,7 +45,7 @@ async function renderHome() {
         (t.teamSize + 'v' + t.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[t.bracketType] || ''));
       div.innerHTML = `
         <div>
-          <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a></div>
+          <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="tcat">\u2014 ' + (t.category === 'official' ? 'official' : 'community') + ' tourney</span>' : ''}</div>
           <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px">
