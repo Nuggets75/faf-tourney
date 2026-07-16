@@ -594,7 +594,7 @@ async function fafJournalRating(playerFilter, lbName, cutoffIso, token) {
 }
 
 // Player path via gamePlayerStats (the downloader's confirmed filter), with a direct player.id
-// fallback. Returns a detailed probe (used by signup and the /api/my/rating-debug diagnostic).
+// fallback. Returns a detailed probe object used by the signup rating fetch.
 async function fafRatingProbe(fafId, ratingType, asOfMs, token) {
   const lbName = FAF_LEADERBOARD_NAME[ratingType];
   const out = { fafId, ratingType, leaderboard: lbName || null, cutoff: null, hasToken: !!token, attempts: [], rating: null };
@@ -1054,17 +1054,6 @@ async function handleAPI(req, res, url) {
   if (parts.length === 2 && parts[1] === 'articles' && method === 'GET') {
     const arts = (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
     return json(res, 200, arts);
-  }
-
-  if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'rating-debug' && method === 'GET') {
-    const sess = currentSession(req);
-    if (!sess || !sess.fafId) return json(res, 401, { error: 'Log in with FAF first' });
-    const type = url.searchParams.get('type') || 'global';
-    const dateStr = url.searchParams.get('date');
-    const asOfMs = dateStr ? (new Date(dateStr).getTime() || Date.now()) : Date.now();
-    const token = await fafValidToken(sess);
-    const probe = await fafRatingProbe(sess.fafId, type, asOfMs, token);
-    return json(res, 200, probe);
   }
 
   if (parts.length === 3 && parts[1] === 'my' && parts[2] === 'pending' && method === 'GET') {
