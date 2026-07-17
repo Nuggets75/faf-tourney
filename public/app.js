@@ -441,12 +441,16 @@ function drawTopbar(modeText) {
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
     (siteAdmin()
       ? '<button class="btn ghost small" id="saLink" title="Open the site admin console">SITE ADMIN</button>'
-      : (mode ? '<span>' + esc(mode) + '</span>' : '')) +
+      : (fafAuth.user && fafAuth.user.editor
+        ? '<button class="btn ghost small" id="edLink" title="Open the articles editor">EDITOR</button>'
+        : (mode ? '<span>' + esc(mode) + '</span>' : ''))) +
     '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Log out of site admin' : 'Site admin log in') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
   const saLink = document.getElementById('saLink');
   if (saLink) saLink.onclick = () => { history.pushState(null, '', '/siteadmin'); route(); };
+  const edLink = document.getElementById('edLink');
+  if (edLink) edLink.onclick = () => { history.pushState(null, '', '/editor'); route(); };
   const goTo = p => { history.pushState(null, '', p); route(); };
   document.getElementById('navStart').onclick = () => goTo('/');
   document.getElementById('navHall').onclick = () => goTo('/hall');
@@ -618,7 +622,7 @@ async function renderSiteAdmin() {
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin</h1>
     <div class="tabs" style="margin-bottom:14px">
-      <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && (saData.requests || []).filter(r => r.status === 'pending').length) ? ' (' + saData.requests.filter(r => r.status === 'pending').length + ')' : ''}</button>
+      <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>
       <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
       <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
       <button class="tab ${saTab === 'articles' ? 'active' : ''}" data-satab="articles">Articles</button>
@@ -690,6 +694,52 @@ function drawSaRequests(el) {
       '</tbody></table></div>';
   }
 
+  // ---- articles editor access (separate role: FAQ/Rules editing only) ----
+  const edReqs = saData.editorRequests || [];
+  const edPending = edReqs.filter(r => r.status === 'pending');
+  const edDecided = edReqs.filter(r => r.status !== 'pending');
+  const edAllowed = saData.editorAllowed || [];
+
+  html += `<div class="panel section" style="border-left:3px solid var(--blue)">
+    <h2>Articles editors</h2>
+    <p class="muted small" style="margin:6px 0 10px">Editors can create and edit the public FAQ / Rules articles — nothing else. Share this link; people log in with FAF there and request access, which lands here for you to confirm:</p>
+    <div class="copybox"><input type="text" readonly value="${location.origin}/editor"><button class="btn small" data-copy="${location.origin}/editor">Copy editor link</button></div>
+  </div>`;
+
+  html += `<div class="panel section"><h2>Pending editor requests ${edPending.length ? '(' + edPending.length + ')' : ''}</h2>`;
+  if (!edPending.length) html += '<div class="empty">Nothing waiting.</div>';
+  else html += edPending.map(r => `<div class="sa-req">
+      <div class="sa-req-main">
+        <div class="sa-req-name">${esc(r.fafName)} <span class="muted small">FAF id ${esc(r.fafId)}</span> <span class="muted small">wants access to the articles</span></div>
+        ${r.message ? `<div class="sa-req-msg">${esc(r.message)}</div>` : ''}
+        <div class="muted small">${esc(fmtWhen(r.at))}</div>
+      </div>
+      <div class="sa-req-act">
+        <button class="btn primary small" data-saeddec="${r.id}" data-ok="1">Approve</button>
+        <button class="btn ghost small" data-saeddec="${r.id}" data-ok="0">Deny</button>
+      </div>
+    </div>`).join('');
+  html += '</div>';
+
+  html += `<div class="panel section">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h2 style="margin:0">Approved editors (${edAllowed.length})</h2>
+      <button class="btn ghost small" id="saEdGrant">+ Add by FAF id</button>
+    </div>`;
+  if (!edAllowed.length) html += '<div class="empty" style="margin-top:10px">Nobody yet.</div>';
+  else html += '<div class="pick-rows" style="margin-top:10px">' + edAllowed.map(a => `<div class="pick-row on" style="cursor:default">
+      <span class="pr-name">${esc(a.name)} <span class="muted small">FAF id ${esc(a.fafId)}</span></span>
+      <span class="muted small">${esc(fmtWhen(a.at))}</span>
+      <button class="btn danger small" data-saedrev="${esc(a.fafId)}">Revoke</button>
+    </div>`).join('') + '</div>';
+  html += '</div>';
+
+  if (edDecided.length) {
+    html += '<div class="panel section"><h2>Past editor decisions</h2><table><thead><tr><th>Who</th><th>Outcome</th><th>When</th></tr></thead><tbody>' +
+      edDecided.map(r => `<tr><td>${esc(r.fafName)}</td><td class="${r.status === 'approved' ? 'ok-msg' : 'muted'}">${esc(r.status)}</td><td class="muted small">${esc(fmtWhen(r.decidedAt || r.at))}</td></tr>`).join('') +
+      '</tbody></table></div>';
+  }
+
   el.innerHTML = html;
   el.querySelectorAll('[data-sadec]').forEach(b => b.onclick = async () => {
     try {
@@ -703,6 +753,36 @@ function drawSaRequests(el) {
     try { await saPost('revoke', { fafId: b.dataset.sarev }); toast('Revoked'); renderSiteAdmin(); }
     catch (e) { toast(e.message, true); }
   });
+  el.querySelectorAll('[data-saeddec]').forEach(b => b.onclick = async () => {
+    try {
+      await saPost('editor_decide', { id: b.dataset.saeddec, approve: b.dataset.ok === '1' ? 1 : 0 });
+      toast(b.dataset.ok === '1' ? 'Approved' : 'Denied');
+      renderSiteAdmin();
+    } catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-saedrev]').forEach(b => b.onclick = async () => {
+    if (!confirm('Revoke articles access for this account?')) return;
+    try { await saPost('editor_revoke', { fafId: b.dataset.saedrev }); toast('Revoked'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
+  const eg = document.getElementById('saEdGrant');
+  if (eg) eg.onclick = () => {
+    modal(`<h3>Allow an account to edit articles</h3>
+      <label>FAF id</label><input type="text" id="segId" autocomplete="off">
+      <label>Name <span class="muted small">(optional, for the list)</span></label><input type="text" id="segName" maxlength="60" autocomplete="off">
+      <div class="actions"><button class="btn ghost" id="segCancel">Cancel</button><button class="btn primary" id="segGo">Allow</button></div>`, root => {
+      root.querySelector('#segCancel').onclick = closeModal;
+      root.querySelector('#segGo').onclick = async () => {
+        const fafId = root.querySelector('#segId').value.trim();
+        if (!fafId) return toast('FAF id required', true);
+        try {
+          await saPost('editor_grant', { fafId, name: root.querySelector('#segName').value.trim() });
+          closeModal(); toast('Allowed'); renderSiteAdmin();
+        } catch (e) { toast(e.message, true); }
+      };
+    });
+  };
   const g = document.getElementById('saGrant');
   if (g) g.onclick = () => {
     modal(`<h3>Allow an account to host</h3>
@@ -839,7 +919,7 @@ function drawSaArticles(el) {
       root.querySelector('#artSave').onclick = async () => {
         const title = root.querySelector('#artTitle').value.trim();
         if (!title) return toast('Title required', true);
-        try { await saPost('article_save', art ? { id: art.id, title, body: ta.value } : { title, body: ta.value }); closeModal(); toast('Saved'); renderSiteAdmin(); }
+        try { await saPost('article_save', art ? { id: art.id, title, body: ta.value } : { title, body: ta.value }); closeModal(); toast('Saved'); saRefresh(); }
         catch (e) { toast(e.message, true); }
       };
     }, { wide: true });
@@ -848,7 +928,7 @@ function drawSaArticles(el) {
   el.querySelectorAll('[data-artedit]').forEach(b => b.onclick = () => editor(arts.find(a => a.id === b.dataset.artedit)));
   el.querySelectorAll('[data-artdel]').forEach(b => b.onclick = async () => {
     if (!confirm('Delete this article?')) return;
-    try { await saPost('article_delete', { id: b.dataset.artdel }); toast('Deleted'); renderSiteAdmin(); }
+    try { await saPost('article_delete', { id: b.dataset.artdel }); toast('Deleted'); saRefresh(); }
     catch (e) { toast(e.message, true); }
   });
 }
@@ -904,6 +984,90 @@ async function saPost(action, body) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || 'Failed');
   return d;
+}
+
+// The articles UI lives on two pages: the site admin console and the /editor page
+// for approved editors. After an article action, redraw whichever one we're on.
+function saRefresh() {
+  if (location.pathname === '/editor') renderEditor();
+  else renderSiteAdmin();
+}
+
+// ---------- /editor: articles editing for approved FAF accounts ----------
+// Approval flow mirrors hosting access: log in with FAF, request access, the
+// site admin confirms it on the Requests tab. Dormant until FAF login is live.
+async function renderEditor() {
+  setTitle('Articles editor');
+  drawTopbar('');
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="page">
+    <h1 style="margin:0 0 14px">FAQ / Rules articles</h1>
+    <div id="saBody"><div class="panel"><div class="empty">Loading…</div></div></div>
+  </div>`;
+  const body = document.getElementById('saBody');
+
+  // Site admins can use the console's Articles tab; still allow this page via password.
+  if (siteAdmin()) {
+    try {
+      const r = await fetch('/api/siteadmin/data', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: siteAdmin() })
+      });
+      saData = await r.json();
+      if (!r.ok) throw new Error(saData.error || 'Failed to load');
+      return drawSaArticles(body);
+    } catch (e) {
+      body.innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>';
+      return;
+    }
+  }
+
+  let st = null;
+  try { st = await (await fetch('/api/editor_status')).json(); } catch (e) {}
+  if (!st || !st.oauth) {
+    body.innerHTML = '<div class="panel"><div class="empty">FAF login isn\'t configured on this server yet, so editor accounts can\'t be confirmed. Ask the site admin.</div></div>';
+    return;
+  }
+  if (!st.loggedIn) {
+    body.innerHTML = `<div class="panel section"><h2>Log in first</h2>
+      <p class="muted small">Editing the FAQ / Rules articles is tied to your FAF account. Log in, then request access here — the site admin confirms it.</p>
+      <button class="btn primary" id="edLogin">Log in with FAF</button></div>`;
+    document.getElementById('edLogin').onclick = () => {
+      location.href = '/auth/faf/login?returnTo=' + encodeURIComponent('/editor');
+    };
+    return;
+  }
+  if (st.allowed) {
+    try {
+      const r = await fetch('/api/siteadmin/data', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      saData = await r.json();
+      if (!r.ok) throw new Error(saData.error || 'Failed to load');
+      return drawSaArticles(body);
+    } catch (e) {
+      body.innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>';
+      return;
+    }
+  }
+  if (st.pending) {
+    body.innerHTML = `<div class="panel section"><h2>Request sent</h2>
+      <p class="muted small">Your request for articles access is waiting for the site admin. This page unlocks once it\'s approved.</p></div>`;
+    return;
+  }
+  body.innerHTML = `<div class="panel section"><h2>Request articles access</h2>
+    <p class="muted small">Logged in as <strong>${esc(st.name || '')}</strong>. Articles access lets you edit the public FAQ / Rules pages — nothing else. The site admin confirms each account.</p>
+    <label>Message <span class="muted small">(optional)</span></label>
+    <input type="text" id="edMsg" maxlength="300" autocomplete="off" placeholder="Who are you / why do you need access?">
+    <div style="margin-top:12px"><button class="btn primary" id="edReq">Request access</button></div></div>`;
+  document.getElementById('edReq').onclick = async () => {
+    try {
+      await api('/api/editor_request', { message: document.getElementById('edMsg').value });
+      toast('Request sent');
+      renderEditor();
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 function fmtWhen(ms) {

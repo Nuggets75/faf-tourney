@@ -746,6 +746,7 @@ function setTitle(name) {
 function route() {
   if (location.pathname === '/host') renderHost();
   else if (location.pathname === '/siteadmin') renderSiteAdmin();
+  else if (location.pathname === '/editor') renderEditor();
   else if (location.pathname === '/hall') renderHall();
   else if (location.pathname === '/faq') renderFaq();
   else if (tourneyId()) renderTournament();

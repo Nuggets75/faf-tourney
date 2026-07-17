@@ -87,6 +87,8 @@ function loadDB() {
   if (!Array.isArray(db.auditLog)) db.auditLog = [];
   if (!Array.isArray(db.hostRequests)) db.hostRequests = [];
   if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
+  if (!Array.isArray(db.editorRequests)) db.editorRequests = [];
+  if (!db.editorAllowed || typeof db.editorAllowed !== 'object') db.editorAllowed = {};
   if (!Array.isArray(db.articles)) db.articles = [];
   if (!db.profiles || typeof db.profiles !== 'object') db.profiles = {};   // per-FAF-account profile (e.g. discord handle)
   // migrate v1 records so old test tournaments don't crash the client
@@ -143,6 +145,11 @@ function saveDB() {
 
 function getT(id) { return db.tournaments[id] || null; }
 function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
+// Approved articles editor: a FAF account the site admin confirmed for FAQ/Rules editing only.
+function editorSession(req) {
+  const sess = currentSession(req);
+  return (sess && db.editorAllowed[sess.fafId]) ? sess : null;
+}
 
 // ---------- audit log ----------
 // A short, honest record of the things worth being able to answer later: who made this, and
@@ -715,7 +722,7 @@ async function handleAuth(req, res, url) {
     const prof = sess ? (db.profiles[sess.fafId] || {}) : {};
     return json(res, 200, {
       enabled: FAF_OAUTH_ON,
-      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '' } : null
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0 } : null
     });
   }
 
@@ -943,12 +950,61 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // ---- articles editor access (mirrors hosting access; needs FAF login) ----
+
+  if (parts.length === 2 && parts[1] === 'editor_status' && method === 'GET') {
+    const sess = currentSession(req);
+    if (!FAF_OAUTH_ON) return json(res, 200, { oauth: 0, allowed: 0, pending: 0, loggedIn: sess ? 1 : 0 });
+    if (!sess) return json(res, 200, { oauth: 1, allowed: 0, pending: 0, loggedIn: 0 });
+    const pending = (db.editorRequests || []).some(r => r.fafId === sess.fafId && r.status === 'pending');
+    return json(res, 200, {
+      oauth: 1,
+      allowed: db.editorAllowed[sess.fafId] ? 1 : 0,
+      pending: pending ? 1 : 0,
+      loggedIn: 1,
+      name: sess.fafName || ''
+    });
+  }
+
+  if (parts.length === 2 && parts[1] === 'editor_request' && method === 'POST') {
+    const b = await readBody(req);
+    const sess = currentSession(req);
+    if (!FAF_OAUTH_ON) return bad(res, 'FAF login is not configured on this server yet');
+    if (!sess) return json(res, 401, { error: 'Log in with FAF first' });
+    if (db.editorAllowed[sess.fafId]) return bad(res, 'You already have articles access');
+    const existing = (db.editorRequests || []).find(r => r.fafId === sess.fafId && r.status === 'pending');
+    if (existing) return bad(res, 'You already have a request waiting');
+    db.editorRequests.push({
+      id: uid(8),
+      fafId: sess.fafId,
+      fafName: sess.fafName || ('FAF ' + sess.fafId),
+      message: cleanName(b.message, 300) || '',
+      at: Date.now(),
+      status: 'pending',
+      decidedAt: null,
+      decidedBy: null
+    });
+    saveDB();
+    audit(req, 'editor_access_requested', { detail: sess.fafName || sess.fafId });
+    return json(res, 200, { ok: true });
+  }
+
   // ---- site admin data + decisions ----
   if (parts.length === 3 && parts[1] === 'siteadmin' && method === 'POST') {
     const b = await readBody(req, 8 * 1024 * 1024);   // article_image carries base64 images up to 5MB
     if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
-    if (b.password !== GADMIN) return json(res, 403, { error: 'Wrong password' });
+    const fullAdmin = !!(GADMIN && b.password === GADMIN);
+    const editorSess = fullAdmin ? null : editorSession(req);
+    const editor = !!editorSess;
+    if (!fullAdmin && !editor) return json(res, 403, { error: b.password ? 'Wrong password' : 'Site admin or approved articles editor only' });
     const act = parts[2];
+    // Editors get the articles surface and nothing else — no requests, logs,
+    // archived tournaments, host management, or any player data.
+    const EDITOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete'];
+    if (editor && EDITOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Site admin only' });
+    if (editor && act === 'data') {
+      return json(res, 200, { role: 'editor', articles: (db.articles || []).slice().sort((a, c) => (a.order || 0) - (c.order || 0) || (a.createdAt || 0) - (c.createdAt || 0)) });
+    }
 
     if (act === 'data') {
       const allowed = Object.keys(db.hostAllowed).map(fid => ({
@@ -957,11 +1013,20 @@ async function handleAPI(req, res, url) {
         at: db.hostAllowed[fid].at || 0,
         by: db.hostAllowed[fid].by || ''
       })).sort((x, y) => y.at - x.at);
+      const editorAllowed = Object.keys(db.editorAllowed).map(fid => ({
+        fafId: fid,
+        name: db.editorAllowed[fid].name || '',
+        at: db.editorAllowed[fid].at || 0,
+        by: db.editorAllowed[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
       return json(res, 200, {
+        role: 'admin',
         oauth: FAF_OAUTH_ON ? 1 : 0,
         logs: db.auditLog.slice().reverse().slice(0, 500),   // newest first
         requests: (db.hostRequests || []).slice().reverse(),
         allowed,
+        editorRequests: (db.editorRequests || []).slice().reverse(),
+        editorAllowed,
         archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({
           id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length
         })).sort((x, y) => y.at - x.at),
@@ -1009,6 +1074,10 @@ async function handleAPI(req, res, url) {
         db.articles.push({ id: 'art' + uid(6), title, body: body2, order: db.articles.length, createdAt: Date.now(), updatedAt: Date.now() });
       }
       saveDB();
+      audit(req, 'article_saved', {
+        actor: editor ? { kind: 'editor', fafId: editorSess.fafId, name: editorSess.fafName || ('FAF ' + editorSess.fafId) } : { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: title + (b.id ? ' (edited)' : ' (created)') + (editor ? ' by articles editor' : '')
+      });
       return json(res, 200, { ok: true });
     }
 
@@ -1027,6 +1096,10 @@ async function handleAPI(req, res, url) {
       }
       db.articles = (db.articles || []).filter(a => a.id !== b.id);
       saveDB();
+      audit(req, 'article_deleted', {
+        actor: editor ? { kind: 'editor', fafId: editorSess.fafId, name: editorSess.fafName || ('FAF ' + editorSess.fafId) } : { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: (art ? art.title : b.id) + (editor ? ' by articles editor' : '')
+      });
       return json(res, 200, { ok: true });
     }
 
@@ -1040,6 +1113,50 @@ async function handleAPI(req, res, url) {
       audit(req, 'host_access_granted', {
         actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
         detail: (db.hostAllowed[fid].name) + ' (' + fid + ') \u2014 added directly'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    // ---- articles editor management (full admin only; editors were filtered out above) ----
+
+    if (act === 'editor_decide') {
+      const r = (db.editorRequests || []).find(x => x.id === b.id);
+      if (!r) return bad(res, 'Request not found');
+      if (r.status !== 'pending') return bad(res, 'That request was already decided');
+      r.status = b.approve ? 'approved' : 'denied';
+      r.decidedAt = Date.now();
+      r.decidedBy = 'site admin';
+      if (b.approve) db.editorAllowed[r.fafId] = { name: r.fafName, at: Date.now(), by: 'site admin' };
+      saveDB();
+      audit(req, b.approve ? 'editor_access_granted' : 'editor_access_denied', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: r.fafName + ' (' + r.fafId + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'editor_revoke') {
+      const fid = String(b.fafId || '').trim();
+      if (!db.editorAllowed[fid]) return bad(res, 'Not an editor');
+      const name = db.editorAllowed[fid].name || fid;
+      delete db.editorAllowed[fid];
+      saveDB();
+      audit(req, 'editor_access_revoked', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: name + ' (' + fid + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'editor_grant') {
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (db.editorAllowed[fid]) return bad(res, 'Already an editor');
+      db.editorAllowed[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: 'site admin' };
+      saveDB();
+      audit(req, 'editor_access_granted', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: (db.editorAllowed[fid].name) + ' (' + fid + ') \u2014 added directly'
       });
       return json(res, 200, { ok: true });
     }
@@ -2703,7 +2820,7 @@ const MIME = {
 
 function serveStatic(req, res, url) {
   let p = url.pathname;
-  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/hall' || p === '/faq' || p.startsWith('/t/')) p = '/index.html';
+  if (p === '/' || p === '/host' || p === '/siteadmin' || p === '/editor' || p === '/hall' || p === '/faq' || p.startsWith('/t/')) p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
