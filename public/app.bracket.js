@@ -424,10 +424,15 @@ function drawMaps(el) {
   el.querySelectorAll('[data-mapedit]').forEach(b => b.onclick = () => {
     const m = mapObj(b.dataset.mapedit);
     if (!m) return editMapEntry(null);
-    // A published map inside a published pool is live for the public — make edits deliberate.
+    // A published map that players can already see — in a published pool or assigned to
+    // rounds/matches — deserves a deliberate edit, not an accidental one.
     const livePools = (T.mapPools || []).filter(p => p.published && (p.mapIds || []).indexOf(m.id) >= 0).map(p => p.name);
-    if (m.published && livePools.length) {
-      if (!confirm('Are you sure you want to edit map "' + m.name + '"? It is part of the published pool' + (livePools.length > 1 ? 's' : '') + ' "' + livePools.join('", "') + '" and visible to players.')) return;
+    const used = usage[m.id] || [];
+    if (m.published && (livePools.length || used.length)) {
+      const where = [];
+      if (livePools.length) where.push('part of the published pool' + (livePools.length > 1 ? 's' : '') + ' "' + livePools.join('", "') + '"');
+      if (used.length) where.push('played in ' + (used.length > 3 ? used.slice(0, 3).join(', ') + ' and ' + (used.length - 3) + ' more rounds' : used.join(', ')));
+      if (!confirm('Are you sure you want to edit map "' + m.name + '"? It is ' + where.join(' and ') + ', and visible to players.')) return;
     }
     editMapEntry(m);
   });
