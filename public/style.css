@@ -389,6 +389,15 @@ tbody tr:hover { background: #ffffff05; }
 .replayline { font-family: var(--mono); font-size: 10px; color: var(--muted); margin: 4px 10px 6px; word-break: break-all; }
 .reward-panel { border-left: 3px solid var(--amber); }
 .reward-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; margin-top: 6px; }
+/* tournament news */
+.news-post .news-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.news-post .news-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.news-post .news-actions { margin-left: auto; }
+.news-post .news-actions a { font-size: 12px; color: var(--muted); margin-left: 8px; }
+.news-post .news-actions a.danger-link { color: var(--danger, #e5484d); }
+.news-important { border-left: 3px solid var(--amber); background: linear-gradient(90deg, #ffb44710, transparent 40%); }
+.news-chip { font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); border: 1px solid #6b5220; background: #2a2113; border-radius: 3px; padding: 2px 7px; }
+.tab-badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; text-align: center; font-family: var(--mono); font-size: 10px; font-weight: 700; color: #fff; background: var(--danger, #e5484d); border-radius: 8px; padding: 0 4px; margin-left: 7px; vertical-align: middle; }
 .teamgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .teamcard { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; padding: 12px; }
 .teamcard.full { border-color: #2f6b45; }

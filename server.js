@@ -323,6 +323,7 @@ function publicView(t) {
     id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0,
     descImages: (t.descImages || []).slice(),
+    news: (t.news || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
     checkInDeadline: t.checkInDeadline || null,
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
@@ -1380,7 +1381,8 @@ async function handleAPI(req, res, url) {
         signedUpPlayerId: signedUpId,
         memberTeamId: memberTeamId,
         invited: (sess && (t.invites || []).some(i => i.fafId === sess.fafId)) ? 1 : 0,
-        oauthEnabled: FAF_OAUTH_ON ? 1 : 0
+        oauthEnabled: FAF_OAUTH_ON ? 1 : 0,
+        newsReadAt: (sess && db.profiles[sess.fafId] && db.profiles[sess.fafId].newsRead && db.profiles[sess.fafId].newsRead[t.id]) || 0
       };
       // Hide prep from non-organizers: unpublished maps and unpublished pools.
       // Exception: a map that's already on screen somewhere (in a live veto or a round's
@@ -2179,6 +2181,55 @@ async function handleAPI(req, res, url) {
     }
 
     // edit tournament info (admin, any time)
+    // ---- tournament news / updates: short posts by the organizer, newest first ----
+    // Important posts (schedule moved, cancelled) are highlighted; routine ones are not.
+    if (sub === 'news_post') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const body = cleanName(b.body, 1000);
+      if (!body) return bad(res, 'Write something first');
+      t.news = t.news || [];
+      const item = { id: 'nw' + uid(6), at: Date.now(), by: actorOf(req, b.admin).name || 'Organizer', body, important: b.important ? 1 : 0 };
+      t.news.push(item);
+      saveDB();
+      audit(req, 'news_posted', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: (item.important ? '[important] ' : '') + body.slice(0, 80) });
+      return json(res, 200, { ok: true, id: item.id });
+    }
+
+    if (sub === 'news_edit') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const item = (t.news || []).find(n => n.id === b.id);
+      if (!item) return bad(res, 'Post not found');
+      const body = cleanName(b.body, 1000);
+      if (!body) return bad(res, 'Write something first');
+      item.body = body;
+      if (b.important !== undefined) item.important = b.important ? 1 : 0;
+      item.editedAt = Date.now();
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'news_delete') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const item = (t.news || []).find(n => n.id === b.id);
+      t.news = (t.news || []).filter(n => n.id !== b.id);
+      saveDB();
+      audit(req, 'news_deleted', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: item ? item.body.slice(0, 80) : b.id });
+      return json(res, 200, { ok: true });
+    }
+
+    // Mark this tournament's news as read for the logged-in account, so the unread
+    // badge clears on every device. Anonymous readers are handled via localStorage.
+    if (sub === 'news_read') {
+      const sess = currentSession(req);
+      if (!sess) return json(res, 200, { ok: 0 });
+      const latest = Math.max(0, ...(t.news || []).map(n => n.at || 0));
+      db.profiles[sess.fafId] = db.profiles[sess.fafId] || {};
+      db.profiles[sess.fafId].newsRead = db.profiles[sess.fafId].newsRead || {};
+      db.profiles[sess.fafId].newsRead[t.id] = latest;
+      saveDB();
+      return json(res, 200, { ok: 1, readAt: latest });
+    }
+
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (b.description !== undefined) t.description = cleanName(b.description, 2000);

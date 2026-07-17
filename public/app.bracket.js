@@ -421,7 +421,16 @@ function drawMaps(el) {
     try { await api('/api/t/' + T.id + '/map_publish', { all: 1, published: 1, admin: adminToken() }); toast('All maps published'); await refresh(); }
     catch (e) { toast(e.message, true); }
   };
-  el.querySelectorAll('[data-mapedit]').forEach(b => b.onclick = () => editMapEntry(mapObj(b.dataset.mapedit)));
+  el.querySelectorAll('[data-mapedit]').forEach(b => b.onclick = () => {
+    const m = mapObj(b.dataset.mapedit);
+    if (!m) return editMapEntry(null);
+    // A published map inside a published pool is live for the public — make edits deliberate.
+    const livePools = (T.mapPools || []).filter(p => p.published && (p.mapIds || []).indexOf(m.id) >= 0).map(p => p.name);
+    if (m.published && livePools.length) {
+      if (!confirm('Are you sure you want to edit map "' + m.name + '"? It is part of the published pool' + (livePools.length > 1 ? 's' : '') + ' "' + livePools.join('", "') + '" and visible to players.')) return;
+    }
+    editMapEntry(m);
+  });
   el.querySelectorAll('[data-mappub]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mappub);
     try { await api('/api/t/' + T.id + '/map_publish', { id: m.id, published: m.published ? 0 : 1, admin: adminToken() }); await refresh(); }

@@ -534,7 +534,7 @@ function drawTournament() {
   const lastStep = T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
   const steps = ['Signups', midStep, lastStep, 'Results'];
 
-  const tabs = ['overview', 'players', 'teams', 'bracket'];
+  const tabs = ['overview', 'news', 'players', 'teams', 'bracket'];
   // Vetoes tab appears once the bracket is running and vetoes are enabled
   const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
   if (vetoActive) tabs.push('vetoes');
@@ -545,6 +545,7 @@ function drawTournament() {
   if (!tabs.includes(currentTab)) currentTab = 'overview';
 
   const tabLabel = tb => {
+    if (tb === 'news') return 'News';
     if (tb === 'teams' && T.status === 'draft') return 'Draft';
     if (tb === 'bracket') return T.competition === 'ffa' || T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
     if (tb === 'vetoes') {
@@ -568,7 +569,10 @@ function drawTournament() {
         ${steps.map((s, i) => `<div class="step ${i < phaseIdx ? 'done' : i === phaseIdx ? 'now' : ''}" title="${i < phaseIdx ? 'Completed' : i === phaseIdx ? 'Current stage' : 'Upcoming'}">${s}</div>`).join('<span class="step-arrow">\u25B8</span>')}
       </div>
       <div class="tabs">
-        ${tabs.map(tb => `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}</button>`).join('')}
+        ${tabs.map(tb => {
+          const badge = (tb === 'news' && tb !== currentTab) ? newsUnreadCount() : 0;
+          return `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}${badge ? '<span class="tab-badge">' + badge + '</span>' : ''}</button>`;
+        }).join('')}
       </div>
       ${admin && !T.published ? `<div class="panel" style="border-color:var(--amber);margin-top:12px">
         <strong>Draft — not public yet.</strong>
@@ -604,6 +608,7 @@ function drawTournament() {
 
   const body = document.getElementById('tabBody');
   if (currentTab === 'overview') drawOverview(body);
+  else if (currentTab === 'news') drawNews(body);
   else if (currentTab === 'players') drawPlayers(body);
   else if (currentTab === 'teams') drawTeams(body);
   else if (currentTab === 'bracket') drawBracket(body);
@@ -637,6 +642,98 @@ function gameInfoPanel() {
   </div>${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`;
 }
 
+// ---- tournament news: read tracking + rendering ----
+
+// last-read timestamp: max of this browser (localStorage) and this FAF account (server),
+// so reading on one device clears the badge on every other logged-in device too.
+function newsLastRead() {
+  const local = parseInt(localStorage.getItem('newsRead_' + T.id) || '0', 10) || 0;
+  const acct = (T.viewer && T.viewer.newsReadAt) || 0;
+  return Math.max(local, acct);
+}
+function newsUnreadCount() {
+  const last = newsLastRead();
+  return (T.news || []).filter(n => (n.at || 0) > last).length;
+}
+function newsMarkRead() {
+  const latest = Math.max(0, ...(T.news || []).map(n => n.at || 0));
+  if (!latest) return;
+  localStorage.setItem('newsRead_' + T.id, String(latest));
+  if (T.viewer && T.viewer.loggedIn && latest > ((T.viewer && T.viewer.newsReadAt) || 0)) {
+    T.viewer.newsReadAt = latest; // keep the in-memory copy current for badge math
+    api('/api/t/' + T.id + '/news_read', {}).catch(() => {});
+  }
+}
+
+function newsPostHTML(n, admin) {
+  return `<div class="panel section news-post${n.important ? ' news-important' : ''}">
+    <div class="news-head">
+      ${n.important ? '<span class="news-chip">Important</span>' : ''}
+      <span class="muted small">${esc(fmtDateTime(n.at))} \u00b7 ${esc(n.by || 'Organizer')}${n.editedAt ? ' \u00b7 edited' : ''}</span>
+      ${admin ? `<span class="news-actions"><a href="#" data-newsedit="${n.id}">edit</a> <a href="#" data-newsdel="${n.id}" class="danger-link">delete</a></span>` : ''}
+    </div>
+    <div class="news-body">${esc(n.body)}</div>
+  </div>`;
+}
+
+function drawNews(el) {
+  const admin = viewerIsOrganizer();
+  const news = T.news || [];
+  let html = '';
+
+  if (admin) {
+    html += `<div class="panel section"><h2>Post an update</h2>
+      <p class="muted small">Short updates for the players \u2014 newest shows on top and on the Overview. Tick "highlight" for things everyone must see (date moved, cancelled); leave it off for routine notes (player swap etc.).</p>
+      <textarea id="newsBody" rows="3" maxlength="1000" placeholder="e.g. Tourney moved from 18.07. to 20.07., same time."></textarea>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="newsImp"> Highlight as important (schedule change / cancellation)</label>
+      <div style="margin-top:10px"><button class="btn primary" id="newsPost">Post update</button></div></div>`;
+  }
+
+  if (!news.length) {
+    html += '<div class="panel section"><div class="empty">No news yet.</div></div>';
+  } else {
+    html += news.map(n => newsPostHTML(n, admin)).join('');
+  }
+  el.innerHTML = html;
+
+  // opening the tab counts as reading everything currently posted
+  newsMarkRead();
+
+  const pb = document.getElementById('newsPost');
+  if (pb) pb.onclick = async () => {
+    const body = document.getElementById('newsBody').value.trim();
+    if (!body) return toast('Write something first', true);
+    try {
+      await api('/api/t/' + T.id + '/news_post', { body, important: document.getElementById('newsImp').checked ? 1 : 0, admin: adminToken() });
+      toast('Posted');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  el.querySelectorAll('[data-newsedit]').forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    const n = (T.news || []).find(x => x.id === a.dataset.newsedit);
+    if (!n) return;
+    modal(`<h3>Edit update</h3>
+      <textarea id="neBody" rows="4" maxlength="1000">${esc(n.body)}</textarea>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="neImp" ${n.important ? 'checked' : ''}> Highlight as important</label>
+      <div class="actions"><button class="btn ghost" id="neCancel">Cancel</button><button class="btn primary" id="neGo">Save</button></div>`, root => {
+      root.querySelector('#neCancel').onclick = closeModal;
+      root.querySelector('#neGo').onclick = async () => {
+        try {
+          await api('/api/t/' + T.id + '/news_edit', { id: n.id, body: root.querySelector('#neBody').value.trim(), important: root.querySelector('#neImp').checked ? 1 : 0, admin: adminToken() });
+          closeModal(); toast('Saved'); await refresh();
+        } catch (e2) { toast(e2.message, true); }
+      };
+    });
+  });
+  el.querySelectorAll('[data-newsdel]').forEach(a => a.onclick = async (e) => {
+    e.preventDefault();
+    if (!confirm('Delete this update?')) return;
+    try { await api('/api/t/' + T.id + '/news_delete', { id: a.dataset.newsdel, admin: adminToken() }); toast('Deleted'); await refresh(); }
+    catch (e2) { toast(e2.message, true); }
+  });
+}
+
 function drawOverview(el) {
   let html = '';
 
@@ -655,6 +752,20 @@ function drawOverview(el) {
     html += `<div class="panel section" style="border-left:3px solid var(--blue)">
       <div class="mono small" style="color:var(--blue);letter-spacing:1px">IMPORTED FROM CHALLONGE</div>
       <div class="muted small" style="margin-top:6px">This is an archived tournament imported for display. ${T.sourceUrl ? '<a href="' + esc(T.sourceUrl) + '" target="_blank" rel="noopener">View on Challonge \u2197</a>' : ''}</div>
+    </div>`;
+  }
+
+  if ((T.news || []).length) {
+    const n = T.news[0];
+    const unread = newsUnreadCount();
+    html += `<div class="panel section news-post${n.important ? ' news-important' : ''}">
+      <div class="news-head">
+        <span class="mono small" style="letter-spacing:1px;text-transform:uppercase;color:${n.important ? 'var(--amber)' : 'var(--muted)'}">Latest update</span>
+        ${n.important ? '<span class="news-chip">Important</span>' : ''}
+        <span class="muted small">${esc(fmtDateTime(n.at))}</span>
+      </div>
+      <div class="news-body">${esc(n.body)}</div>
+      <div class="muted small" style="margin-top:10px">To see all news for this tournament, <a href="#" data-goto="news">click here</a>${unread ? ' <span class="tab-badge">' + unread + '</span>' : ''}</div>
     </div>`;
   }
 
