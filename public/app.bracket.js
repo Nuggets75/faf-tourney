@@ -314,7 +314,7 @@ function drawMaps(el) {
     html += `<div class="panel section">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div><h2 style="margin:0">Map database</h2><div class="muted small">${db.length} map${db.length === 1 ? '' : 's'} · ${published} published${db.length - published > 0 ? ' · ' + (db.length - published) + ' hidden (prep)' : ''}</div></div>
-        <button class="btn primary" id="mapAdd">+ Add map</button>
+        <div style="display:flex;gap:8px">${db.length - published > 0 ? '<button class="btn ghost" id="mapPubAll">Publish all</button>' : ''}<button class="btn primary" id="mapAdd">+ Add map</button></div>
       </div>
       <p class="muted small" style="margin-top:8px">Add every map that might be played. Hidden maps are only visible to organizers — use that to prep a pool before revealing it. Group maps into pools below and assign each pool to rounds or matches; when vetoes are on, captains ban/pick from the pool assigned to their match.</p>
     </div>`;
@@ -404,6 +404,11 @@ function drawMaps(el) {
 
   const addBtn = document.getElementById('mapAdd');
   if (addBtn) addBtn.onclick = () => editMapEntry(null);
+  const pubAllBtn = document.getElementById('mapPubAll');
+  if (pubAllBtn) pubAllBtn.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/map_publish', { all: 1, published: 1, admin: adminToken() }); toast('All maps published'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
   el.querySelectorAll('[data-mapedit]').forEach(b => b.onclick = () => editMapEntry(mapObj(b.dataset.mapedit)));
   el.querySelectorAll('[data-mappub]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mappub);

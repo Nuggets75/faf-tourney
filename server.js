@@ -2201,8 +2201,14 @@ async function handleAPI(req, res, url) {
     }
 
     // Toggle publish state (hide/publish for TD-team prep). Organizer only.
+    // With all:1 it applies to every map in the database at once.
     if (sub === 'map_publish') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (b.all) {
+        for (const m of (t.mapDb || [])) m.published = b.published ? 1 : 0;
+        saveDB();
+        return json(res, 200, { ok: true, count: (t.mapDb || []).length });
+      }
       const map = mapById(t, b.id);
       if (!map) return bad(res, 'Map not found');
       map.published = b.published ? 1 : 0;

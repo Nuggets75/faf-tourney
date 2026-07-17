@@ -655,7 +655,13 @@ function drawTeams(el) {
     html += `<div class="panel section"><h2>${T.teamSize === 1 ? 'Entrants' : 'Teams'}</h2><div class="teamgrid" id="tGrid"></div></div>`;
   }
   if (T.subs && T.subs.length) {
-    html += `<div class="panel section"><h2>Substitutes</h2><div>${T.subs.map(id => esc(playerName(id))).join(', ')}</div></div>`;
+    const subPs = T.subs.map(id => T.players.find(p => p.id === id)).filter(Boolean)
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    const anyR = subPs.some(p => p.rating != null);
+    html += `<div class="panel section"><h2>Substitutes <span class="h2-strong">(${subPs.length})</span></h2>
+      <table><thead><tr><th style="width:40px">#</th><th>Name</th>${anyR ? '<th style="width:90px">Rating</th>' : ''}</tr></thead><tbody>` +
+      subPs.map((p, i) => `<tr><td class="mono muted">${i + 1}</td><td>${esc(p.name)}${p.fafId ? ' <span class="idbadge verified">\u2713</span>' : ''}${p.discord ? ' <span class="dctag" title="Discord \u2014 reach this player here">\uD83D\uDCAC ' + esc(p.discord) + '</span>' : ''}</td>${anyR ? '<td class="mono">' + (p.rating != null ? p.rating : '\u2014') + '</td>' : ''}</tr>`).join('') +
+      '</tbody></table></div>';
   }
 
   // Divisions (King/Prince) — team single/double elim only, before the bracket starts
