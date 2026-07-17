@@ -224,8 +224,8 @@ function matchBox(m) {
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
     vetoIndicator(m) +
-    ((m.status === 'done' && m.replayIds && m.replayIds.length)
-      ? '<div class="replayline" title="FAF replay IDs, in game order">Replays: ' + m.replayIds.map(esc).join(', ') + '</div>' : '') +
+    ((m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
+      ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(esc).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(esc).join(', ') : '') + '</div>' : '') +
     ((canReport || canCorrect || m.pendingReport)
       ? `<div class="bfoot">${prTag}${(canReport || canCorrect) ? `<button class="btn ${canReport ? 'amber' : 'ghost'} small">${prMine ? 'Confirm score' : canReport ? (viewerIsOrganizer() ? 'Report score' : 'Submit score') : 'Correct'}</button>` : ''}</div>` : '');
   const btn = box.querySelector('.bfoot button');
@@ -803,17 +803,26 @@ function vetoHTML(m) {
   // history so far: bans struck, picks as games
   if (banned.length || picks.length) {
     h += '<div class="veto-history">';
-    if (banned.length) h += '<div class="veto-banned">' + banned.map(b => '<span class="veto-map banned" title="Banned by ' + esc(teamName(b.by)) + '">' + esc(mapName(b.map)) + '</span>').join('') + '</div>';
+    if (banned.length) h += '<div class="veto-banned">' + banned.map(b => {
+      const mo = mapObj(b.map);
+      const th = (mo && mo.image) ? '<img class="vm-thumb dim" src="/map-images/' + encodeURIComponent(mo.image) + '" alt="" loading="lazy">' : '';
+      return '<span class="veto-map vm-card banned" title="Banned by ' + esc(teamName(b.by)) + '">' + th + '<span class="vm-name">' + esc(mapName(b.map)) + '</span></span>';
+    }).join('') + '</div>';
     if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span>' + mapChip(g.map, 'play') + '</div>').join('') + '</div>';
     h += '</div>';
   }
 
   // remaining maps: clickable if it's the viewer's turn (ban or pick)
   const cls = step && step.action === 'pick' ? 'pick' : 'ban';
+  // thumbnail so captains see WHICH map they're banning/picking without tab-switching
+  const vThumb = (mp) => {
+    const mo = mapObj(mp);
+    return (mo && mo.image) ? '<img class="vm-thumb" src="/map-images/' + encodeURIComponent(mo.image) + '" alt="" loading="lazy">' : '';
+  };
   h += '<div class="veto-remaining">' + (v.remaining || []).map(mp =>
     canActNow
-      ? '<button class="veto-map act-' + cls + '" data-veto-map="' + esc(mp) + '">' + esc(mapName(mp)) + '</button>'
-      : '<span class="veto-map avail" data-map-info="' + esc(mp) + '">' + esc(mapName(mp)) + '</span>'
+      ? '<button class="veto-map vm-card act-' + cls + '" data-veto-map="' + esc(mp) + '">' + vThumb(mp) + '<span class="vm-name">' + esc(mapName(mp)) + '</span></button>'
+      : '<span class="veto-map vm-card avail" data-map-info="' + esc(mp) + '">' + vThumb(mp) + '<span class="vm-name">' + esc(mapName(mp)) + '</span></span>'
   ).join('') + '</div>';
 
   // organizer undo

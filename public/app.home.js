@@ -20,13 +20,25 @@ async function renderHome() {
       <button class="btn faf" id="homeLgFaf" style="max-width:280px">Log in with FAF</button>
     </div>`;
 
-  const completed = list.filter(t => t.status === 'finished')
+  const completed = list.filter(t => t.status === 'finished' || t.abandoned)
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
   const groups = [
-    ['Open for signups', list.filter(t => t.status === 'signup'), 'Nothing open right now.'],
-    ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0), 'No tournaments running.'],
+    ['Open for signups', list.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing open right now.'],
+    ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0 && !t.abandoned), 'No tournaments running.'],
     ['Completed', completed, 'No finished tournaments yet.']
   ];
+
+  // short "in 1 day, 17 hrs, 5 mnts" countdown for card badges
+  const eta = (iso) => {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (!(ms > 0)) return null;
+    const d = Math.floor(ms / 86400000), h = Math.floor(ms % 86400000 / 3600000), mn = Math.floor(ms % 3600000 / 60000);
+    const parts = [];
+    if (d) parts.push(d + ' day' + (d === 1 ? '' : 's'));
+    if (h || d) parts.push(h + ' hr' + (h === 1 ? '' : 's'));
+    parts.push(mn + ' mnt' + (mn === 1 ? '' : 's'));
+    return parts.join(', ');
+  };
 
   app.innerHTML = '<div class="page">' + loginPanel + groups.map((g, i) => `
     <div class="panel section">
@@ -47,14 +59,28 @@ async function renderHome() {
       div.className = 'tlist-item';
       const kind = t.competition === 'ffa' ? 'FFA' :
         (t.teamSize + 'v' + t.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[t.bracketType] || ''));
+      let ratingLine = '';
+      if (t.minRating != null || t.maxRating != null) {
+        ratingLine = t.minRating != null && t.maxRating != null ? 'Rating ' + t.minRating + '\u2013' + t.maxRating
+          : t.minRating != null ? 'Rating ' + t.minRating + '+' : 'Rating up to ' + t.maxRating;
+      }
+      if (t.maxTeamRating != null) ratingLine += (ratingLine ? ' \u00b7 ' : '') + 'Team cap ' + t.maxTeamRating;
+      const signupEta = (t.status === 'signup' && !t.abandoned && t.signupOpensAt) ? eta(t.signupOpensAt) : null;
+      const eventEta = (!t.abandoned && ['signup', 'draft', 'drafted'].indexOf(t.status) >= 0 && t.eventDate) ? eta(t.eventDate) : null;
+      const countdown = signupEta
+        ? '<span class="countchip">Signups start in: ' + esc(signupEta) + '</span>'
+        : (eventEta ? '<span class="countchip">Event starts in: ' + esc(eventEta) + '</span>' : '');
+      const pill = t.abandoned
+        ? '<span class="pill abandoned">ABANDONED</span>'
+        : '<span class="pill ' + t.status + '">' + esc(statusLabel(t.status)) + '</span>';
       div.innerHTML = `
         <div>
-          <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="tcat">\u2014 ' + (t.category === 'official' ? 'official' : 'community') + ' tourney</span>' : ''}</div>
-          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}</div>
+          <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="catbox ' + (t.category === 'official' ? 'official' : 'community') + '">' + (t.category === 'official' ? 'OFFICIAL' : 'COMMUNITY') + '</span>' : ''}</div>
+          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px">
           ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
-          <span class="pill ${t.status}">${esc(statusLabel(t.status))}</span>
+          ${countdown || pill}
           ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}
         </span>`;
       const delBtn = div.querySelector('[data-del]');
@@ -86,6 +112,8 @@ async function renderHost() {
         <input type="text" id="cName" maxlength="60" placeholder="e.g. EPIC 3v3 double elim">
         <label>Event date &amp; time (UTC) <span class="muted" style="font-weight:400">(optional)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cDate" style="flex:1"><input type="time" id="cTime" style="width:130px"></div>
+        <label>Signups open at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 before this, only organizers can add players)</span></label>
+        <div style="display:flex;gap:8px"><input type="date" id="cSuDate" style="flex:1"><input type="time" id="cSuTime" style="width:130px"></div>
         <label>Description (rules, schedule)</label>
         <textarea id="cDesc" maxlength="500" placeholder="Sunday 19:00 CEST. Check-in in Discord..."></textarea>
         <label>Lobby options</label>
@@ -228,6 +256,16 @@ async function renderHost() {
         <label>Rating date <span class="muted small">(rating taken as of this day; blank = at signup time)</span></label>
         <input type="date" id="cRatingDate">
 
+        <label>Rating requirements <span class="muted small">(optional \u2014 self-signups outside the range are refused; organizer adds and invites bypass this)</span></label>
+        <div style="display:flex;gap:8px">
+          <input type="number" id="cMinRating" min="0" max="4000" placeholder="Min rating" style="flex:1">
+          <input type="number" id="cMaxRating" min="0" max="4000" placeholder="Max rating" style="flex:1">
+        </div>
+        <div id="cTeamCapWrap">
+          <label>Max team rating <span class="muted small">(optional \u2014 combined rating cap; players can't join a team past it, organizers can)</span></label>
+          <input type="number" id="cMaxTeamRating" min="0" max="30000" placeholder="e.g. 3000">
+        </div>
+
         <label>Signups</label>
         <select id="cSignupMode">
           <option value="open" selected>Open — anyone with a FAF login can sign up</option>
@@ -325,7 +363,11 @@ async function renderHost() {
         playerReporting: document.getElementById('cPlayerReporting').checked ? 1 : 0,
         admin: siteAdmin() || undefined,
         veto: { enabled: document.getElementById('cVeto').checked, mode: 'upfront' },
-        eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime'))
+        eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime')),
+        signupOpensAt: combineDateTimeUTC(document.getElementById('cSuDate'), document.getElementById('cSuTime')),
+        minRating: document.getElementById('cMinRating').value,
+        maxRating: document.getElementById('cMaxRating').value,
+        maxTeamRating: document.getElementById('cMaxTeamRating').value
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
       history.pushState(null, '', '/t/' + r.id);
@@ -562,7 +604,7 @@ function drawTournament() {
           <h1>${esc(T.name)}</h1>
           <div class="muted small">${T.category ? '<span class="idbadge ' + (T.category === 'official' ? 'verified' : 'late') + '" style="margin-right:6px">' + T.category.toUpperCase() + '</span>' : ''}${esc(typeLine(T))}</div>
         </div>
-        <span class="pill ${T.status}">${esc(statusLabel(T.status))}</span>
+        <span class="pill ${T.abandoned ? 'abandoned' : T.status}">${T.abandoned ? 'ABANDONED' : esc(statusLabel(T.status))}</span>
       </div>
       <div class="stepper" title="The tournament's progress through its stages">
         <span class="stepper-label">Stage</span>
@@ -629,6 +671,14 @@ function gameInfoPanel() {
   const headline = [typeTxt, ratingTxt].filter(Boolean).join(' · ');
   const cells = [];
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
+  if (T.minRating != null || T.maxRating != null || T.maxTeamRating != null) {
+    const parts = [];
+    if (T.minRating != null && T.maxRating != null) parts.push('Player rating ' + T.minRating + '\u2013' + T.maxRating);
+    else if (T.minRating != null) parts.push('Player rating ' + T.minRating + ' or higher');
+    else if (T.maxRating != null) parts.push('Player rating up to ' + T.maxRating);
+    if (T.maxTeamRating != null) parts.push('Max combined team rating ' + T.maxTeamRating);
+    cells.push(['Rating requirements', parts.join('\n') + '\n(organizer invites/adds are exempt)']);
+  }
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);
   const inlineRef = (T.description || '') + ' ' + (T.rewards || '');
@@ -815,19 +865,28 @@ function drawOverview(el) {
   if (edb) edb.onclick = () => {
     const cur = (!T.imported ? T.eventDate : (T.eventDate || '')) || '';
     const parts = splitDateTimeUTC(cur);
+    const suParts = splitDateTimeUTC(T.signupOpensAt || '');
     modal(`<h3>${T.imported ? 'Set display date' : 'Event date &amp; time'}</h3>
-      <p class="muted small">Enter the time in <strong>UTC</strong>. It'll display in each viewer's chosen time zone. Leave blank to clear.</p>
+      <p class="muted small">Enter times in <strong>UTC</strong>. They display in each viewer's chosen time zone. Leave blank to clear.</p>
       <div style="display:flex;gap:8px">
         <input type="date" id="edDate" value="${esc(parts.date)}" style="flex:1">
         <input type="time" id="edTime" value="${esc(parts.time)}" style="width:130px">
       </div>
       <div class="muted small" style="margin-top:6px">Date only (no time) is fine — just leave the time blank.</div>
+      ${T.imported ? '' : `<label style="margin-top:12px">Signups open at <span class="muted small">(optional — before this, only organizers can add players)</span></label>
+      <div style="display:flex;gap:8px">
+        <input type="date" id="edSuDate" value="${esc(suParts.date)}" style="flex:1">
+        <input type="time" id="edSuTime" value="${esc(suParts.time)}" style="width:130px">
+      </div>`}
       <div class="actions"><button class="btn ghost" id="edCancel">Cancel</button><button class="btn primary" id="edSave">Save</button></div>`, root => {
       root.querySelector('#edCancel').onclick = closeModal;
       root.querySelector('#edSave').onclick = async () => {
         const v = combineDateTimeUTC(root.querySelector('#edDate'), root.querySelector('#edTime'));
         try {
-          await api('/api/t/' + T.id + '/edit_date', { eventDate: v, admin: myToken() });
+          const body = { eventDate: v, admin: myToken() };
+          const sd = root.querySelector('#edSuDate');
+          if (sd) body.signupOpensAt = combineDateTimeUTC(sd, root.querySelector('#edSuTime'));
+          await api('/api/t/' + T.id + '/edit_date', body);
           closeModal();
           await refresh();
           toast(v ? 'Date updated' : 'Date cleared');

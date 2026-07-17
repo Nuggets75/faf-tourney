@@ -30,7 +30,20 @@ function drawPlayers(el) {
             : T.formation === 'open' ? 'After signing up here, go to the Teams tab to create or join a team.'
             : (T.formation === 'premade' && T.teamSize > 1) ? 'Sign up and enter your team name. Teammates enter the exact same name to be grouped together. You can also set or change it later on the Teams tab.'
             : 'Solo bracket — every signup is an entrant.';
-      if (viewerSignedUp() && (() => { const mine = T.players.find(pl => pl.id === T.viewer.signedUpPlayerId); return mine && mine.pending; })()) {
+      const suNotOpen = T.signupOpensAt && new Date(T.signupOpensAt).getTime() > Date.now();
+      const ratReq = (T.minRating != null || T.maxRating != null)
+        ? '<p class="muted small">Rating requirement: ' + (T.minRating != null && T.maxRating != null ? T.minRating + '\u2013' + T.maxRating : T.minRating != null ? T.minRating + ' or higher' : 'up to ' + T.maxRating) + '. Signups outside the range are refused (organizer invites are exempt).</p>'
+        : '';
+      if (T.viewer && T.viewer.invited && !viewerSignedUp() && !admin) {
+        html += `<div class="panel section" style="border-left:3px solid var(--amber)"><h2>You're invited</h2>
+          <p class="muted small">The organizer invited you to this tournament. Sign up below, or decline so they can plan around it.</p>
+          <button class="btn ghost small" id="sDeclineInv">Decline invite</button></div>`;
+      }
+      if (suNotOpen && !admin && !viewerSignedUp()) {
+        html += `<div class="panel section"><h2>Sign up</h2>
+          <p class="muted small">Signups haven\u2019t opened yet \u2014 they open <strong>${esc(fmtDateTime(T.signupOpensAt))}</strong>.</p>
+          ${ratReq}</div>`;
+      } else if (viewerSignedUp() && (() => { const mine = T.players.find(pl => pl.id === T.viewer.signedUpPlayerId); return mine && mine.pending; })()) {
         html += `<div class="panel section"><h2>Sign up</h2>
           <p class="signed-in-note">Your signup request is <strong>waiting for organizer approval</strong>. You'll appear in the player list once accepted.</p>
           <button class="btn danger small" id="sWithdraw">Withdraw request</button></div>`;
@@ -59,6 +72,7 @@ function drawPlayers(el) {
                 ? '<p class="muted small">Rating for this tournament: <strong>' + esc(ratingTypeLabel(T.ratingType)) + '</strong>, taken <strong>' + (T.ratingDate ? 'as of ' + new Date(T.ratingDate).toLocaleDateString() : 'at signup time') + '</strong>. It is pulled from FAF automatically \u2014 you don\u2019t enter it.</p>'
                 : '<label>Rating</label><input type="number" id="sRating" min="0" max="4000" placeholder="e.g. 1500" autocomplete="off">'}
               ${T.signupMode === 'request' && !admin ? '<p class="muted small">This tournament is <strong>request only</strong>: an organizer approves your signup before you appear in the list.</p>' : ''}
+              ${ratReq}
               <div style="margin-top:16px"><button class="btn primary" id="sGo">${T.signupMode === 'request' && !admin ? 'Request to sign up' : 'Sign up'}${fafAuth.enabled ? ' as ' + esc(me()) : ''}</button></div>
             </div>
             <div class="muted small" style="align-self:end">${esc(helpText)}</div>
@@ -81,7 +95,10 @@ function drawPlayers(el) {
         <button class="btn small" id="ogLookup">Look up</button>
       </div>
       <div id="ogResult" style="margin-top:8px"></div>
-      ${T.signupMode === 'invite' && (T.invites || []).length ? '<div style="margin-top:12px"><div class="ic-label">Invited (' + T.invites.length + ')</div>' + T.invites.map(i => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(i.name) + '</div></div><div class="sa-req-act"><button class="btn ghost small" data-uninvite="' + esc(i.fafId) + '">Uninvite</button></div></div>').join('') + '</div>' : ''}
+      ${(T.invites || []).length ? '<div style="margin-top:12px"><div class="ic-label">Invited (' + T.invites.length + ')</div><p class="muted small" style="margin:4px 0 6px">Pending and declined invites are cleared automatically when the tournament starts.</p>' + T.invites.map(i => {
+        const chip = i.status === 'accepted' ? '<span class="invchip accepted">accepted</span>' : i.status === 'declined' ? '<span class="invchip declined">declined</span>' : '<span class="invchip pending">pending</span>';
+        return '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(i.name) + ' ' + chip + '</div></div><div class="sa-req-act">' + (i.status !== 'accepted' ? '<button class="btn ghost small" data-uninvite="' + esc(i.fafId) + '">Uninvite</button>' : '') + '</div></div>';
+      }).join('') + '</div>' : ''}
       ${pendingReqs.length ? '<div style="margin-top:12px"><div class="ic-label">Signup requests (' + pendingReqs.length + ')</div>' + pendingReqs.map(pl => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(pl.name) + (pl.rating != null ? ' <span class="muted mono small">' + pl.rating + '</span>' : '') + '</div></div><div class="sa-req-act"><button class="btn primary small" data-sapprove="' + pl.id + '">Accept</button><button class="btn ghost small" data-sdecline="' + pl.id + '">Decline</button></div></div>').join('') + '</div>' : ''}
     </div>`;
   }
@@ -200,6 +217,12 @@ function drawPlayers(el) {
         doCall('org_add_player', rEl ? { rating: rEl.value } : {});
       };
     } catch (e) { box.innerHTML = ''; toast(e.message, true); }
+  };
+  const sdi = document.getElementById('sDeclineInv');
+  if (sdi) sdi.onclick = async () => {
+    if (!confirm('Decline the invite to this tournament?')) return;
+    try { await api('/api/t/' + T.id + '/decline_invite', {}); toast('Invite declined'); await refresh(); }
+    catch (e) { toast(e.message, true); }
   };
   el.querySelectorAll('[data-uninvite]').forEach(b => b.onclick = async () => {
     try { await api('/api/t/' + T.id + '/uninvite_player', { fafId: b.dataset.uninvite, admin: adminToken() }); toast('Uninvited'); await refresh(); }
@@ -402,7 +425,7 @@ function drawOpenTeams(el) {
     const full = tm.playerIds.length >= size;
     const openSlots = size - tm.playerIds.length;
     return `<div class="teamcard ${full ? 'full' : 'open'}">
-      <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
+      <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span>${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
       <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
       ${canJoin && !full ? ((tm.joinRequests || []).some(r => r.playerId === myPlayer.id)
@@ -610,7 +633,7 @@ function drawTeams(el) {
           const cls = n === sz ? 'full' : 'open';
           const over = n > sz;
           html += `<div class="teamcard ${cls}">
-            <div class="tc-head"><span class="tc-name">${esc(dispName)}</span><span class="tc-count ${n === sz ? 'ok' : ''}">${n}/${sz}${over ? ' \u26A0' : ''}</span></div>
+            <div class="tc-head"><span class="tc-name">${esc(dispName)}</span>${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${n === sz ? 'ok' : ''}">${n}/${sz}${over ? ' \u26A0' : ''}</span></div>
             <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}${admin ? ' <a href="#" class="muted small" data-pmedit="' + m.id + '">edit</a>' : ''}</div>`).join('')}</div>
             ${over ? '<div class="warn small" style="margin-top:6px">Too many players \u2014 only the first ' + sz + ' by signup order enter; the rest become substitutes.</div>' : ''}
           </div>`;
@@ -862,7 +885,7 @@ function drawTeams(el) {
           return `<li style="display:flex;justify-content:space-between;gap:8px"><span>${esc(playerName(pid))}${pid === team.captainId && T.teamSize > 1 ? '<span class="captag">CAPTAIN</span>' : ''}</span>${anyRatings ? '<span class="mono muted">' + (r != null ? r : '\u2014') + '</span>' : ''}</li>`;
         }).join('')}${
           Array(openSlots).fill('<li class="openslot">\u2014 open \u2014</li>').join('')}</ul>${
-        anyRatings ? '<div class="teamtotal"><span>TOTAL</span><span class="mono">' + total + '</span></div>' : ''}`;
+        anyRatings ? '<div class="teamtotal"><span>TOTAL</span><span class="mono' + (T.maxTeamRating != null && total > T.maxTeamRating ? ' warn' : '') + '">' + total + (T.maxTeamRating != null ? ' / ' + T.maxTeamRating : '') + '</span></div>' : ''}`;
       tg.appendChild(card);
     }
     tg.querySelectorAll('[data-rename]').forEach(b => b.onclick = async () => {

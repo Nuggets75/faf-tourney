@@ -24,6 +24,8 @@ function reportScoreAdmin(m) {
     </div>
     <label style="margin-top:10px">Replay IDs <span class="muted small">(optional, comma-separated \u2014 one per game, kept for the archive)</span></label>
     <input type="text" id="rReplays" value="${esc((m.replayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534001, 21534050">
+    <label style="margin-top:10px">Draw replay IDs <span class="muted small">(optional \u2014 games that ended drawn and were replayed)</span></label>
+    <input type="text" id="rDrawReplays" value="${esc((m.drawReplayIds || []).join(', '))}" autocomplete="off" placeholder="e.g. 21534010">
     <div class="actions">
       <button class="btn ghost" id="rCancel">Cancel</button>
       <button class="btn primary" id="rGo">Save score</button>
@@ -42,6 +44,7 @@ function reportScoreAdmin(m) {
           score1: root.querySelector('#rs1').value,
           score2: root.querySelector('#rs2').value,
           replayIds: root.querySelector('#rReplays').value.split(',').map(s => s.trim()).filter(Boolean),
+          drawReplayIds: root.querySelector('#rDrawReplays').value.split(',').map(s => s.trim()).filter(Boolean),
           token: myToken()
         });
         closeModal();
@@ -63,6 +66,7 @@ function reportScorePlayer(m) {
       <h3>Confirm score — ${esc(roundLabel(m))}</h3>
       <p><strong>${esc(teamName(pr.byTeam))}</strong> reported <strong>${esc(teamName(m.team1))} ${pr.score1} – ${pr.score2} ${esc(teamName(m.team2))}</strong>.</p>
       <p class="muted small">Replay ID${pr.replayIds.length === 1 ? '' : 's'}: ${pr.replayIds.map(esc).join(', ')}</p>
+      ${(pr.drawReplayIds && pr.drawReplayIds.length) ? '<p class="muted small">Draw replay' + (pr.drawReplayIds.length === 1 ? '' : 's') + ' (replayed, no score): ' + pr.drawReplayIds.map(esc).join(', ') + '</p>' : ''}
       <div class="actions">
         <button class="btn ghost" id="rcNo">Reject</button>
         <button class="btn primary" id="rcYes">Confirm</button>
@@ -103,10 +107,17 @@ function openPlayerSubmit(m, mine) {
       <div style="flex:1"><label>${esc(teamName(m.team2))}</label><input type="number" id="ps2" min="0" max="${maxW}" value="${cur2}"></div>
     </div>
     <div id="psReplays" style="margin-top:10px"></div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="psDraw"> A game ended in a draw (was replayed)</label>
+    <div id="psDrawWrap" style="display:none;margin-top:6px">
+      <label>Draw replay ID(s) <span class="muted small">(comma-separated — draws score nothing, but casters and the archive want the replays)</span></label>
+      <input type="text" id="psDrawIds" autocomplete="off" placeholder="e.g. 21534010, 21534044">
+    </div>
     <div class="actions">
       <button class="btn ghost" id="psCancel">Cancel</button>
       <button class="btn primary" id="psGo">Submit for confirmation</button>
     </div>`, root => {
+    const drawCb = root.querySelector('#psDraw');
+    drawCb.onchange = () => { root.querySelector('#psDrawWrap').style.display = drawCb.checked ? '' : 'none'; };
     const wrap = root.querySelector('#psReplays');
     const redraw = () => {
       const s1 = parseInt(root.querySelector('#ps1').value, 10) || 0;
@@ -129,6 +140,7 @@ function openPlayerSubmit(m, mine) {
           score1: root.querySelector('#ps1').value,
           score2: root.querySelector('#ps2').value,
           replayIds,
+          drawReplayIds: drawCb.checked ? root.querySelector('#psDrawIds').value.split(',').map(v => v.trim()).filter(Boolean) : [],
           token: myToken()
         });
         closeModal();
@@ -470,6 +482,16 @@ async function drawAdmin(el) {
     <div style="margin-top:14px"><button class="btn" id="aiRwSave">Save rewards</button></div>
   </div>`;
 
+  html += `<div class="panel section"><h2>Rating requirements</h2>
+    <p class="muted small">Self-signups outside the range are refused with an explanation. Organizer adds, replaces, moves and invited players bypass all of this. Editable at any time; existing entrants are never removed automatically.</p>
+    <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px"><label>Min player rating</label><input type="number" id="aiMinR" min="0" max="4000" value="${T.minRating != null ? T.minRating : ''}" placeholder="off"></div>
+      <div style="flex:1;min-width:140px"><label>Max player rating</label><input type="number" id="aiMaxR" min="0" max="4000" value="${T.maxRating != null ? T.maxRating : ''}" placeholder="off"></div>
+      ${T.teamSize > 1 ? '<div style="flex:1;min-width:140px"><label>Max team rating (combined)</label><input type="number" id="aiMaxTR" min="0" max="30000" value="' + (T.maxTeamRating != null ? T.maxTeamRating : '') + '" placeholder="off"></div>' : ''}
+    </div>
+    <div style="margin-top:12px"><button class="btn" id="aiRatSave">Save rating limits</button></div>
+  </div>`;
+
   if (T.status !== 'finished' && T.competition === 'team') {
     const v = T.veto || { enabled: false, mode: 'upfront' };
     const pools = T.mapPools || [];
@@ -526,9 +548,14 @@ async function drawAdmin(el) {
     <div class="desc-gallery">${(T.descImages || []).map(f => { const used = inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) >= 0 || inlineRef.indexOf('/desc-images/' + f) >= 0; return `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt="">${used ? '<div class="mono small" style="color:var(--green);text-align:center">in use</div>' : ''}<button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`; }).join('')}</div></div>`;
   }
 
-  html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive</h2>
-    <p class="muted small" style="margin:6px 0 10px">Archiving hides this tournament from everyone and takes it off the home page. It is reversible — a site admin can restore it from the site-admin console. Nothing is permanently deleted.</p>
-    <button class="btn danger" id="archiveBtn">Archive tournament</button></div>`;
+  html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive / Abandon</h2>
+    <p class="muted small" style="margin:6px 0 10px"><strong>Archive</strong> hides this tournament from everyone (reversible by a site admin). <strong>Abandoned</strong> keeps it visible under Completed with a red ABANDONED badge — the honest label when it never actually happened, e.g. too few signups. Abandoning is reversible here.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn danger" id="archiveBtn">Archive tournament</button>
+      ${T.abandoned
+        ? '<button class="btn ghost" id="abandonBtn" data-undo="1">Undo abandoned</button>'
+        : '<button class="btn danger" id="abandonBtn">Mark as abandoned</button>'}
+    </div></div>`;
 
   el.innerHTML = html;
   el.querySelectorAll('[data-orgdel]').forEach(b => b.onclick = async () => {
@@ -544,6 +571,18 @@ async function drawAdmin(el) {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
 
+  const abandonBtn = document.getElementById('abandonBtn');
+  if (abandonBtn) abandonBtn.onclick = async () => {
+    const undo = abandonBtn.dataset.undo === '1';
+    if (!confirm(undo
+      ? 'Remove the ABANDONED mark from this tournament?'
+      : 'Are you sure you want to mark this tournament as ABANDONED?\n\nIt stays visible under Completed with a red ABANDONED badge instead of "finished". You can undo this later.')) return;
+    try {
+      await api('/api/t/' + T.id + '/abandon', { undo: undo ? 1 : 0, admin: adminToken() });
+      toast(undo ? 'Abandoned mark removed' : 'Marked as abandoned');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
   const archiveBtn = document.getElementById('archiveBtn');
   if (archiveBtn) archiveBtn.onclick = async () => {
     if (!confirm('Archive this tournament? It will be hidden from everyone. A site admin can restore it later.')) return;
@@ -560,6 +599,17 @@ async function drawAdmin(el) {
   if (aiDescTa) wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile'));
   const aiRwTa = document.getElementById('aiRewards');
   if (aiRwTa) wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile'));
+  const ratSave = document.getElementById('aiRatSave');
+  if (ratSave) ratSave.onclick = async () => {
+    try {
+      const body = { minRating: document.getElementById('aiMinR').value, maxRating: document.getElementById('aiMaxR').value, admin: adminToken() };
+      const tr = document.getElementById('aiMaxTR');
+      if (tr) body.maxTeamRating = tr.value;
+      await api('/api/t/' + T.id + '/edit_info', body);
+      toast('Rating limits saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
   const rwSave = document.getElementById('aiRwSave');
   if (rwSave) rwSave.onclick = async () => {
     try {

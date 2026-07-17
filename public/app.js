@@ -814,17 +814,76 @@ const SA_ACTION_LABEL = {
   host_access_revoked: 'Revoked hosting access'
 };
 
-// Render an article body safely: escape everything, then turn ![alt](url) image tokens
-// into <img> (only local /article-images/, /desc-images/ or http(s) urls). Newlines via pre-wrap.
+// Render rich text safely (articles, briefing, rewards). Everything is HTML-escaped first,
+// then a small markdown subset is applied:
+//   **bold**  *italic*  __underline__  # / ## / ### headings  - bullet lines
+//   [text](url) links (http/https)     ![alt](url) images (local upload dirs or http/https)
+// Newlines are preserved via pre-wrap on the containers.
 function renderArticleBody(text) {
   let s = esc(text || '');
+  // images first so their ![..](..) doesn't get eaten by the link rule
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
     if (/^\/(article|desc)-images\/[A-Za-z0-9_.%-]+$/.test(url) || /^https?:\/\/[^\s"'<>]+$/.test(url)) {
       return '<img src="' + url + '" alt="' + alt + '" class="art-img">';
     }
     return m;
   });
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
+    if (/^https?:\/\/[^\s"'<>]+$/.test(url)) return '<a href="' + url + '" target="_blank" rel="noopener">' + label + '</a>';
+    return m;
+  });
+  s = s.replace(/\*\*([^*\n][^*\n]*?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_\n][^_\n]*?)__/g, '<u>$1</u>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+  // line-level: headings and bullets (the trailing \n is consumed so pre-wrap doesn't double-space)
+  s = s.replace(/^### (.*)$/gm, '<span class="art-h3">$1</span>');
+  s = s.replace(/^## (.*)$/gm, '<span class="art-h2">$1</span>');
+  s = s.replace(/^# (.*)$/gm, '<span class="art-h1">$1</span>');
+  s = s.replace(/^- (.*)$/gm, '<span class="art-li">$1</span>');
+  s = s.replace(/(<\/span>|<img[^>]*>)\n/g, '$1');
   return s;
+}
+
+// Formatting toolbar for rich-text textareas. Wraps the selection (or inserts a template)
+// and keeps the caller's preview in sync via the textarea's input event.
+function mdToolbarHTML() {
+  return `<div class="md-toolbar">
+    <button type="button" data-md="bold" title="Bold"><strong>B</strong></button>
+    <button type="button" data-md="italic" title="Italic"><em>I</em></button>
+    <button type="button" data-md="underline" title="Underline"><u>U</u></button>
+    <button type="button" data-md="h1" title="Heading">H1</button>
+    <button type="button" data-md="h2" title="Sub-heading">H2</button>
+    <button type="button" data-md="list" title="Bullet list">\u2022 List</button>
+    <button type="button" data-md="link" title="Link">\uD83D\uDD17 Link</button>
+  </div>`;
+}
+function wireMdToolbar(root, ta) {
+  const apply = (kind) => {
+    const st = ta.selectionStart, en = ta.selectionEnd;
+    const sel = ta.value.slice(st, en);
+    let out, caretFromEnd = 0;
+    if (kind === 'bold') out = '**' + (sel || 'bold text') + '**';
+    else if (kind === 'italic') out = '*' + (sel || 'italic text') + '*';
+    else if (kind === 'underline') out = '__' + (sel || 'underlined text') + '__';
+    else if (kind === 'h1' || kind === 'h2') {
+      const prefix = kind === 'h1' ? '# ' : '## ';
+      const atLineStart = st === 0 || ta.value[st - 1] === '\n';
+      out = (atLineStart ? '' : '\n') + prefix + (sel || 'Heading');
+    } else if (kind === 'list') {
+      const lines = (sel || 'item one\nitem two').split('\n');
+      const atLineStart = st === 0 || ta.value[st - 1] === '\n';
+      out = (atLineStart ? '' : '\n') + lines.map(l => '- ' + l).join('\n');
+    } else if (kind === 'link') {
+      out = '[' + (sel || 'link text') + '](https://)';
+      caretFromEnd = 1;
+    } else return;
+    ta.value = ta.value.slice(0, st) + out + ta.value.slice(en);
+    const pos = st + out.length - caretFromEnd;
+    ta.selectionStart = ta.selectionEnd = pos;
+    ta.dispatchEvent(new Event('input'));
+    ta.focus();
+  };
+  root.querySelectorAll('[data-md]').forEach(b => b.onclick = (e) => { e.preventDefault(); apply(b.dataset.md); });
 }
 
 // Wire a textarea so pasted images (and an optional file-picker button) upload via
@@ -879,6 +938,7 @@ function drawSaArticles(el) {
         <label style="margin:0">Body</label>
         <span class="muted small">Paste a screenshot straight in, or <a href="#" id="artImgBtn">insert an image</a>.</span>
       </div>
+      ${mdToolbarHTML()}
       <textarea id="artBody" rows="16" style="width:100%;font-family:var(--mono);font-size:13px;line-height:1.5" placeholder="Write your rules / FAQ here. Paste images directly — they upload automatically.">${art ? esc(art.body) : ''}</textarea>
       <input type="file" id="artImgFile" accept="image/*" style="display:none">
       <div class="muted small" style="margin-top:14px;text-transform:uppercase;letter-spacing:1px">Preview</div>
@@ -889,6 +949,7 @@ function drawSaArticles(el) {
       const updatePreview = () => { prev.innerHTML = renderArticleBody(ta.value) || '<span class="muted small">Nothing yet.</span>'; };
       updatePreview();
       ta.addEventListener('input', updatePreview);
+      wireMdToolbar(root, ta);
 
       const insertAtCursor = (txt) => {
         const s = ta.selectionStart, e = ta.selectionEnd;

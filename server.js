@@ -144,7 +144,17 @@ function saveDB() {
 // ---------- helpers ----------
 
 function getT(id) { return db.tournaments[id] || null; }
-function isAdmin(t, token) { return !!token && (token === t.adminToken || (GADMIN && token === GADMIN)); }
+// Admin rights via token. The site admin password (GADMIN) is its own identity and always
+// works. The tournament's organizer-link token, however, only grants rights to a LOGGED-IN
+// account while FAF login is on — an anonymous visitor holding the link can view, not act.
+// (With FAF login off, legacy behaviour is unchanged: the token alone is enough.)
+function isAdmin(t, token, req) {
+  if (!token) return false;
+  if (GADMIN && token === GADMIN) return true;
+  if (token !== t.adminToken) return false;
+  if (FAF_OAUTH_ON && !currentSession(req)) return false;
+  return true;
+}
 // Approved articles editor: a FAF account the site admin confirmed for FAQ/Rules editing only.
 function editorSession(req) {
   const sess = currentSession(req);
@@ -207,7 +217,7 @@ function isOrganizer(t, req) {
 }
 // Combined check most mutating endpoints use: site-admin token OR a logged-in authorized organizer.
 function canOrganize(t, req, body) {
-  if (isAdmin(t, body && body.admin)) return true;   // site admin or legacy admin token
+  if (isAdmin(t, body && body.admin, req)) return true;   // site admin, or organizer token (logged in)
   if (isOrganizer(t, req)) return true;              // logged-in claimed organizer
   return false;
 }
@@ -321,9 +331,13 @@ function teamOfCaptainToken(t, token) {
 function publicView(t) {
   return {
     id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', category: t.category || null,
-    published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0,
+    published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
+    signupOpensAt: t.signupOpensAt || null,
     descImages: (t.descImages || []).slice(),
     news: (t.news || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
+    minRating: t.minRating != null ? t.minRating : null,
+    maxRating: t.maxRating != null ? t.maxRating : null,
+    maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
     checkInDeadline: t.checkInDeadline || null,
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
@@ -893,7 +907,11 @@ async function handleAPI(req, res, url) {
       invites: [],
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
+      signupOpensAt: cleanDate(b.signupOpensAt),
       status: 'signup', createdAt: now(),
+      minRating: (parseInt(b.minRating, 10) >= 0) ? parseInt(b.minRating, 10) : null,
+      maxRating: (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null,
+      maxTeamRating: (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null,
       organizerFafIds: (hostSess && hostSess.fafId) ? [hostSess.fafId] : [],
       organizerNames: (hostSess && hostSess.fafId) ? { [hostSess.fafId]: hostSess.fafName || '' } : {},
       createdByName: (hostSess && hostSess.fafName) || '',
@@ -1223,7 +1241,12 @@ async function handleAPI(req, res, url) {
         teams: t.teams.length, createdAt: t.createdAt,
         imported: t.imported || false,
         eventDate: t.eventDate || null,
-        challongeDate: t.challongeDate || null
+        challongeDate: t.challongeDate || null,
+        abandoned: t.abandoned ? 1 : 0,
+        signupOpensAt: t.signupOpensAt || null,
+        minRating: t.minRating != null ? t.minRating : null,
+        maxRating: t.maxRating != null ? t.maxRating : null,
+        maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null
       }));
     return json(res, 200, list);
   }
@@ -1348,7 +1371,7 @@ async function handleAPI(req, res, url) {
       const view = publicView(t);
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
-      const organizer = isAdmin(t, tok) || isOrganizer(t, req);
+      const organizer = isAdmin(t, tok, req) || isOrganizer(t, req);
       // Who organizes a tournament is visible to its organizers and site admins only.
       if (!organizer) delete view.createdByName;
       if (organizer) {
@@ -1385,9 +1408,12 @@ async function handleAPI(req, res, url) {
         const mineM = t.players.find(p => p.fafId === sess.fafId);
         if (mineM && mineM.teamId) memberTeamId = mineM.teamId;
       }
-      view.invites = organizer ? (t.invites || []).slice() : undefined;
+      view.invites = organizer ? (t.invites || []).map(i => ({
+        fafId: i.fafId, name: i.name, at: i.at,
+        status: (t.players || []).some(pl => pl.fafId === i.fafId) ? 'accepted' : (i.declined ? 'declined' : 'pending')
+      })) : undefined;
       view.viewer = {
-        admin: isAdmin(t, tok) ? 1 : 0,
+        admin: isAdmin(t, tok, req) ? 1 : 0,
         organizer: organizer ? 1 : 0,
         teamId: capTeam ? capTeam.id : null,
         loggedIn: sess ? 1 : 0,
@@ -1430,7 +1456,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (method === 'GET' && sub === 'secrets') {
-      if (!isAdmin(t, url.searchParams.get('admin')) && !isOrganizer(t, req)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!isAdmin(t, url.searchParams.get('admin'), req) && !isOrganizer(t, req)) return json(res, 403, { error: 'Organizer rights required' });
       return json(res, 200, {
         adminToken: t.adminToken,
         lateToken: t.lateToken
@@ -1467,6 +1493,7 @@ async function handleAPI(req, res, url) {
     if (sub === 'edit_date') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       t.eventDate = cleanDate(b.eventDate); // null clears it
+      if (b.signupOpensAt !== undefined) t.signupOpensAt = cleanDate(b.signupOpensAt);
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -1491,6 +1518,17 @@ async function handleAPI(req, res, url) {
         detail: siteAdmin ? 'removed by site admin' : 'removed by organizer during signups'
       });
       return json(res, 200, { ok: true });
+    }
+
+    // Mark a tournament as abandoned (e.g. too few signups): it stays visible under
+    // Completed with an ABANDONED badge instead of pretending it finished. Reversible.
+    if (sub === 'abandon') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      t.abandoned = b.undo ? 0 : 1;
+      t.abandonedAt = b.undo ? null : now();
+      saveDB();
+      audit(req, b.undo ? 'tournament_unabandoned' : 'tournament_abandoned', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: b.undo ? '' : 'marked abandoned (too few signups or similar)' });
+      return json(res, 200, { ok: true, abandoned: t.abandoned });
     }
 
     if (sub === 'restore') {
@@ -1519,10 +1557,14 @@ async function handleAPI(req, res, url) {
       }
 
       const sess = currentSession(req);
-      const adminAdding = isAdmin(t, b.admin) || canOrganize(t, req, b);
+      const adminAdding = isAdmin(t, b.admin, req) || canOrganize(t, req, b);
       // Late signups (after signups close) require the organizer's late-signup token OR organizer rights.
       const lateOk = (b.lateToken && b.lateToken === t.lateToken) || adminAdding;
       if (t.status !== 'signup' && !lateOk) return bad(res, 'Signups are closed');
+      // Scheduled signup opening: before that moment only organizers can add players.
+      if (t.signupOpensAt && Date.now() < new Date(t.signupOpensAt).getTime() && !adminAdding) {
+        return bad(res, 'Signups haven\u2019t opened yet \u2014 they open ' + new Date(t.signupOpensAt).toUTCString().replace(':00 GMT', ' UTC') + '.');
+      }
 
       let name, fafId = null, manual = false;
       if (!FAF_OAUTH_ON && adminAdding && b.name) {
@@ -1567,6 +1609,17 @@ async function handleAPI(req, res, url) {
       } else {
         rating = parseInt(b.rating, 10);
         if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Enter a FAF rating (0\u20134000)');
+      }
+      // Rating requirements apply to self-signups only. Organizer adds and invited
+      // accounts bypass them (an invite IS the organizer's decision).
+      const invitedHere = !!(sess && (t.invites || []).some(i => i.fafId === sess.fafId));
+      if (!adminAdding && !invitedHere && rating != null) {
+        if (t.minRating != null && rating < t.minRating) {
+          return bad(res, 'You can\u2019t sign up here: your rating (' + rating + ') is below this tournament\u2019s minimum of ' + t.minRating + '.');
+        }
+        if (t.maxRating != null && rating > t.maxRating) {
+          return bad(res, 'You can\u2019t sign up here: your rating (' + rating + ') is above this tournament\u2019s maximum of ' + t.maxRating + '.');
+        }
       }
       const p = {
         id: 'p' + uid(4), name, rating: (rating != null ? rating : null), fafId: fafId, manual: manual,
@@ -1755,6 +1808,18 @@ async function handleAPI(req, res, url) {
       return bad(res, 'Send a join request — the team captain approves it.');
     }
 
+    // Would adding this player push the team past the max combined rating? Returns the
+    // offending numbers or null. Only meaningful when maxTeamRating is set.
+    const teamCapViolation = (team, joiner) => {
+      if (t.maxTeamRating == null || !joiner || joiner.rating == null) return null;
+      const cur = team.playerIds.reduce((sum, pid) => {
+        const m = playerById(t, pid);
+        return sum + ((m && m.rating) || 0);
+      }, 0);
+      if (cur + joiner.rating > t.maxTeamRating) return { cur, would: cur + joiner.rating, cap: t.maxTeamRating };
+      return null;
+    };
+
     if (sub === 'request_join') {
       const me = actingPlayer(b);
       if (!me) return json(res, 401, { error: 'Sign up first' });
@@ -1762,6 +1827,8 @@ async function handleAPI(req, res, url) {
       const team = teamById(t, b.teamId);
       if (!team) return bad(res, 'Team not found');
       if (team.playerIds.length >= t.teamSize) return bad(res, 'That team is full');
+      const cap = teamCapViolation(team, me);
+      if (cap) return bad(res, 'You can\u2019t join this team: its combined rating would become ' + cap.would + ', over the maximum of ' + cap.cap + ' (currently ' + cap.cur + ').');
       team.joinRequests = team.joinRequests || [];
       if (team.joinRequests.some(r => r.playerId === me.id)) return json(res, 200, { ok: true, already: 1 });
       team.joinRequests.push({ playerId: me.id, name: me.name, at: now() });
@@ -1794,6 +1861,11 @@ async function handleAPI(req, res, url) {
         if (!p) return bad(res, 'That player is no longer signed up');
         if (p.teamId) return bad(res, 'That player already joined another team');
         if (team.playerIds.length >= t.teamSize) return bad(res, 'Your team is already full');
+        // captains are bound by the team rating cap; organizers may override it
+        if (!canOrganize(t, req, b)) {
+          const cap = teamCapViolation(team, p);
+          if (cap) return bad(res, 'Accepting would put the team\u2019s combined rating at ' + cap.would + ', over the maximum of ' + cap.cap + '.');
+        }
         team.playerIds.push(p.id);
         p.teamId = team.id;
         // once they're on a team, drop their pending requests everywhere
@@ -1981,7 +2053,7 @@ async function handleAPI(req, res, url) {
       const sess = currentSession(req);
       if (!sess) return json(res, 401, { error: 'Log in with FAF first' });
       // the link carries the admin token; that's what authorizes the claim
-      if (!isAdmin(t, b.adminToken) && !(t.adminToken && b.adminToken === t.adminToken)) {
+      if (!isAdmin(t, b.adminToken, req) && !(t.adminToken && b.adminToken === t.adminToken)) {
         return json(res, 403, { error: 'Invalid organizer link' });
       }
       if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
@@ -2087,6 +2159,20 @@ async function handleAPI(req, res, url) {
       t.invites.push({ fafId: found.fafId, name: found.name, at: now() });
       saveDB();
       return json(res, 200, { ok: true, fafId: found.fafId, name: found.name });
+    }
+
+    // An invited player declines. The organizer keeps seeing it (as "declined") until
+    // the tournament starts, at which point non-accepted invites are cleared.
+    if (sub === 'decline_invite') {
+      const sess = currentSession(req);
+      if (!sess) return json(res, 401, { error: 'Log in with FAF first' });
+      const inv = (t.invites || []).find(i => i.fafId === sess.fafId);
+      if (!inv) return bad(res, 'You have no invite for this tournament');
+      if ((t.players || []).some(pl => pl.fafId === sess.fafId)) return bad(res, 'You already signed up \u2014 withdraw instead');
+      inv.declined = 1;
+      inv.declinedAt = now();
+      saveDB();
+      return json(res, 200, { ok: true });
     }
 
     if (sub === 'uninvite_player') {
@@ -2268,6 +2354,9 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (b.description !== undefined) t.description = cleanName(b.description, 2000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
+      if (b.minRating !== undefined) t.minRating = (parseInt(b.minRating, 10) >= 0 && b.minRating !== '') ? parseInt(b.minRating, 10) : null;
+      if (b.maxRating !== undefined) t.maxRating = (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null;
+      if (b.maxTeamRating !== undefined) t.maxTeamRating = (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null;
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
@@ -2513,6 +2602,8 @@ async function handleAPI(req, res, url) {
         if (t.status !== 'drafted') return bad(res, 'Form teams first');
         const n = t.teams.length;
         if (n < 2) return bad(res, 'Need at least 2 teams');
+        // The tournament is starting: pending and declined invites are no longer relevant.
+        t.invites = (t.invites || []).filter(i => (t.players || []).some(pl => pl.fafId === i.fafId));
         const c = b.config || {};
 
         if (t.competition === 'ffa') {
@@ -2577,7 +2668,7 @@ async function handleAPI(req, res, url) {
       const d = t.draft;
       if (d.current >= d.order.length) return bad(res, 'Draft is complete');
       const turnTeamId = d.order[d.current];
-      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const admin = isAdmin(t, b.token, req) || isOrganizer(t, req);
       const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
       if (!admin && (!capTeam || capTeam.id !== turnTeamId)) return json(res, 403, { error: 'Not your pick' });
       const p = playerById(t, b.playerId);
@@ -2608,7 +2699,7 @@ async function handleAPI(req, res, url) {
         }
       }
       if (!lp) return bad(res, 'Nothing to undo');
-      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const admin = isAdmin(t, b.token, req) || isOrganizer(t, req);
       const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
       // a captain may undo only their own last pick, and only if no one has picked after them
       if (!admin) {
@@ -2655,7 +2746,7 @@ async function handleAPI(req, res, url) {
       const cur = vetoCurrentStep(m);
       if (!cur) return bad(res, 'No veto step pending');
 
-      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const admin = isAdmin(t, b.token, req) || isOrganizer(t, req);
       const capTeam = teamOfCaptainToken(t, b.token) || teamOfSession(t, req);
       if (!admin && !capTeam) return json(res, 403, { error: 'Only the match captains or the organizer can act' });
       // the acting team must be whoever's turn it is (organizer may act on their behalf)
@@ -2737,7 +2828,10 @@ async function handleAPI(req, res, url) {
       // replay IDs: exactly one per newly reported game
       let ids = Array.isArray(b.replayIds) ? b.replayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean) : [];
       if (ids.length !== newGames) return bad(res, 'Provide exactly ' + newGames + ' replay ID' + (newGames === 1 ? '' : 's') + ' \u2014 one for each newly reported game');
-      m.pendingReport = { score1: s1, score2: s2, replayIds: ids, byTeam: myTeam.id, byName: actorOf(req, b).name || myTeam.name, at: now() };
+      // Optional: games that ended in a draw were replayed and produce no score, but their
+      // replay IDs are still worth keeping (casters, archive). Any Bo, including Bo1.
+      const drawIds = Array.isArray(b.drawReplayIds) ? b.drawReplayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 10) : [];
+      m.pendingReport = { score1: s1, score2: s2, replayIds: ids, drawReplayIds: drawIds, byTeam: myTeam.id, byName: actorOf(req, b).name || myTeam.name, at: now() };
       saveDB();
       return json(res, 200, { ok: true, pending: 1 });
     }
@@ -2748,7 +2842,7 @@ async function handleAPI(req, res, url) {
       const m = matchById(t, b.matchId);
       if (!m) return bad(res, 'Match not found');
       if (!m.pendingReport) return bad(res, 'Nothing awaiting confirmation on this match');
-      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const admin = isAdmin(t, b.token, req) || isOrganizer(t, req);
       if (!admin) {
         const myTeam = memberTeamOf(b);
         const other = m.pendingReport.byTeam === m.team1 ? m.team2 : m.team1;
@@ -2759,6 +2853,7 @@ async function handleAPI(req, res, url) {
       if (!b.accept) { saveDB(); return json(res, 200, { ok: true, rejected: 1 }); }
       if (m.status === 'done') return bad(res, 'The series was decided in the meantime');
       m.replayIds = (m.replayIds || []).concat(pr.replayIds);
+      if (pr.drawReplayIds && pr.drawReplayIds.length) m.drawReplayIds = (m.drawReplayIds || []).concat(pr.drawReplayIds).slice(0, 15);
       const maxW = Math.ceil(m.bo / 2);
       if (pr.score1 === maxW || pr.score2 === maxW) {
         finalizeMatch(t, m, pr.score1, pr.score2);
@@ -2774,7 +2869,7 @@ async function handleAPI(req, res, url) {
       if (t.status !== 'running' && t.status !== 'finished') return bad(res, 'Bracket not running');
       const m = matchById(t, b.matchId);
       if (!m) return bad(res, 'Match not found');
-      const admin = isAdmin(t, b.token) || isOrganizer(t, req);
+      const admin = isAdmin(t, b.token, req) || isOrganizer(t, req);
       // Players no longer report directly: they submit via report_submit and the opponent
       // confirms (report_confirm). Direct /report is the organizer override. FFA keeps the
       // captain path (winner selection, no scores/replays).
@@ -2878,6 +2973,10 @@ async function handleAPI(req, res, url) {
       if (Array.isArray(b.replayIds)) {
         m.replayIds = b.replayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
         if (!m.replayIds.length) delete m.replayIds;
+      }
+      if (Array.isArray(b.drawReplayIds)) {
+        m.drawReplayIds = b.drawReplayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 15);
+        if (!m.drawReplayIds.length) delete m.drawReplayIds;
       }
       if (s1 === maxW || s2 === maxW) {
         finalizeMatch(t, m, s1, s2);
