@@ -335,6 +335,7 @@ function publicView(t) {
     signupOpensAt: t.signupOpensAt || null,
     descImages: (t.descImages || []).slice(),
     news: (t.news || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
+    streams: (t.streams || []).slice(),
     minRating: t.minRating != null ? t.minRating : null,
     maxRating: t.maxRating != null ? t.maxRating : null,
     maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
@@ -2031,6 +2032,23 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // Official vs community is picked once at creation by the organizer; only the
+    // site admin can change it afterwards.
+    if (sub === 'set_category') {
+      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      const cat = (b.category === 'official' || b.category === 'community') ? b.category : null;
+      if (!cat) return bad(res, 'Category must be official or community');
+      const before = t.category || 'community';
+      t.category = cat;
+      saveDB();
+      audit(req, 'category_changed', {
+        tournamentId: t.id, tournamentName: t.name,
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: before + ' \u2192 ' + cat
+      });
+      return json(res, 200, { ok: true, category: t.category });
+    }
+
     // Site admin strips organizer rights from a FAF account on this tournament.
     if (sub === 'remove_organizer') {
       if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
@@ -2354,6 +2372,13 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (b.description !== undefined) t.description = cleanName(b.description, 2000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
+      if (Array.isArray(b.streams)) {
+        t.streams = b.streams.map(x => ({
+          url: String((x && x.url) || '').trim().slice(0, 300),
+          info: cleanName((x && x.info) || '', 120) || ''
+        })).filter(x => /^https?:\/\/[^\s"'<>]+$/.test(x.url)).slice(0, 10);
+        if (!t.streams.length) delete t.streams;
+      }
       if (b.minRating !== undefined) t.minRating = (parseInt(b.minRating, 10) >= 0 && b.minRating !== '') ? parseInt(b.minRating, 10) : null;
       if (b.maxRating !== undefined) t.maxRating = (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null;
       if (b.maxTeamRating !== undefined) t.maxTeamRating = (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null;

@@ -482,6 +482,18 @@ async function drawAdmin(el) {
     <div style="margin-top:14px"><button class="btn" id="aiRwSave">Save rewards</button></div>
   </div>`;
 
+  html += `<div class="panel section"><h2>Livestreams</h2>
+    <p class="muted small">Where this tournament is streamed \u2014 shown near the top of the Overview with clickable links. Add one row per stream; leave a row's link empty to drop it.</p>
+    <div id="aiStreams">${((T.streams && T.streams.length) ? T.streams : [{ url: '', info: '' }]).map(st => `
+      <div class="row stream-row" style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+        <input type="text" class="stUrl" placeholder="https://twitch.tv/..." maxlength="300" value="${esc(st.url || '')}" style="flex:2;min-width:220px" autocomplete="off">
+        <input type="text" class="stInfo" placeholder="Info, e.g. Main stream (English), casted by X" maxlength="120" value="${esc(st.info || '')}" style="flex:2;min-width:220px" autocomplete="off">
+      </div>`).join('')}</div>
+    <div style="display:flex;gap:10px;margin-top:6px">
+      <button class="btn ghost small" id="aiStAdd">+ Add another stream</button>
+      <button class="btn" id="aiStSave">Save livestreams</button>
+    </div></div>`;
+
   html += `<div class="panel section"><h2>Rating requirements</h2>
     <p class="muted small">Self-signups outside the range are refused with an explanation. Organizer adds, replaces, moves and invited players bypass all of this. Editable at any time; existing entrants are never removed automatically.</p>
     <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -548,6 +560,15 @@ async function drawAdmin(el) {
     <div class="desc-gallery">${(T.descImages || []).map(f => { const used = inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) >= 0 || inlineRef.indexOf('/desc-images/' + f) >= 0; return `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt="">${used ? '<div class="mono small" style="color:var(--green);text-align:center">in use</div>' : ''}<button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`; }).join('')}</div></div>`;
   }
 
+  if (siteAdmin()) {
+    html += `<div class="panel section"><h2>Category <span class="muted small">(site admin only)</span></h2>
+      <p class="muted small">Organizers pick this once at creation; only site admins can change it afterwards.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="catbox ${T.category === 'official' ? 'official' : 'community'}">${T.category === 'official' ? 'OFFICIAL' : 'COMMUNITY'}</span>
+        <button class="btn ghost small" id="saCatSwap">Change to ${T.category === 'official' ? 'COMMUNITY' : 'OFFICIAL'}</button>
+      </div></div>`;
+  }
+
   html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive / Abandon</h2>
     <p class="muted small" style="margin:6px 0 10px"><strong>Archive</strong> hides this tournament from everyone (reversible by a site admin). <strong>Abandoned</strong> keeps it visible under Completed with a red ABANDONED badge — the honest label when it never actually happened, e.g. too few signups. Abandoning is reversible here.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -599,6 +620,38 @@ async function drawAdmin(el) {
   if (aiDescTa) wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile'));
   const aiRwTa = document.getElementById('aiRewards');
   if (aiRwTa) wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile'));
+  const stAdd = document.getElementById('aiStAdd');
+  if (stAdd) stAdd.onclick = () => {
+    const wrap = document.getElementById('aiStreams');
+    const div = document.createElement('div');
+    div.className = 'row stream-row';
+    div.style.cssText = 'display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap';
+    div.innerHTML = '<input type="text" class="stUrl" placeholder="https://twitch.tv/..." maxlength="300" style="flex:2;min-width:220px" autocomplete="off">'
+      + '<input type="text" class="stInfo" placeholder="Info, e.g. Main stream (English), casted by X" maxlength="120" style="flex:2;min-width:220px" autocomplete="off">';
+    wrap.appendChild(div);
+  };
+  const stSave = document.getElementById('aiStSave');
+  if (stSave) stSave.onclick = async () => {
+    const rows = Array.from(el.querySelectorAll('.stream-row'));
+    const streams = rows.map(r => ({ url: r.querySelector('.stUrl').value.trim(), info: r.querySelector('.stInfo').value.trim() })).filter(x => x.url);
+    const badRow = streams.find(x => !/^https?:\/\//.test(x.url));
+    if (badRow) return toast('Links must start with http:// or https://', true);
+    try {
+      await api('/api/t/' + T.id + '/edit_info', { streams, admin: adminToken() });
+      toast('Livestreams saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const catSwap = document.getElementById('saCatSwap');
+  if (catSwap) catSwap.onclick = async () => {
+    const to = T.category === 'official' ? 'community' : 'official';
+    if (!confirm('Change this tournament\u2019s category to ' + to.toUpperCase() + '?')) return;
+    try {
+      await api('/api/t/' + T.id + '/set_category', { category: to, admin: siteAdmin() });
+      toast('Category changed');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
   const ratSave = document.getElementById('aiRatSave');
   if (ratSave) ratSave.onclick = async () => {
     try {

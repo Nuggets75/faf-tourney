@@ -805,6 +805,14 @@ function drawOverview(el) {
     </div>`;
   }
 
+  if ((T.streams || []).length) {
+    html += `<div class="panel section stream-panel"><h2>Livestream${T.streams.length === 1 ? '' : 's'}</h2>
+      ${T.streams.map(st => {
+        const safe = /^https?:\/\/[^\s"'<>]+$/.test(st.url);
+        return `<div class="stream-line">\uD83D\uDCFA ${safe ? '<a href="' + esc(st.url) + '" target="_blank" rel="noopener">' + esc(st.url.replace(/^https?:\/\//, '')) + '</a>' : esc(st.url)}${st.info ? ' <span class="muted small">\u2014 ' + esc(st.info) + '</span>' : ''}</div>`;
+      }).join('')}</div>`;
+  }
+
   if ((T.news || []).length) {
     const n = T.news[0];
     const unread = newsUnreadCount();

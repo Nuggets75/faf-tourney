@@ -406,6 +406,8 @@ tbody tr:hover { background: #ffffff05; }
 .dcpill { display: inline-block; font-family: var(--mono); font-size: 10px; color: var(--amber); border: 1px dashed #6b5220; background: #2a2113; border-radius: 3px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
 .replayline { font-family: var(--mono); font-size: 10px; color: var(--muted); margin: 4px 10px 6px; word-break: break-all; }
 .reward-panel { border-left: 3px solid var(--amber); }
+.stream-panel { border-left: 3px solid #a855f7; }
+.stream-line { font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
 .reward-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; margin-top: 6px; }
 /* tournament news */
 .news-post .news-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
