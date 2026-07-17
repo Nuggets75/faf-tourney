@@ -626,14 +626,15 @@ function gameInfoPanel() {
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);
-  const imgs = (T.descImages || []);
+  const inlineRef = (T.description || '') + ' ' + (T.rewards || '');
+  const imgs = (T.descImages || []).filter(f => inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) < 0 && inlineRef.indexOf('/desc-images/' + f) < 0);
   const gallery = imgs.length ? `<div class="desc-gallery">${imgs.map(f => `<a href="/desc-images/${encodeURIComponent(f)}" target="_blank" rel="noopener"><img src="/desc-images/${encodeURIComponent(f)}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
   if (!cells.length && !imgs.length && !T.description && !headline) return '';
   return `<div class="panel section"><h2>Game <span class="h2-strong">Setup</span></h2>
     ${headline ? '<p class="setup-headline">' + esc(headline) + '</p>' : ''}
     <div class="infogrid">
     ${cells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
-  </div>${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + esc(T.description) + '</div></div>' : ''}${gallery}</div>`;
+  </div>${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`;
 }
 
 function drawOverview(el) {
@@ -659,6 +660,11 @@ function drawOverview(el) {
 
   if (T.championTeamId) {
     html += `<div class="champ"><div class="champ-label">Champion</div><h1>${esc(teamName(T.championTeamId))}</h1></div>`;
+  }
+
+  if (T.rewards) {
+    html += `<div class="panel section reward-panel"><h2>Rewards</h2>
+      <div class="ic-body reward-body">${renderArticleBody(T.rewards)}</div></div>`;
   }
 
   html += gameInfoPanel();

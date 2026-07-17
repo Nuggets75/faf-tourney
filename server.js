@@ -313,7 +313,7 @@ function teamOfCaptainToken(t, token) {
 
 function publicView(t) {
   return {
-    id: t.id, name: t.name, description: t.description, category: t.category || null,
+    id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0,
     descImages: (t.descImages || []).slice(),
     checkInDeadline: t.checkInDeadline || null,
@@ -2049,7 +2049,7 @@ async function handleAPI(req, res, url) {
       try { fname = saveDescImage(b.image); } catch (e) { return bad(res, e.message); }
       t.descImages.push(fname);
       saveDB();
-      return json(res, 200, { ok: true, file: fname, count: t.descImages.length });
+      return json(res, 200, { ok: true, file: fname, url: '/desc-images/' + encodeURIComponent(fname), count: t.descImages.length });
     }
 
     if (sub === 'remove_desc_image') {
@@ -2064,7 +2064,8 @@ async function handleAPI(req, res, url) {
     // edit tournament info (admin, any time)
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
-      if (b.description !== undefined) t.description = cleanName(b.description, 500);
+      if (b.description !== undefined) t.description = cleanName(b.description, 2000);
+      if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;

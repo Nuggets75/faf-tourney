@@ -438,10 +438,26 @@ async function drawAdmin(el) {
   }
 
   html += `<div class="panel section"><h2>Game setup</h2>
-    <label>Description</label><textarea id="aiDesc" maxlength="500">${esc(T.description || '')}</textarea>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <label style="margin:0">Description</label>
+      <span class="muted small">Paste a screenshot straight in, or <a href="#" id="aiDescImgBtn">insert an image</a>.</span>
+    </div>
+    <textarea id="aiDesc" maxlength="2000" rows="6">${esc(T.description || '')}</textarea>
+    <input type="file" id="aiDescImgFile" accept="image/*" style="display:none">
     <label>Lobby options</label><textarea id="aiLobby" maxlength="500">${esc(T.lobbyOptions || '')}</textarea>
     <label>Mods</label><input type="text" id="aiMods" maxlength="500" value="${esc(T.mods || '')}">
     <div style="margin-top:14px"><button class="btn" id="aiSave">Save setup</button></div>
+  </div>`;
+
+  html += `<div class="panel section"><h2>Rewards</h2>
+    <p class="muted small">Shown prominently on the Overview tab. Editable at any time.</p>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <label style="margin:0">Rewards</label>
+      <span class="muted small">Paste a screenshot straight in (e.g. an avatar), or <a href="#" id="aiRwImgBtn">insert an image</a>.</span>
+    </div>
+    <textarea id="aiRewards" maxlength="2000" rows="5" placeholder="e.g. 1st place: exclusive avatar + 500 credits...">${esc(T.rewards || '')}</textarea>
+    <input type="file" id="aiRwImgFile" accept="image/*" style="display:none">
+    <div style="margin-top:14px"><button class="btn" id="aiRwSave">Save rewards</button></div>
   </div>`;
 
   if (T.status !== 'finished' && T.competition === 'team') {
@@ -492,10 +508,12 @@ async function drawAdmin(el) {
       <li>Data lives in the container volume — deleting the volume deletes tournaments.</li>
     </ul></div>`;
 
-  html += `<div class="panel section"><h2>Briefing images <span class="muted small">(${(T.descImages || []).length}/10)</span></h2>
-    <p class="muted small" style="margin:6px 0 10px">Screenshots or icons shown on the Overview under the briefing. Up to 10 (5MB each).</p>
-    <div class="desc-gallery">${(T.descImages || []).map(f => `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt=""><button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`).join('')}</div>
-    <div style="margin-top:10px"><input type="file" id="descImgInput" accept="image/*" multiple ${(T.descImages || []).length >= 10 ? 'disabled' : ''}></div></div>`;
+  if ((T.descImages || []).length) {
+    const inlineRef = (T.description || '') + ' ' + (T.rewards || '');
+    html += `<div class="panel section"><h2>Attached images <span class="muted small">(${(T.descImages || []).length}/10)</span></h2>
+    <p class="muted small" style="margin:6px 0 10px">New images are added by pasting them straight into the Description or Rewards text above. Images referenced there are marked "in use"; unreferenced ones show in a gallery under the briefing. Removing an image deletes its file.</p>
+    <div class="desc-gallery">${(T.descImages || []).map(f => { const used = inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) >= 0 || inlineRef.indexOf('/desc-images/' + f) >= 0; return `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt="">${used ? '<div class="mono small" style="color:var(--green);text-align:center">in use</div>' : ''}<button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`; }).join('')}</div></div>`;
+  }
 
   html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive</h2>
     <p class="muted small" style="margin:6px 0 10px">Archiving hides this tournament from everyone and takes it off the home page. It is reversible — a site admin can restore it from the site-admin console. Nothing is permanently deleted.</p>
@@ -513,18 +531,22 @@ async function drawAdmin(el) {
     catch (e) { toast(e.message, true); }
   };
 
-  const descInput = document.getElementById('descImgInput');
-  if (descInput) descInput.onchange = async () => {
-    const files = Array.from(descInput.files || []);
-    const room = 10 - (T.descImages || []).length;
-    if (files.length > room) toast('Only ' + room + ' more image(s) allowed', true);
-    for (const file of files.slice(0, Math.max(0, room))) {
-      try {
-        const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read file')); r.readAsDataURL(file); });
-        await api('/api/t/' + T.id + '/add_desc_image', { image: dataUrl, admin: adminToken() });
-      } catch (e) { toast(e.message, true); }
-    }
-    await refresh();
+  // paste-to-upload for description and rewards (images land in the shared attached set)
+  const descUploader = async (dataUrl) => {
+    const d = await api('/api/t/' + T.id + '/add_desc_image', { image: dataUrl, admin: adminToken() });
+    return d;
+  };
+  const aiDescTa = document.getElementById('aiDesc');
+  if (aiDescTa) wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile'));
+  const aiRwTa = document.getElementById('aiRewards');
+  if (aiRwTa) wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile'));
+  const rwSave = document.getElementById('aiRwSave');
+  if (rwSave) rwSave.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/edit_info', { rewards: aiRwTa.value, admin: adminToken() });
+      toast('Rewards saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
   };
   el.querySelectorAll('[data-descdel]').forEach(b => b.onclick = async () => {
     try { await api('/api/t/' + T.id + '/remove_desc_image', { file: b.dataset.descdel, admin: adminToken() }); await refresh(); }

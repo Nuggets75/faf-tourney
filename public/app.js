@@ -735,16 +735,47 @@ const SA_ACTION_LABEL = {
 };
 
 // Render an article body safely: escape everything, then turn ![alt](url) image tokens
-// into <img> (only local /article-images/ or http(s) urls). Newlines preserved via pre-wrap.
+// into <img> (only local /article-images/, /desc-images/ or http(s) urls). Newlines via pre-wrap.
 function renderArticleBody(text) {
   let s = esc(text || '');
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
-    if (/^\/article-images\/[A-Za-z0-9_.-]+$/.test(url) || /^https?:\/\/[^\s"'<>]+$/.test(url)) {
+    if (/^\/(article|desc)-images\/[A-Za-z0-9_.%-]+$/.test(url) || /^https?:\/\/[^\s"'<>]+$/.test(url)) {
       return '<img src="' + url + '" alt="' + alt + '" class="art-img">';
     }
     return m;
   });
   return s;
+}
+
+// Wire a textarea so pasted images (and an optional file-picker button) upload via
+// `uploader(dataUrl) -> {url}` and insert an ![image](url) token at the cursor.
+function wireImagePaste(ta, uploader, imgBtn, fileInput) {
+  const insertAtCursor = (txt) => {
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + txt + ta.value.slice(e);
+    ta.selectionStart = ta.selectionEnd = s + txt.length;
+    ta.dispatchEvent(new Event('input'));
+    ta.focus();
+  };
+  const uploadImage = async (file) => {
+    if (!file) return;
+    try {
+      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read image')); r.readAsDataURL(file); });
+      const d = await uploader(dataUrl);
+      insertAtCursor('\n![image](' + d.url + ')\n');
+      toast('Image added');
+    } catch (err) { toast(err.message, true); }
+  };
+  ta.addEventListener('paste', e => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const it of items) {
+      if (it.type && it.type.indexOf('image/') === 0) { const f = it.getAsFile(); if (f) { e.preventDefault(); uploadImage(f); return; } }
+    }
+  });
+  if (imgBtn && fileInput) {
+    imgBtn.onclick = e => { e.preventDefault(); fileInput.click(); };
+    fileInput.onchange = () => { uploadImage(fileInput.files[0]); fileInput.value = ''; };
+  }
 }
 
 function drawSaArticles(el) {

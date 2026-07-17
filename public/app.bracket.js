@@ -290,13 +290,25 @@ function drawMaps(el) {
   const db = T.mapDb || [];
 
   // build a "where used" index: mapId -> [round labels]
+  // Covers both legacy per-round map lists AND rounds a map reaches through its pool
+  // being assigned there (previously pool-assigned maps wrongly showed "not assigned").
   const usage = {};
+  const addUse = (id, label) => {
+    if (!usage[id]) usage[id] = [];
+    if (usage[id].indexOf(label) < 0) usage[id].push(label);
+  };
   for (const key of Object.keys(T.maps || {})) {
     const [bracket, round] = key.split(':');
-    for (const id of (T.maps[key] || [])) {
-      if (!usage[id]) usage[id] = [];
-      usage[id].push(roundKeyLabel(bracket, round));
-    }
+    for (const id of (T.maps[key] || [])) addUse(id, roundKeyLabel(bracket, round));
+  }
+  const poolMapsById = {};
+  for (const pool of (T.mapPools || [])) poolMapsById[pool.id] = pool.mapIds || [];
+  for (const key of Object.keys(T.poolAssign || {})) {
+    const pid = T.poolAssign[key];
+    if (!pid || !poolMapsById[pid]) continue;
+    const [bk, rd] = key.split(':');
+    const label = bk === 'match' ? 'a specific match' : roundKeyLabel(bk, rd);
+    for (const id of poolMapsById[pid]) addUse(id, label);
   }
   // which pools each map belongs to (for a badge)
   const inPool = {};
@@ -337,7 +349,7 @@ function drawMaps(el) {
         <div class="mapdb-body">
           <div class="mapdb-name">${esc(m.name)} ${badges.join(' ')}</div>
           ${m.description ? `<div class="mapdb-desc">${esc(m.description)}</div>` : ''}
-          ${used.length ? `<div class="mapdb-used">Played in: ${used.map(u => esc(u)).join(', ')}</div>` : (admin ? '<div class="mapdb-used muted">Not assigned to a round yet</div>' : '')}
+          ${used.length ? `<div class="mapdb-used">Played in: ${used.map(u => esc(u)).join(', ')}</div>` : (admin ? '<div class="mapdb-used muted">' + (inPool[m.id] ? ((T.mapPools || []).length === 1 ? 'In pool ' + esc(inPool[m.id].join(', ')) + ' \u2014 used as the default for all matches' : 'In pool ' + esc(inPool[m.id].join(', ')) + ' \u2014 assign the pool to a round below') : 'Not in any pool or round yet') + '</div>' : '')}
           ${admin ? `<div class="mapdb-actions">
             <button class="btn ghost small" data-mapedit="${m.id}">Edit</button>
             <button class="btn ghost small" data-mappub="${m.id}">${m.published ? 'Hide' : 'Publish'}</button>
