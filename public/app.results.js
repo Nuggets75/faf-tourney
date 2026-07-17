@@ -319,6 +319,16 @@ async function drawAdmin(el) {
     ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
   </div>`;
 
+  if ((T.organizers || []).length) {
+    const sa = !!siteAdmin();
+    html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${T.organizers.length})</span></h2>
+      <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
+      <div class="pick-rows" style="margin-top:10px">${T.organizers.map(o => `<div class="pick-row on" style="cursor:default">
+        <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span></span>
+        ${sa ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '">Remove</button>' : ''}
+      </div>`).join('')}</div></div>`;
+  }
+
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
     const locked = T.status !== 'signup';
     const boSel = (id, val) => `<select id="${id}">${[1,3,5,7].map(o => '<option value="' + o + '"' + (o === val ? ' selected' : '') + '>Bo' + o + '</option>').join('')}</select>`;
@@ -501,11 +511,12 @@ async function drawAdmin(el) {
 
   html += `<div class="panel section"><h2>Organizer notes</h2>
     <ul class="muted small">
-      <li>Substitutions: Players tab → Edit next to any player → overwrite name and rating with the sub's. Works mid-tournament.</li>
-      <li>Maps per round: on the Bracket/Rounds tab, each round header has an "edit" link next to the map list.</li>
+      <li>Substitutions: Players tab \u2192 "Replace" next to the player. The sub takes over their exact spot (team, seed, results). Subs come from unteamed signups \u2014 share the late-signup link from this tab if you need someone new mid-tournament.</li>
+      <li>Maps: group maps into pools on the Maps tab, then assign a pool per round via the "change" link in each round's MAP POOL header on the Bracket tab (or per match from the Vetoes tab).</li>
+      <li>Schedule changes: post them on the News tab with "highlight" ticked \u2014 players get an unread badge and see the latest update on the Overview.</li>
       <li>Running scores: reporting 1-0 in a Bo3 keeps the match LIVE; it completes when a team reaches the required wins.</li>
       <li>Corrections: you can fix a finished match as long as the follow-up match hasn't started.</li>
-      <li>Data lives in the container volume — deleting the volume deletes tournaments.</li>
+      <li>Data lives in the container volume \u2014 deleting the volume deletes tournaments.</li>
     </ul></div>`;
 
   if ((T.descImages || []).length) {
@@ -520,6 +531,15 @@ async function drawAdmin(el) {
     <button class="btn danger" id="archiveBtn">Archive tournament</button></div>`;
 
   el.innerHTML = html;
+  el.querySelectorAll('[data-orgdel]').forEach(b => b.onclick = async () => {
+    const last = (T.organizers || []).length <= 1;
+    if (!confirm('Remove organizer rights from this account?' + (last ? '\n\nThis is the LAST organizer — afterwards only the organizer link and site admins can manage this tournament.' : ''))) return;
+    try {
+      await api('/api/t/' + T.id + '/remove_organizer', { fafId: b.dataset.orgdel, admin: siteAdmin() });
+      toast('Organizer removed');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });

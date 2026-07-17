@@ -895,6 +895,7 @@ async function handleAPI(req, res, url) {
       eventDate: cleanDate(b.eventDate),
       status: 'signup', createdAt: now(),
       organizerFafIds: (hostSess && hostSess.fafId) ? [hostSess.fafId] : [],
+      organizerNames: (hostSess && hostSess.fafId) ? { [hostSess.fafId]: hostSess.fafName || '' } : {},
       createdByName: (hostSess && hostSess.fafName) || '',
       players: [], teams: [], matches: [], rounds: 0, draft: null, subs: []
     };
@@ -1348,6 +1349,20 @@ async function handleAPI(req, res, url) {
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
       const organizer = isAdmin(t, tok) || isOrganizer(t, req);
+      // Who organizes a tournament is visible to its organizers and site admins only.
+      if (!organizer) delete view.createdByName;
+      if (organizer) {
+        const names = t.organizerNames || {};
+        view.organizers = (t.organizerFafIds || []).map(fid => {
+          const viaPlayer = (t.players || []).find(p => p.fafId === fid);
+          const name = names[fid]
+            || (t.organizerFafIds[0] === fid && t.createdByName)
+            || (viaPlayer && viaPlayer.name)
+            || (db.hostAllowed[fid] && db.hostAllowed[fid].name)
+            || ('FAF ' + fid);
+          return { fafId: fid, name };
+        });
+      }
       // is the logged-in viewer already signed up (by FAF id)?
       let signedUpId = null;
       if (sess && sess.fafId) {
@@ -1944,6 +1959,23 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // Site admin strips organizer rights from a FAF account on this tournament.
+    if (sub === 'remove_organizer') {
+      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      const fid = String(b.fafId || '').trim();
+      if (!Array.isArray(t.organizerFafIds) || t.organizerFafIds.indexOf(fid) < 0) return bad(res, 'Not an organizer of this tournament');
+      t.organizerFafIds = t.organizerFafIds.filter(x => x !== fid);
+      const name = (t.organizerNames && t.organizerNames[fid]) || fid;
+      if (t.organizerNames) delete t.organizerNames[fid];
+      saveDB();
+      audit(req, 'organizer_removed', {
+        tournamentId: t.id, tournamentName: t.name,
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: name + ' (' + fid + ')' + (t.organizerFafIds.length ? '' : ' \u2014 tournament now has no organizers')
+      });
+      return json(res, 200, { ok: true, remaining: t.organizerFafIds.length });
+    }
+
     // Claim organizer rights by opening the organizer link while logged in with FAF.
     if (sub === 'claim_organizer') {
       const sess = currentSession(req);
@@ -1957,6 +1989,8 @@ async function handleAPI(req, res, url) {
     if (t.divisions === undefined) t.divisions = 0;
     for (const tm of (t.teams || [])) { if (tm.division === undefined) tm.division = 0; }
       if (t.organizerFafIds.indexOf(sess.fafId) < 0) t.organizerFafIds.push(sess.fafId);
+      t.organizerNames = t.organizerNames || {};
+      t.organizerNames[sess.fafId] = sess.fafName || t.organizerNames[sess.fafId] || '';
       saveDB();
       return json(res, 200, { ok: true });
     }
