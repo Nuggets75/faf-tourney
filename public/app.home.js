@@ -576,18 +576,23 @@ function drawTournament() {
   const lastStep = T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
   const steps = ['Signups', midStep, lastStep, 'Results'];
 
-  const tabs = ['overview', 'news', 'players', 'teams', 'bracket'];
+  const tabs = ['overview', 'news', 'chat', 'players', 'teams', 'bracket'];
   // Vetoes tab appears once the bracket is running and vetoes are enabled
   const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
+  if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId))) {
+    const ci = tabs.indexOf('chat'); if (ci >= 0) tabs.splice(ci, 1);
+  }
   if (vetoActive) tabs.push('vetoes');
   // Maps tab: always available (useful overview of maps and where they're played)
   tabs.push('maps');
   tabs.push('standings');
-  if (admin) tabs.push('admin');
+  if (admin) { tabs.push('admin'); tabs.push('log'); }
   if (!tabs.includes(currentTab)) currentTab = 'overview';
 
   const tabLabel = tb => {
     if (tb === 'news') return 'News';
+    if (tb === 'chat') return 'Chat';
+    if (tb === 'log') return 'Log';
     if (tb === 'teams' && T.status === 'draft') return 'Draft';
     if (tb === 'bracket') return T.competition === 'ffa' || T.bracketType === 'swiss' ? 'Rounds' : 'Bracket';
     if (tb === 'vetoes') {
@@ -625,7 +630,8 @@ function drawTournament() {
     </div>
     <div id="tabBody" class="${currentTab === 'bracket' && T.competition !== 'ffa' && T.bracketType !== 'swiss' ? 'widepage' : 'page'}"></div>`;
 
-  app.querySelectorAll('.tab').forEach(b => b.onclick = () => { currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
+  if (typeof stopChatPoll === 'function' && currentTab !== 'chat') stopChatPoll();
+  app.querySelectorAll('.tab').forEach(b => b.onclick = () => { if (typeof stopChatPoll === 'function') stopChatPoll(); currentTab = b.dataset.tab; syncTabURL(); drawTournament(); });
 
   const pubBtn = document.getElementById('pubBtn');
   if (pubBtn) pubBtn.onclick = async () => {
@@ -651,6 +657,8 @@ function drawTournament() {
   const body = document.getElementById('tabBody');
   if (currentTab === 'overview') drawOverview(body);
   else if (currentTab === 'news') drawNews(body);
+  else if (currentTab === 'chat') drawChatTab(body);
+  else if (currentTab === 'log') drawTlog(body);
   else if (currentTab === 'players') drawPlayers(body);
   else if (currentTab === 'teams') drawTeams(body);
   else if (currentTab === 'bracket') drawBracket(body);

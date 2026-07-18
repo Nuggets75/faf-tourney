@@ -102,7 +102,7 @@ function capToken() {
 }
 function myToken() { return adminToken() || capToken(); }
 
-const VALID_TABS = ['overview', 'news', 'players', 'teams', 'bracket', 'maps', 'vetoes', 'standings', 'admin'];
+const VALID_TABS = ['overview', 'news', 'chat', 'players', 'teams', 'bracket', 'maps', 'vetoes', 'standings', 'admin', 'log'];
 let pendingOrganizerClaim = null; // { id, token } — set when an ?admin= link is opened
 function captureTokensFromURL() {
   const id = tourneyId();

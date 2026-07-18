@@ -194,6 +194,26 @@ function audit(req, action, opts) {
     detail: opts.detail || ''
   });
   if (db.auditLog.length > AUDIT_MAX) db.auditLog = db.auditLog.slice(-AUDIT_MAX);
+  // Tournament-scoped audit entries also land in that tournament's own log,
+  // so the per-tournament Log tab gets them for free.
+  if (opts.tournamentId && db.tournaments[opts.tournamentId]) {
+    tpush(db.tournaments[opts.tournamentId], a.name || 'Anonymous', action.replace(/_/g, ' ') + (opts.detail ? ': ' + opts.detail : ''));
+  }
+}
+
+function tTeamName(t, id) { const tm = (t.teams || []).find(x => x.id === id); return tm ? tm.name : '?'; }
+
+// ---------- per-tournament activity log (Log tab, organizers + site admin only) ----------
+const TLOG_MAX = 1000;
+function tpush(t, by, text) {
+  t.log = t.log || [];
+  t.log.push({ at: Date.now(), by: String(by || 'Anonymous').slice(0, 60), text: String(text || '').slice(0, 300) });
+  if (t.log.length > TLOG_MAX) t.log = t.log.slice(-TLOG_MAX);
+}
+// Convenience: resolve the actor from the request/token and log in one call.
+function tlog(t, req, token, text) {
+  const a = actorOf(req, token);
+  tpush(t, a.name, text);
 }
 
 // ---------- who may host ----------
@@ -319,6 +339,76 @@ function playerTeamOfSession(t, req) {
   const mine = t.players.find(p => p.fafId && p.fafId === sess.fafId);
   if (!mine || !mine.teamId) return null;
   return teamById(t, mine.teamId);
+}
+
+function matchLabel(t, m) {
+  if (!m) return '';
+  if (m.bracket === 'gf') return t.bracketType === 'swiss' ? 'Final' : 'Grand Final';
+  if (m.bracket === 'sw') return 'Round ' + m.round + ' Match ' + (m.index + 1);
+  if (m.bracket === 'ffa') return 'Round ' + m.round + ' Lobby ' + (m.index + 1);
+  const p = m.bracket === 'lb' ? 'LB ' : (t.bracketType === 'double' ? 'WB ' : '');
+  return p + 'Round ' + m.round + ' Match ' + (m.index + 1);
+}
+
+// ---------- tournament chat ----------
+// Rooms: 'global' (everyone in the tournament + organizer) and 'match:<id>' (the two
+// participating teams' members + organizer). Rooms are created lazily. A match room becomes
+// reachable for a team as soon as that team is slotted into the match, so advancing to a
+// new match (e.g. dropping to losers') adds its chat automatically.
+const CHAT_MAX = 500;      // messages kept per room
+const CHAT_MSG_LEN = 500;
+
+function chatMuted(t, fafId) {
+  return !!(t.chatMutes && fafId && t.chatMutes[fafId]);
+}
+// Which teams a logged-in viewer plays on / captains (by FAF identity).
+function viewerTeamIds(t, req) {
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return [];
+  const ids = [];
+  for (const tm of (t.teams || [])) {
+    if ((tm.playerIds || []).some(pid => { const p = playerById(t, pid); return p && p.fafId === sess.fafId; })) ids.push(tm.id);
+    else if (tm.captainId) { const c = playerById(t, tm.captainId); if (c && c.fafId === sess.fafId) ids.push(tm.id); }
+  }
+  return ids;
+}
+// Can this request read/write the given room? organizer => everything.
+function chatAccess(t, req, room, token) {
+  if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
+  const sess = currentSession(req);
+  if (!sess || !sess.fafId) return false;
+  // must be a participant of the tournament at all
+  const signedUp = (t.players || []).some(p => p.fafId === sess.fafId);
+  if (room === 'global') return signedUp;
+  if (room.indexOf('match:') === 0) {
+    const m = matchById(t, room.slice(6));
+    if (!m) return false;
+    const mine = viewerTeamIds(t, req);
+    return mine.indexOf(m.team1) >= 0 || mine.indexOf(m.team2) >= 0;
+  }
+  return false;
+}
+// The list of rooms a viewer can see, with labels and unread counts.
+function chatRoomsFor(t, req, token) {
+  const organizer = isAdmin(t, token, req) || isOrganizer(t, req);
+  const rooms = [];
+  const store = t.chat || {};
+  const push = (id, label) => {
+    const msgs = (store[id] || []);
+    rooms.push({ id, label, count: msgs.length, last: msgs.length ? msgs[msgs.length - 1].at : 0 });
+  };
+  // global first
+  if (organizer || (currentSession(req) && (t.players || []).some(p => { const sess = currentSession(req); return sess && p.fafId === sess.fafId; }))) {
+    push('global', 'Global \u2014 everyone');
+  }
+  const mine = organizer ? null : viewerTeamIds(t, req);
+  for (const m of (t.matches || [])) {
+    if (!m.team1 || !m.team2) continue;
+    const canSee = organizer || (mine && (mine.indexOf(m.team1) >= 0 || mine.indexOf(m.team2) >= 0));
+    if (!canSee) continue;
+    push('match:' + m.id, matchLabel(t, m) + ' \u2014 ' + (teamById(t, m.team1) ? teamById(t, m.team1).name : '?') + ' vs ' + (teamById(t, m.team2) ? teamById(t, m.team2).name : '?'));
+  }
+  return rooms;
 }
 
 function teamOfCaptainToken(t, token) {
@@ -1409,6 +1499,9 @@ async function handleAPI(req, res, url) {
         const mineM = t.players.find(p => p.fafId === sess.fafId);
         if (mineM && mineM.teamId) memberTeamId = mineM.teamId;
       }
+      view.tlog = organizer ? (t.log || []).slice(-300).reverse() : undefined;
+      view.chatMutes = organizer ? Object.keys(t.chatMutes || {}).map(fid => ({ fafId: fid, name: (t.chatMutes[fid].name || fid), at: t.chatMutes[fid].at || 0 })) : undefined;
+      view.chatMutedMe = (sess && chatMuted(t, sess.fafId)) ? 1 : 0;
       view.invites = organizer ? (t.invites || []).map(i => ({
         fafId: i.fafId, name: i.name, at: i.at,
         status: (t.players || []).some(pl => pl.fafId === i.fafId) ? 'accepted' : (i.declined ? 'declined' : 'pending')
@@ -1464,6 +1557,22 @@ async function handleAPI(req, res, url) {
       });
     }
 
+    // ---- chat: list rooms, read a room, post, moderate ----
+    if (sub === 'chat_rooms' && method === 'GET') {
+      const tok = url.searchParams.get('token');
+      return json(res, 200, { rooms: chatRoomsFor(t, req, tok), muted: chatMuted(t, (currentSession(req) || {}).fafId) ? 1 : 0 });
+    }
+
+    if (sub === 'chat_read' && method === 'GET') {
+      const tok = url.searchParams.get('token');
+      const room = String(url.searchParams.get('room') || '');
+      if (!chatAccess(t, req, room, tok)) return json(res, 403, { error: 'No access to this chat' });
+      const since = parseInt(url.searchParams.get('since'), 10) || 0;
+      const all = (t.chat && t.chat[room]) || [];
+      const msgs = since ? all.filter(mm => mm.at > since) : all.slice(-200);
+      return json(res, 200, { room, messages: msgs, muted: chatMuted(t, (currentSession(req) || {}).fafId) ? 1 : 0 });
+    }
+
     if (method !== 'POST') return bad(res, 'Unsupported');
     // allow up to ~8MB so map image uploads (base64 of a 5MB file ≈ 6.7MB) fit; the real
     // per-image 5MB cap is enforced when decoding in saveMapImage.
@@ -1495,6 +1604,7 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       t.eventDate = cleanDate(b.eventDate); // null clears it
       if (b.signupOpensAt !== undefined) t.signupOpensAt = cleanDate(b.signupOpensAt);
+      tlog(t, req, b.admin, 'changed the event date' + (t.eventDate ? ' to ' + t.eventDate : ' (cleared)'));
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -1630,6 +1740,7 @@ async function handleAPI(req, res, url) {
       };
       if (t.signupMode === 'request' && !canOrganize(t, req, b)) p.pending = 1;
       t.players.push(p);
+      tlog(t, req, b.admin, (adminAdding && p.name !== (actorOf(req, b.admin).name) ? 'added player ' + p.name : p.name + ' signed up') + (p.rating != null ? ' (rating ' + p.rating + ')' : '') + (p.pending ? ' \u2014 awaiting approval' : '') + (p.late ? ' \u2014 late signup' : ''));
       saveDB();
       return json(res, 200, { ok: true, playerId: p.id, pending: p.pending ? 1 : 0 });
     }
@@ -1666,6 +1777,7 @@ async function handleAPI(req, res, url) {
       for (const it of cleaned) {
         t.players.push({ id: 'p' + uid(4), name: it.name, rating: it.rating, teamName, teamId: null, signedAt: now() });
       }
+      tlog(t, req, b.admin, 'registered team ' + cleanName(b.teamName, 30));
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -1687,6 +1799,7 @@ async function handleAPI(req, res, url) {
         if (!p) return bad(res, 'Sign up first, then set your team name');
       }
       p.teamName = cleanName(b.teamName, 30) || '';
+      tlog(t, req, b.admin, (b.playerId !== undefined ? 'set team name of ' + p.name : p.name + ' set their team name') + (p.teamName ? ' to "' + p.teamName + '"' : ' to none (substitute)'));
       saveDB();
       return json(res, 200, { ok: true, teamName: p.teamName });
     }
@@ -1699,6 +1812,7 @@ async function handleAPI(req, res, url) {
       if (!selfWithdraw && !canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const p = p0;
       if (!p) return json(res, 200, { ok: true });
+      tlog(t, req, b.admin, selfWithdraw ? p.name + ' withdrew' : 'removed player ' + p.name);
       if (t.status === 'signup') {
         if (t.formation === 'premade' && t.teamSize > 1 && p.teamName) {
           const key = p.teamName.toLowerCase();
@@ -1765,6 +1879,7 @@ async function handleAPI(req, res, url) {
       t.teams.push(team);
       me.teamId = team.id;
       clearJoinRequests(me.id);
+      tlog(t, req, b.admin, me.name + ' created team "' + name + '"');
       saveDB();
       return json(res, 200, { ok: true, teamId: team.id });
     }
@@ -1784,6 +1899,7 @@ async function handleAPI(req, res, url) {
       if (team.playerIds.length < t.teamSize) return bad(res, 'Only a full team can check in');
       team.checkedIn = (b.value === undefined) ? true : !!b.value;
       team.checkedInAt = team.checkedIn ? now() : null;
+      tlog(t, req, b.admin, (team.checkedIn ? 'checked in' : 'un-checked') + ' team "' + team.name + '"');
       saveDB();
       return json(res, 200, { ok: true, checkedIn: team.checkedIn });
     }
@@ -1871,6 +1987,10 @@ async function handleAPI(req, res, url) {
         p.teamId = team.id;
         // once they're on a team, drop their pending requests everywhere
         t.teams.forEach(tm => { if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== p.id); });
+        tlog(t, req, b.admin, p.name + ' joined team "' + team.name + '" (accepted)');
+      } else {
+        const pd = playerById(t, jr.playerId);
+        tlog(t, req, b.admin, 'declined join request of ' + (pd ? pd.name : '?') + ' for team "' + team.name + '"');
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -1894,6 +2014,7 @@ async function handleAPI(req, res, url) {
         // captain left -> pass captaincy to the next member; team survives
         team.captainId = team.playerIds[0];
       }
+      tlog(t, req, b.admin, (organizer && b.targetPlayerId ? 'removed ' + target.name + ' from' : target.name + ' left') + ' team "' + team.name + '"');
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -1963,6 +2084,9 @@ async function handleAPI(req, res, url) {
         dest.playerIds.push(p.id);
         p.teamId = dest.id;
         clearJoinRequests(p.id);
+        tlog(t, req, b.admin, 'moved ' + p.name + ' to team "' + dest.name + '"');
+      } else {
+        tlog(t, req, b.admin, 'moved ' + p.name + ' out of their team (to the pool)');
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -2115,6 +2239,7 @@ async function handleAPI(req, res, url) {
           team.name = (t.teamSize === 1) ? outP.name : ('Team ' + outP.name);
         }
       }
+      tlog(t, req, b.admin, 'replaced a player with ' + outP.name + (keptTeamId ? ' in team "' + tTeamName(t, keptTeamId) + '"' : ''));
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2175,6 +2300,7 @@ async function handleAPI(req, res, url) {
       t.invites = t.invites || [];
       if (t.invites.some(i => i.fafId === found.fafId)) return bad(res, found.name + ' is already invited');
       t.invites.push({ fafId: found.fafId, name: found.name, at: now() });
+      tlog(t, req, b.admin, 'invited ' + found.name);
       saveDB();
       return json(res, 200, { ok: true, fafId: found.fafId, name: found.name });
     }
@@ -2189,13 +2315,16 @@ async function handleAPI(req, res, url) {
       if ((t.players || []).some(pl => pl.fafId === sess.fafId)) return bad(res, 'You already signed up \u2014 withdraw instead');
       inv.declined = 1;
       inv.declinedAt = now();
+      tlog(t, req, null, (sess.fafName || 'A player') + ' declined their invite');
       saveDB();
       return json(res, 200, { ok: true });
     }
 
     if (sub === 'uninvite_player') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const unv = (t.invites || []).find(i => i.fafId === String(b.fafId));
       t.invites = (t.invites || []).filter(i => i.fafId !== String(b.fafId));
+      if (unv) tlog(t, req, b.admin, 'withdrew the invite for ' + unv.name);
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2207,6 +2336,7 @@ async function handleAPI(req, res, url) {
       if (!p || !p.pending) return bad(res, 'That request is no longer pending');
       if (b.accept) { delete p.pending; }
       else { t.players = t.players.filter(x => x.id !== p.id); clearJoinRequests(p.id); }
+      tlog(t, req, b.admin, (b.accept ? 'approved' : 'declined') + ' signup request of ' + p.name);
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2225,6 +2355,7 @@ async function handleAPI(req, res, url) {
       if (b.teamName !== undefined && t.formation === 'premade' && t.teamSize > 1 && t.status === 'signup') {
         p.teamName = cleanName(b.teamName, 30) || '';
       }
+      tlog(t, req, b.admin, 'edited player ' + p.name);
       if (b.rating !== undefined && String(b.rating) !== String(p.rating)) {
         if (t.ratingType && t.ratingType !== 'none') return bad(res, 'Ratings are fetched from FAF for this tournament and cannot be edited');
         const rating = parseInt(b.rating, 10);
@@ -2239,6 +2370,7 @@ async function handleAPI(req, res, url) {
     if (sub === 'edit_format') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (['signup', 'draft', 'drafted'].indexOf(t.status) < 0) return bad(res, 'The format is locked once the bracket has started');
+      tlog(t, req, b.admin, 'changed the tournament format');
       const bo = (v, d) => BO_OK.indexOf(parseInt(v, 10)) >= 0 ? parseInt(v, 10) : d;
 
       // structural changes only while signups are open
@@ -2342,6 +2474,7 @@ async function handleAPI(req, res, url) {
       item.body = body;
       if (b.important !== undefined) item.important = b.important ? 1 : 0;
       item.editedAt = Date.now();
+      tlog(t, req, b.admin, 'edited a news update: ' + body.slice(0, 60));
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2368,8 +2501,62 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: 1, readAt: latest });
     }
 
+    if (sub === 'chat_post') {
+      const room = String(b.room || '');
+      if (!chatAccess(t, req, room, b.token)) return json(res, 403, { error: 'No access to this chat' });
+      const sess = currentSession(req);
+      const organizer = isAdmin(t, b.token, req) || isOrganizer(t, req);
+      // Everyone posting must be identifiable so muting and attribution work.
+      if (!sess && !organizer) return json(res, 401, { error: 'Log in to chat' });
+      if (sess && chatMuted(t, sess.fafId)) return json(res, 403, { error: 'You are muted in this tournament\u2019s chat' });
+      let text = String(b.text || '').trim().slice(0, CHAT_MSG_LEN);
+      if (!text) return bad(res, 'Empty message');
+      const who = organizer && !sess ? 'Organizer' : (sess ? (sess.fafName || ('FAF ' + sess.fafId)) : 'Anonymous');
+      t.chat = t.chat || {};
+      t.chat[room] = t.chat[room] || [];
+      // !roll — server rolls so nobody can fake it
+      const rollMatch = /^!roll\b\s*(\d+)?(?:\s*-\s*(\d+))?/.exec(text);
+      if (rollMatch) {
+        let lo = 1, hi = 100;
+        if (rollMatch[1] && rollMatch[2]) { lo = parseInt(rollMatch[1], 10); hi = parseInt(rollMatch[2], 10); }
+        else if (rollMatch[1]) { hi = parseInt(rollMatch[1], 10); }
+        if (!(hi > lo)) { lo = 1; hi = 100; }
+        lo = Math.max(0, Math.min(lo, 1000000)); hi = Math.max(lo + 1, Math.min(hi, 1000000));
+        const roll = lo + Math.floor(Math.random() * (hi - lo + 1));
+        t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, sys: 1, text: who + ' rolled ' + roll + ' (' + lo + '\u2013' + hi + ')' });
+      } else {
+        t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, text });
+      }
+      if (t.chat[room].length > CHAT_MAX) t.chat[room] = t.chat[room].slice(-CHAT_MAX);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // Organizer moderation: mute/unmute a FAF account, or delete a message.
+    if (sub === 'chat_mute') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      t.chatMutes = t.chatMutes || {};
+      if (b.unmute) { delete t.chatMutes[fid]; }
+      else { t.chatMutes[fid] = { at: now(), name: b.name || fid }; }
+      tlog(t, req, b.admin, (b.unmute ? 'unmuted' : 'muted') + ' ' + (b.name || fid) + ' in chat');
+      saveDB();
+      return json(res, 200, { ok: true, muted: b.unmute ? 0 : 1 });
+    }
+
+    if (sub === 'chat_delete') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const room = String(b.room || '');
+      if (t.chat && t.chat[room]) t.chat[room] = t.chat[room].filter(mm => mm.id !== b.id);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const touched = ['description', 'rewards', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
+      if (touched.length) tlog(t, req, b.admin, 'updated settings: ' + touched.join(', '));
       if (b.description !== undefined) t.description = cleanName(b.description, 2000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
       if (Array.isArray(b.streams)) {
@@ -2442,6 +2629,7 @@ async function handleAPI(req, res, url) {
         pool = { id: 'pool' + uid(5), name, mapIds: ids, sequence: seq, bo: bo, published: b.published ? 1 : 0 };
         t.mapPools.push(pool);
       }
+      tlog(t, req, b.admin, (b.id ? 'edited pool "' : 'created pool "') + pool.name + '" (' + ids.length + ' maps, Bo' + pool.bo + ')');
       saveDB();
       return json(res, 200, { ok: true, id: pool.id });
     }
@@ -2451,12 +2639,15 @@ async function handleAPI(req, res, url) {
       const pool = poolById(t, b.id);
       if (!pool) return bad(res, 'Pool not found');
       pool.published = b.published ? 1 : 0;
+      tlog(t, req, b.admin, (b.published ? 'published' : 'hid') + ' pool "' + pool.name + '"');
       saveDB();
       return json(res, 200, { ok: true });
     }
 
     if (sub === 'pool_delete') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const delPool = poolById(t, b.id);
+      if (delPool) tlog(t, req, b.admin, 'deleted pool "' + delPool.name + '"');
       t.mapPools = (t.mapPools || []).filter(p => p.id !== b.id);
       // clear any assignments pointing to this pool
       for (const key of Object.keys(t.poolAssign || {})) {
@@ -2474,8 +2665,10 @@ async function handleAPI(req, res, url) {
       if (b.poolId) {
         if (!poolById(t, b.poolId)) return bad(res, 'Pool not found');
         t.poolAssign[key] = b.poolId;
+        tlog(t, req, b.admin, 'assigned pool "' + poolById(t, b.poolId).name + '" to ' + key.replace(':', ' round ').replace('match round ', 'match '));
       } else {
         delete t.poolAssign[key];
+        tlog(t, req, b.admin, 'cleared the pool assignment of ' + key.replace(':', ' round ').replace('match round ', 'match '));
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -2513,6 +2706,7 @@ async function handleAPI(req, res, url) {
       map.published = published;
       if (newImageFile) { deleteMapImage(map.image); map.image = newImageFile; }
       else if (doRemoveImage) { deleteMapImage(map.image); map.image = null; }
+      tlog(t, req, b.admin, (b.id ? 'edited map ' : 'added map ') + map.name);
       saveDB();
       return json(res, 200, { ok: true, id: map.id });
     }
@@ -2523,12 +2717,14 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       if (b.all) {
         for (const m of (t.mapDb || [])) m.published = b.published ? 1 : 0;
+        tlog(t, req, b.admin, (b.published ? 'published' : 'hid') + ' all maps (' + (t.mapDb || []).length + ')');
         saveDB();
         return json(res, 200, { ok: true, count: (t.mapDb || []).length });
       }
       const map = mapById(t, b.id);
       if (!map) return bad(res, 'Map not found');
       map.published = b.published ? 1 : 0;
+      tlog(t, req, b.admin, (b.published ? 'published' : 'hid') + ' map ' + map.name);
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2538,6 +2734,7 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const map = mapById(t, b.id);
       if (!map) return json(res, 200, { ok: true });
+      tlog(t, req, b.admin, 'deleted map ' + map.name);
       deleteMapImage(map.image);
       t.mapDb = t.mapDb.filter(m => m.id !== b.id);
       // remove from any round pools (legacy per-round map lists)
@@ -2563,6 +2760,7 @@ async function handleAPI(req, res, url) {
       let ids = Array.isArray(b.maps) ? b.maps.filter(id => mapById(t, id)) : [];
       ids = ids.slice(0, 9);
       t.maps[bracket + ':' + round] = ids;
+      tlog(t, req, b.admin, 'set the maps of ' + bracket + ' round ' + round + ' (' + ids.length + ' map' + (ids.length === 1 ? '' : 's') + ')');
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2576,6 +2774,7 @@ async function handleAPI(req, res, url) {
         t.status = 'signup';
         t.teams = []; t.draft = null; t.subs = [];
         for (const p of t.players) p.teamId = null;
+        tlog(t, req, b.admin, 'reopened signups (teams reset)');
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -2602,6 +2801,7 @@ async function handleAPI(req, res, url) {
         buildDraft(t, capIds);
         finishDraftIfDone(t);
         t.pendingCaptains = [];
+        tlog(t, req, b.admin, 'closed signups & started the captains draft (' + capIds.length + ' captains)');
         saveDB();
         return json(res, 200, { ok: true });
       }
@@ -2613,6 +2813,7 @@ async function handleAPI(req, res, url) {
           dropped.forEach(p => clearJoinRequests(p.id));
           t.players = t.players.filter(p => !p.pending);
         }
+        tlog(t, req, b.admin, 'closed signups & locked ' + (t.teamSize === 1 ? 'entrants' : 'teams'));
       }
       if (a === 'form_teams') {
         if (t.formation === 'draft') return bad(res, 'This tournament drafts teams');
@@ -2629,6 +2830,7 @@ async function handleAPI(req, res, url) {
         if (n < 2) return bad(res, 'Need at least 2 teams');
         // The tournament is starting: pending and declined invites are no longer relevant.
         t.invites = (t.invites || []).filter(i => (t.players || []).some(pl => pl.fafId === i.fafId));
+        tlog(t, req, b.admin, 'started the bracket (' + n + ' teams)');
         const c = b.config || {};
 
         if (t.competition === 'ffa') {
@@ -2705,6 +2907,7 @@ async function handleAPI(req, res, url) {
       // remember the last pick so it can be undone (by that captain, if next hasn't picked; or by admin anytime)
       d.lastPick = { playerId: p.id, teamId: team.id, atIndex: d.current };
       d.current++;
+      tlog(t, req, b.token, tTeamName(t, team.id) + ' drafted ' + p.name);
       finishDraftIfDone(t);
       saveDB();
       return json(res, 200, { ok: true });
@@ -2734,6 +2937,7 @@ async function handleAPI(req, res, url) {
       const p = playerById(t, lp.playerId);
       const team = teamById(t, lp.teamId);
       if (!p || !team) { d.lastPick = null; saveDB(); return bad(res, 'Cannot undo (pick data missing)'); }
+      tlog(t, req, b.token, 'undid the draft pick of ' + p.name + ' (' + team.name + ')');
       // reverse it
       p.teamId = null;
       team.playerIds = team.playerIds.filter(id => id !== p.id);
@@ -2756,6 +2960,7 @@ async function handleAPI(req, res, url) {
       if (aTeam !== m.team1 && aTeam !== m.team2) return bad(res, 'teamA must be one of the two teams');
       m.veto.teamA = aTeam;
       m.veto.teamB = aTeam === m.team1 ? m.team2 : m.team1;
+      tlog(t, req, b.admin, 'set the veto sides (A/B) of ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2));
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2789,6 +2994,8 @@ async function handleAPI(req, res, url) {
         const gameNum = m.veto.picks.length + 1;
         m.veto.picks.push({ map: taken, by: cur.team, game: gameNum });
       }
+      const vMapName = (mapById(t, taken) || {}).name || taken;
+      tlog(t, req, b.admin || b.token, tTeamName(t, cur.team) + ' ' + (cur.action === 'ban' ? 'banned' : 'picked') + ' ' + vMapName + ' (' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ')');
       vetoAdvance(t, m);
       saveDB();
       return json(res, 200, { ok: true });
@@ -2811,6 +3018,7 @@ async function handleAPI(req, res, url) {
         else if (step.action === 'pick' && m.veto.picks.length) restored = m.veto.picks.pop().map;
         if (restored) m.veto.remaining.push(restored);
       }
+      tlog(t, req, b.admin, 'undid the last veto step (' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ')');
       saveDB();
       return json(res, 200, { ok: true });
     }
@@ -2857,6 +3065,7 @@ async function handleAPI(req, res, url) {
       // replay IDs are still worth keeping (casters, archive). Any Bo, including Bo1.
       const drawIds = Array.isArray(b.drawReplayIds) ? b.drawReplayIds.map(x => String(x).trim().replace(/[^A-Za-z0-9#-]/g, '').slice(0, 24)).filter(Boolean).slice(0, 10) : [];
       m.pendingReport = { score1: s1, score2: s2, replayIds: ids, drawReplayIds: drawIds, byTeam: myTeam.id, byName: actorOf(req, b).name || myTeam.name, at: now() };
+      tlog(t, req, b.token, 'submitted ' + s1 + '\u2013' + s2 + ' for ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ' (awaiting confirmation)');
       saveDB();
       return json(res, 200, { ok: true, pending: 1 });
     }
@@ -2875,7 +3084,12 @@ async function handleAPI(req, res, url) {
       }
       const pr = m.pendingReport;
       m.pendingReport = null;
-      if (!b.accept) { saveDB(); return json(res, 200, { ok: true, rejected: 1 }); }
+      if (!b.accept) {
+        tlog(t, req, b.token, 'rejected the submitted score ' + pr.score1 + '\u2013' + pr.score2 + ' for ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2));
+        saveDB();
+        return json(res, 200, { ok: true, rejected: 1 });
+      }
+      tlog(t, req, b.token, 'confirmed ' + pr.score1 + '\u2013' + pr.score2 + ' for ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2));
       if (m.status === 'done') return bad(res, 'The series was decided in the meantime');
       m.replayIds = (m.replayIds || []).concat(pr.replayIds);
       if (pr.drawReplayIds && pr.drawReplayIds.length) m.drawReplayIds = (m.drawReplayIds || []).concat(pr.drawReplayIds).slice(0, 15);
@@ -2993,6 +3207,7 @@ async function handleAPI(req, res, url) {
       if (s1 === maxW && s2 === maxW) return bad(res, 'Both teams cannot reach ' + maxW);
 
       m.pendingReport = null;   // organizer word overrides any pending player submission
+      tlog(t, req, b.token, 'set the score of ' + tTeamName(t, m.team1) + ' vs ' + tTeamName(t, m.team2) + ' to ' + parseInt(b.score1, 10) + '\u2013' + parseInt(b.score2, 10) + (m.status === 'done' ? ' (correction)' : ''));
       // Optional: organizer can record/correct the replay IDs (kept for the archive).
       // Sending the key replaces the stored set; an empty list clears it.
       if (Array.isArray(b.replayIds)) {

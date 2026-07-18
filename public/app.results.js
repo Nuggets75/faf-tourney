@@ -494,6 +494,15 @@ async function drawAdmin(el) {
       <button class="btn" id="aiStSave">Save livestreams</button>
     </div></div>`;
 
+  if ((T.chatMutes || []).length) {
+    html += `<div class="panel section"><h2>Muted in chat <span class="h2-strong">(${T.chatMutes.length})</span></h2>
+      <p class="muted small">Muted accounts can read chat but not post. Mute anyone from the controls on their messages in any chat room.</p>
+      <div class="pick-rows">${T.chatMutes.map(mu => `<div class="pick-row on" style="cursor:default">
+        <span class="pr-name">${esc(mu.name)} <span class="muted small">FAF id ${esc(mu.fafId)}</span></span>
+        <button class="btn ghost small" data-unmute="${esc(mu.fafId)}">Unmute</button>
+      </div>`).join('')}</div></div>`;
+  }
+
   html += `<div class="panel section"><h2>Rating requirements</h2>
     <p class="muted small">Self-signups outside the range are refused with an explanation. Organizer adds, replaces, moves and invited players bypass all of this. Editable at any time; existing entrants are never removed automatically.</p>
     <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -652,6 +661,10 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+  el.querySelectorAll('[data-unmute]').forEach(b => b.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/chat_mute', { fafId: b.dataset.unmute, unmute: 1, admin: adminToken() }); toast('Unmuted'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
   const ratSave = document.getElementById('aiRatSave');
   if (ratSave) ratSave.onclick = async () => {
     try {
@@ -845,6 +858,162 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+}
+
+// ---------- per-tournament activity log (organizers + site admin only) ----------
+
+function drawTlog(el) {
+  if (!viewerIsOrganizer()) {
+    el.innerHTML = '<div class="panel section"><div class="empty">Organizers only.</div></div>';
+    return;
+  }
+  const rows = T.tlog || [];
+  let html = `<div class="panel section"><h2>Activity log <span class="h2-strong">(${rows.length})</span></h2>
+    <p class="muted small">Everything that happens in this tournament, newest first. Visible to organizers and site admins only. The last 1000 entries are kept; the latest 300 are shown here.</p>`;
+  if (!rows.length) {
+    html += '<div class="empty">Nothing logged yet.</div>';
+  } else {
+    html += '<table><thead><tr><th style="width:150px">When</th><th style="width:160px">Who</th><th>What</th></tr></thead><tbody>' +
+      rows.map(r => `<tr><td class="mono small muted" style="white-space:nowrap">${esc(fmtDateTime(new Date(r.at).toISOString()))}</td><td>${esc(r.by || '')}</td><td class="small" style="overflow-wrap:anywhere">${esc(r.text || '')}</td></tr>`).join('') +
+      '</tbody></table>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ---------- chat ----------
+// A lightweight polling chat that runs independently of the main tournament poll so
+// messages arrive quickly. One active room at a time; its own timer, torn down on close.
+let _chatRoom = null;
+let _chatSince = 0;
+let _chatTimer = null;
+let _chatMsgs = [];
+
+function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } }
+
+async function chatRooms() {
+  const tok = myToken();
+  const r = await api('/api/t/' + T.id + '/chat_rooms' + (tok ? '?token=' + encodeURIComponent(tok) : ''));
+  return r;
+}
+
+function renderChatMessages(container) {
+  const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  container.innerHTML = _chatMsgs.map(m => {
+    const t = new Date(m.at);
+    const time = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
+    if (m.sys) return `<div class="chat-sys">\u{1F3B2} ${esc(m.text)} <span class="chat-time">${time}</span></div>`;
+    const org = viewerIsOrganizer();
+    return `<div class="chat-msg" data-mid="${esc(m.id)}">
+      <span class="chat-who">${esc(m.who)}</span>
+      <span class="chat-time">${time}</span>
+      ${org && m.fafId ? `<span class="chat-mod"><a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a></span>` : ''}
+      <div class="chat-text">${esc(m.text)}</div>
+    </div>`;
+  }).join('') || '<div class="empty">No messages yet. Say hi, or type <code>!roll</code>.</div>';
+  if (nearBottom) container.scrollTop = container.scrollHeight;
+}
+
+// Build a chat panel into `host` for the given room. Reusable by the tab and the match modal.
+async function mountChat(host, room, label) {
+  stopChatPoll();
+  _chatRoom = room; _chatSince = 0; _chatMsgs = [];
+  host.innerHTML = `<div class="chat-panel">
+    <div class="chat-head">${esc(label)}</div>
+    <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
+    <div class="chat-input">
+      <input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100)" autocomplete="off">
+      <button class="btn primary small" id="chatSend">Send</button>
+    </div>
+    <div class="muted small" id="chatNote" style="margin-top:4px"></div>
+  </div>`;
+  const logEl = host.querySelector('#chatLog');
+  const inp = host.querySelector('#chatText');
+  const note = host.querySelector('#chatNote');
+
+  const load = async (incremental) => {
+    try {
+      const tok = myToken();
+      const r = await api('/api/t/' + T.id + '/chat_read?room=' + encodeURIComponent(room) + (_chatSince ? '&since=' + _chatSince : '') + (tok ? '&token=' + encodeURIComponent(tok) : ''));
+      if (r.muted) note.textContent = 'You are muted by an organizer \u2014 you can read but not post.';
+      const incoming = r.messages || [];
+      if (incoming.length) {
+        if (incremental) _chatMsgs = _chatMsgs.concat(incoming);
+        else _chatMsgs = incoming;
+        _chatSince = _chatMsgs[_chatMsgs.length - 1].at;
+        renderChatMessages(logEl);
+      } else if (!incremental) {
+        _chatMsgs = []; renderChatMessages(logEl);
+      }
+    } catch (e) { note.textContent = e.message; stopChatPoll(); }
+  };
+  await load(false);
+
+  const send = async () => {
+    const text = inp.value.trim();
+    if (!text) return;
+    inp.value = '';
+    try {
+      await api('/api/t/' + T.id + '/chat_post', { room, text, token: myToken() });
+      await load(true);
+    } catch (e) { toast(e.message, true); inp.value = text; }
+  };
+  host.querySelector('#chatSend').onclick = send;
+  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } };
+
+  logEl.onclick = async (e) => {
+    const del = e.target.closest('[data-chatdel]');
+    const mute = e.target.closest('[data-chatmute]');
+    if (del) {
+      e.preventDefault();
+      try { await api('/api/t/' + T.id + '/chat_delete', { room, id: del.dataset.chatdel, admin: adminToken() }); await load(false); }
+      catch (er) { toast(er.message, true); }
+    } else if (mute) {
+      e.preventDefault();
+      if (!confirm('Mute ' + mute.dataset.chatmutename + ' from all chat in this tournament?')) return;
+      try { await api('/api/t/' + T.id + '/chat_mute', { fafId: mute.dataset.chatmute, name: mute.dataset.chatmutename, admin: adminToken() }); toast('Muted'); await load(false); }
+      catch (er) { toast(er.message, true); }
+    }
+  };
+
+  _chatTimer = setInterval(() => {
+    if (_chatRoom !== room) { stopChatPoll(); return; }
+    if (document.activeElement === inp && inp.value) { /* still poll, just don't steal focus */ }
+    load(true);
+  }, 3500);
+}
+
+async function drawChatTab(el) {
+  stopChatPoll();
+  el.innerHTML = '<div class="panel section"><div class="empty">Loading chats\u2026</div></div>';
+  let data;
+  try { data = await chatRooms(); } catch (e) { el.innerHTML = '<div class="panel section"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
+  const rooms = data.rooms || [];
+  if (!rooms.length) { el.innerHTML = '<div class="panel section"><div class="empty">No chats available to you yet.</div></div>'; return; }
+  el.innerHTML = `<div class="chat-layout">
+    <div class="chat-rooms panel section">
+      <h2>Chats</h2>
+      ${data.muted ? '<div class="warn small" style="margin-bottom:8px">You are muted.</div>' : ''}
+      <div class="chat-roomlist">${rooms.map((r, i) => `<button class="chat-room ${i === 0 ? 'active' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${esc(r.label)}${r.count ? ' <span class="muted small">(' + r.count + ')</span>' : ''}</button>`).join('')}</div>
+    </div>
+    <div class="chat-host" id="chatHost"></div>
+  </div>`;
+  const host = el.querySelector('#chatHost');
+  const pick = (btn) => {
+    el.querySelectorAll('.chat-room').forEach(b => b.classList.toggle('active', b === btn));
+    mountChat(host, btn.dataset.room, btn.dataset.label);
+  };
+  el.querySelectorAll('.chat-room').forEach(b => b.onclick = () => pick(b));
+  pick(el.querySelector('.chat-room'));
+}
+
+function openMatchChat(m) {
+  const label = mLabel(m) + ' \u2014 ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  modal(`<h3>Match chat</h3><div id="mcHost"></div>
+    <div class="actions"><button class="btn ghost" id="mcClose">Close</button></div>`, root => {
+    root.querySelector('#mcClose').onclick = () => { stopChatPoll(); closeModal(); };
+    mountChat(root.querySelector('#mcHost'), 'match:' + m.id, label);
+  });
 }
 
 // ---------- routing ----------

@@ -408,6 +408,28 @@ tbody tr:hover { background: #ffffff05; }
 .reward-panel { border-left: 3px solid var(--amber); }
 .stream-panel { border-left: 3px solid #a855f7; }
 .stream-line { font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
+/* chat */
+.chat-layout { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.chat-rooms { flex: 0 0 240px; max-width: 100%; }
+.chat-roomlist { display: flex; flex-direction: column; gap: 4px; }
+.chat-room { text-align: left; background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 4px; color: var(--text, #dbe2ea); padding: 8px 10px; cursor: pointer; font-size: 13px; }
+.chat-room:hover { border-color: var(--amber); }
+.chat-room.active { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
+.chat-host { flex: 1; min-width: 280px; }
+.chat-panel { display: flex; flex-direction: column; border: 1px solid var(--line-solid); border-radius: 6px; background: var(--panel, #0f1620); overflow: hidden; }
+.chat-head { padding: 10px 12px; border-bottom: 1px solid var(--line-solid); font-family: var(--display); letter-spacing: 1px; text-transform: uppercase; font-size: 13px; color: var(--amber); }
+.chat-log { height: 380px; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.chat-msg { font-size: 13px; }
+.chat-who { font-weight: 700; color: var(--blue); }
+.chat-time { color: var(--muted); font-size: 10px; margin-left: 6px; font-family: var(--mono); }
+.chat-mod { margin-left: 8px; }
+.chat-mod a { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.chat-mod a:hover { color: #ff6369; }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 1px; }
+.chat-sys { font-size: 12px; color: var(--amber); font-style: italic; }
+.chat-input { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-solid); }
+.chat-input input { flex: 1; }
+.match-chat-line { margin: 4px 10px 6px; }
 .reward-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; margin-top: 6px; }
 /* tournament news */
 .news-post .news-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }

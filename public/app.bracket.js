@@ -152,6 +152,13 @@ function editMaps(bracket, round) {
   });
 }
 
+// Match chat is open to the two participating teams' members and to organizers.
+function matchChatAllowed(m) {
+  if (viewerIsOrganizer()) return true;
+  const mine = (T.viewer && T.viewer.memberTeamId) || (T.viewer && T.viewer.teamId) || null;
+  return !!(mine && (mine === m.team1 || mine === m.team2));
+}
+
 function mLabel(m) {
   if (m.bracket === 'gf') return T.bracketType === 'swiss' ? 'FINAL' : 'GRAND FINAL';
   if (m.bracket === 'sw') return 'R' + m.round + ' M' + (m.index + 1);
@@ -224,6 +231,7 @@ function matchBox(m) {
   box.innerHTML = `<div class="botag">${mLabel(m)} · BO${m.bo}${m.hcap ? ' · UB starts 1-0' : ''}${m.status === 'live' ? ' · <span class="livechip">LIVE</span>' : ''}</div>` +
     row(m.team1, m.score1, 1) + row(m.team2, m.score2, 2) +
     vetoIndicator(m) +
+    ((m.team1 && m.team2 && matchChatAllowed(m)) ? '<div class="match-chat-line"><a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat</a></div>' : '') +
     ((m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
       ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(esc).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(esc).join(', ') : '') + '</div>' : '') +
     ((canReport || canCorrect || m.pendingReport)
@@ -232,6 +240,8 @@ function matchBox(m) {
   if (btn) btn.onclick = () => reportScore(m.id);
   const vlink = box.querySelector('[data-veto-link]');
   if (vlink) vlink.onclick = (e) => { e.preventDefault(); currentTab = 'vetoes'; syncTabURL(); drawTournament(); };
+  const mchat = box.querySelector('[data-matchchat]');
+  if (mchat) mchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
   return box;
 }
 
