@@ -504,11 +504,12 @@ async function drawAdmin(el) {
   }
 
   html += `<div class="panel section"><h2>Rating requirements</h2>
-    <p class="muted small">Self-signups outside the range are refused with an explanation. Organizer adds, replaces, moves and invited players bypass all of this. Editable at any time; existing entrants are never removed automatically.</p>
+    <p class="muted small">Min/Max <strong>refuse</strong> self-signups outside the range. The <strong>rating cap</strong> is different: it doesn\u2019t refuse anyone \u2014 a player above it is treated as exactly the cap value (displayed and calculated as the cap), e.g. cap 2200 makes a 2400 count as 2200. Organizer adds, replaces, moves and invited players bypass the min/max refusal but are still capped. All editable at any time; changing the cap re-applies to everyone instantly.</p>
     <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
       <div style="flex:1;min-width:140px"><label>Min player rating</label><input type="number" id="aiMinR" min="0" max="4000" value="${T.minRating != null ? T.minRating : ''}" placeholder="off"></div>
       <div style="flex:1;min-width:140px"><label>Max player rating</label><input type="number" id="aiMaxR" min="0" max="4000" value="${T.maxRating != null ? T.maxRating : ''}" placeholder="off"></div>
       ${T.teamSize > 1 ? '<div style="flex:1;min-width:140px"><label>Max team rating (combined)</label><input type="number" id="aiMaxTR" min="0" max="30000" value="' + (T.maxTeamRating != null ? T.maxTeamRating : '') + '" placeholder="off"></div>' : ''}
+      <div style="flex:1;min-width:140px"><label>Rating cap (clamp)</label><input type="number" id="aiCapR" min="0" max="4000" value="${T.ratingCap != null ? T.ratingCap : ''}" placeholder="off"></div>
     </div>
     <div style="margin-top:12px"><button class="btn" id="aiRatSave">Save rating limits</button></div>
   </div>`;
@@ -668,7 +669,7 @@ async function drawAdmin(el) {
   const ratSave = document.getElementById('aiRatSave');
   if (ratSave) ratSave.onclick = async () => {
     try {
-      const body = { minRating: document.getElementById('aiMinR').value, maxRating: document.getElementById('aiMaxR').value, admin: adminToken() };
+      const body = { minRating: document.getElementById('aiMinR').value, maxRating: document.getElementById('aiMaxR').value, ratingCap: document.getElementById('aiCapR').value, admin: adminToken() };
       const tr = document.getElementById('aiMaxTR');
       if (tr) body.maxTeamRating = tr.value;
       await api('/api/t/' + T.id + '/edit_info', body);

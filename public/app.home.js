@@ -265,6 +265,8 @@ async function renderHost() {
           <label>Max team rating <span class="muted small">(optional \u2014 combined rating cap; players can't join a team past it, organizers can)</span></label>
           <input type="number" id="cMaxTeamRating" min="0" max="30000" placeholder="e.g. 3000">
         </div>
+        <label>Rating cap <span class="muted small">(optional \u2014 clamp: a player above this counts as exactly this rating, not refused. e.g. 2200)</span></label>
+        <input type="number" id="cRatingCap" min="0" max="4000" placeholder="off">
 
         <label>Signups</label>
         <select id="cSignupMode">
@@ -367,7 +369,8 @@ async function renderHost() {
         signupOpensAt: combineDateTimeUTC(document.getElementById('cSuDate'), document.getElementById('cSuTime')),
         minRating: document.getElementById('cMinRating').value,
         maxRating: document.getElementById('cMaxRating').value,
-        maxTeamRating: document.getElementById('cMaxTeamRating').value
+        maxTeamRating: document.getElementById('cMaxTeamRating').value,
+        ratingCap: document.getElementById('cRatingCap').value
       });
       localStorage.setItem('admin_' + r.id, r.adminToken);
       history.pushState(null, '', '/t/' + r.id);
@@ -679,13 +682,14 @@ function gameInfoPanel() {
   const headline = [typeTxt, ratingTxt].filter(Boolean).join(' · ');
   const cells = [];
   cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
-  if (T.minRating != null || T.maxRating != null || T.maxTeamRating != null) {
+  if (T.minRating != null || T.maxRating != null || T.maxTeamRating != null || T.ratingCap != null) {
     const parts = [];
     if (T.minRating != null && T.maxRating != null) parts.push('Player rating ' + T.minRating + '\u2013' + T.maxRating);
     else if (T.minRating != null) parts.push('Player rating ' + T.minRating + ' or higher');
     else if (T.maxRating != null) parts.push('Player rating up to ' + T.maxRating);
     if (T.maxTeamRating != null) parts.push('Max combined team rating ' + T.maxTeamRating);
-    cells.push(['Rating requirements', parts.join('\n') + '\n(organizer invites/adds are exempt)']);
+    if (T.ratingCap != null) parts.push('Ratings above ' + T.ratingCap + ' count as ' + T.ratingCap + ' (capped)');
+    cells.push(['Rating requirements', parts.join('\n') + '\n(organizer invites/adds are exempt from min/max)']);
   }
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);

@@ -323,6 +323,22 @@ function deleteArticleImage(fname) {
 // must set it by hand ('manual'), which holds the veto until they do.
 
 // The team the logged-in viewer is the CAPTAIN of (matched by FAF identity).
+// Rating cap: players keep their true rating in ratingActual; p.rating is the value used
+// everywhere (seeding, team sums, A/B, display) and is clamped to t.ratingCap if set. This
+// keeps every downstream reader unchanged and lets the cap be changed live.
+function cappedRating(t, raw) {
+  if (raw == null) return null;
+  if (t.ratingCap != null && raw > t.ratingCap) return t.ratingCap;
+  return raw;
+}
+function applyRatingCap(t, p) {
+  if (p.ratingActual == null && p.rating != null) p.ratingActual = p.rating;
+  if (p.ratingActual != null) p.rating = cappedRating(t, p.ratingActual);
+}
+function recomputeAllRatings(t) {
+  for (const p of (t.players || [])) applyRatingCap(t, p);
+}
+
 function teamOfSession(t, req) {
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return null;
@@ -429,6 +445,7 @@ function publicView(t) {
     minRating: t.minRating != null ? t.minRating : null,
     maxRating: t.maxRating != null ? t.maxRating : null,
     maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
+    ratingCap: t.ratingCap != null ? t.ratingCap : null,
     checkInDeadline: t.checkInDeadline || null,
     lobbyOptions: t.lobbyOptions || '', mods: t.mods || '',
     competition: t.competition, formation: t.formation,
@@ -1003,6 +1020,7 @@ async function handleAPI(req, res, url) {
       minRating: (parseInt(b.minRating, 10) >= 0) ? parseInt(b.minRating, 10) : null,
       maxRating: (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null,
       maxTeamRating: (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null,
+      ratingCap: (parseInt(b.ratingCap, 10) > 0) ? parseInt(b.ratingCap, 10) : null,
       organizerFafIds: (hostSess && hostSess.fafId) ? [hostSess.fafId] : [],
       organizerNames: (hostSess && hostSess.fafId) ? { [hostSess.fafId]: hostSess.fafName || '' } : {},
       createdByName: (hostSess && hostSess.fafName) || '',
@@ -1337,7 +1355,8 @@ async function handleAPI(req, res, url) {
         signupOpensAt: t.signupOpensAt || null,
         minRating: t.minRating != null ? t.minRating : null,
         maxRating: t.maxRating != null ? t.maxRating : null,
-        maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null
+        maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
+        ratingCap: t.ratingCap != null ? t.ratingCap : null
       }));
     return json(res, 200, list);
   }
@@ -1733,12 +1752,13 @@ async function handleAPI(req, res, url) {
         }
       }
       const p = {
-        id: 'p' + uid(4), name, rating: (rating != null ? rating : null), fafId: fafId, manual: manual,
+        id: 'p' + uid(4), name, rating: (rating != null ? rating : null), ratingActual: (rating != null ? rating : null), fafId: fafId, manual: manual,
         late: (t.status !== 'signup') ? 1 : 0,
         teamName: (t.formation === 'premade') ? cleanName(b.teamName, 30) : '',
         teamId: null, signedAt: now()
       };
       if (t.signupMode === 'request' && !canOrganize(t, req, b)) p.pending = 1;
+      applyRatingCap(t, p);
       t.players.push(p);
       tlog(t, req, b.admin, (adminAdding && p.name !== (actorOf(req, b.admin).name) ? 'added player ' + p.name : p.name + ' signed up') + (p.rating != null ? ' (rating ' + p.rating + ')' : '') + (p.pending ? ' \u2014 awaiting approval' : '') + (p.late ? ' \u2014 late signup' : ''));
       saveDB();
@@ -1775,7 +1795,9 @@ async function handleAPI(req, res, url) {
         cleaned.push({ name: pname, rating });
       }
       for (const it of cleaned) {
-        t.players.push({ id: 'p' + uid(4), name: it.name, rating: it.rating, teamName, teamId: null, signedAt: now() });
+        const ip = { id: 'p' + uid(4), name: it.name, rating: it.rating, ratingActual: it.rating, teamName, teamId: null, signedAt: now() };
+        applyRatingCap(t, ip);
+        t.players.push(ip);
       }
       tlog(t, req, b.admin, 'registered team ' + cleanName(b.teamName, 30));
       saveDB();
@@ -2228,6 +2250,8 @@ async function handleAPI(req, res, url) {
       const keptTeamName = outP.teamName;
       outP.name = inP.name;
       outP.rating = inP.rating;
+      outP.ratingActual = (inP.ratingActual != null ? inP.ratingActual : inP.rating);
+      applyRatingCap(t, outP);
       outP.fafId = inP.fafId || null;
       outP.manual = inP.manual || false;
       outP.replacedFrom = (outP.replacedFrom || 0) + 1;
@@ -2360,7 +2384,8 @@ async function handleAPI(req, res, url) {
         if (t.ratingType && t.ratingType !== 'none') return bad(res, 'Ratings are fetched from FAF for this tournament and cannot be edited');
         const rating = parseInt(b.rating, 10);
         if (!(rating >= 0 && rating <= 4000)) return bad(res, 'Rating must be 0\u20134000');
-        p.rating = rating;
+        p.ratingActual = rating;
+        applyRatingCap(t, p);
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -2555,7 +2580,7 @@ async function handleAPI(req, res, url) {
 
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
-      const touched = ['description', 'rewards', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
+      const touched = ['description', 'rewards', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'ratingCap', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
       if (touched.length) tlog(t, req, b.admin, 'updated settings: ' + touched.join(', '));
       if (b.description !== undefined) t.description = cleanName(b.description, 2000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
@@ -2569,6 +2594,7 @@ async function handleAPI(req, res, url) {
       if (b.minRating !== undefined) t.minRating = (parseInt(b.minRating, 10) >= 0 && b.minRating !== '') ? parseInt(b.minRating, 10) : null;
       if (b.maxRating !== undefined) t.maxRating = (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null;
       if (b.maxTeamRating !== undefined) t.maxTeamRating = (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null;
+      if (b.ratingCap !== undefined) { t.ratingCap = (parseInt(b.ratingCap, 10) > 0) ? parseInt(b.ratingCap, 10) : null; recomputeAllRatings(t); }
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
