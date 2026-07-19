@@ -155,6 +155,7 @@ function editMaps(bracket, round) {
 // Match chat is open to the two participating teams' members and to organizers.
 function matchChatAllowed(m) {
   if (viewerIsOrganizer()) return true;
+  if (T.viewer && T.viewer.streamer) return true;   // caster link: every chat
   const mine = (T.viewer && T.viewer.memberTeamId) || (T.viewer && T.viewer.teamId) || null;
   return !!(mine && (mine === m.team1 || mine === m.team2));
 }

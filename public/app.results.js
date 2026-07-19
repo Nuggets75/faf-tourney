@@ -329,14 +329,17 @@ async function drawAdmin(el) {
     ${copyRow('Public link — share with everyone', base)}
     ${copyRow('Organizer link — makes whoever opens it an organizer (they must log in). KEEP PRIVATE.', base + '?admin=' + secrets.adminToken)}
     ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
+    ${secrets.streamerToken ? copyRow('Streamer/caster link — read access to EVERYTHING (all chats, hidden maps & pools) and can post in every chat, but zero organizer powers: no Admin tab, no Log, no player changes. For casters & production.', base + '?streamer=' + secrets.streamerToken) : ''}
   </div>`;
 
   if ((T.organizers || []).length) {
     const sa = !!siteAdmin();
     html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${T.organizers.length})</span></h2>
       <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
+      <p class="muted small">Players see the visible organizers listed on the Chat tab. Hide an organizer to keep them off that public list \u2014 by default everyone is shown.</p>
       <div class="pick-rows" style="margin-top:10px">${T.organizers.map(o => `<div class="pick-row on" style="cursor:default">
-        <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span></span>
+        <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
+        <button class="btn ghost small" data-orgvis="${esc(o.fafId)}" data-hidden="${o.hidden ? 1 : 0}">${o.hidden ? 'Show to players' : 'Hide from players'}</button>
         ${sa ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '">Remove</button>' : ''}
       </div>`).join('')}</div></div>`;
   }
@@ -482,6 +485,13 @@ async function drawAdmin(el) {
     <div style="margin-top:14px"><button class="btn" id="aiRwSave">Save rewards</button></div>
   </div>`;
 
+  html += `<div class="panel section"><h2>Sponsors</h2>
+    <p class="muted small">Shown prominently on the Overview next to the rewards. Text, links as [name](https://\u2026), or paste a logo image straight in.</p>
+    <textarea id="aiSponsors" maxlength="2000" rows="5" placeholder="e.g. Powered by [YourSponsor](https://sponsor.example) \u2014 thanks for the prize pool!">${esc(T.sponsors || '')}</textarea>
+    <input type="file" id="aiSpImgFile" accept="image/*" style="display:none">
+    <div style="margin-top:14px"><button class="btn" id="aiSpSave">Save sponsors</button></div>
+  </div>`;
+
   html += `<div class="panel section"><h2>Livestreams</h2>
     <p class="muted small">Where this tournament is streamed \u2014 shown near the top of the Overview with clickable links. Add one row per stream; leave a row's link empty to drop it.</p>
     <div id="aiStreams">${((T.streams && T.streams.length) ? T.streams : [{ url: '', info: '' }]).map(st => `
@@ -589,6 +599,13 @@ async function drawAdmin(el) {
     </div></div>`;
 
   el.innerHTML = html;
+  el.querySelectorAll('[data-orgvis]').forEach(b => b.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/organizer_visibility', { fafId: b.dataset.orgvis, hidden: b.dataset.hidden === '1' ? 0 : 1, admin: adminToken() });
+      toast(b.dataset.hidden === '1' ? 'Now visible to players' : 'Hidden from players');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-orgdel]').forEach(b => b.onclick = async () => {
     const last = (T.organizers || []).length <= 1;
     if (!confirm('Remove organizer rights from this account?' + (last ? '\n\nThis is the LAST organizer — afterwards only the organizer link and site admins can manage this tournament.' : ''))) return;
@@ -630,6 +647,8 @@ async function drawAdmin(el) {
   if (aiDescTa) wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile'));
   const aiRwTa = document.getElementById('aiRewards');
   if (aiRwTa) wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile'));
+  const aiSpTa = document.getElementById('aiSponsors');
+  if (aiSpTa) wireImagePaste(aiSpTa, descUploader, null, document.getElementById('aiSpImgFile'));
   const stAdd = document.getElementById('aiStAdd');
   if (stAdd) stAdd.onclick = () => {
     const wrap = document.getElementById('aiStreams');
@@ -682,6 +701,14 @@ async function drawAdmin(el) {
     try {
       await api('/api/t/' + T.id + '/edit_info', { rewards: aiRwTa.value, admin: adminToken() });
       toast('Rewards saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const spSave = document.getElementById('aiSpSave');
+  if (spSave) spSave.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/edit_info', { sponsors: aiSpTa.value, admin: adminToken() });
+      toast('Sponsors saved');
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
@@ -893,7 +920,7 @@ let _chatMsgs = [];
 function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } }
 
 async function chatRooms() {
-  const tok = myToken();
+  const tok = viewToken();
   const r = await api('/api/t/' + T.id + '/chat_rooms' + (tok ? '?token=' + encodeURIComponent(tok) : ''));
   return r;
 }
@@ -923,8 +950,9 @@ async function mountChat(host, room, label) {
     <div class="chat-head">${esc(label)}</div>
     <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
     <div class="chat-input">
-      <input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100)" autocomplete="off">
+      <input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer for help)" autocomplete="off">
       <button class="btn primary small" id="chatSend">Send</button>
+      ${viewerIsOrganizer() ? '' : '<button class="btn ghost small" id="chatPing" title="Flags this chat for the organizers so they know you need help">\uD83D\uDD14 Ping organizer</button>'}
     </div>
     <div class="muted small" id="chatNote" style="margin-top:4px"></div>
   </div>`;
@@ -934,7 +962,7 @@ async function mountChat(host, room, label) {
 
   const load = async (incremental) => {
     try {
-      const tok = myToken();
+      const tok = viewToken();
       const r = await api('/api/t/' + T.id + '/chat_read?room=' + encodeURIComponent(room) + (_chatSince ? '&since=' + _chatSince : '') + (tok ? '&token=' + encodeURIComponent(tok) : ''));
       if (r.muted) note.textContent = 'You are muted by an organizer \u2014 you can read but not post.';
       const incoming = r.messages || [];
@@ -955,12 +983,21 @@ async function mountChat(host, room, label) {
     if (!text) return;
     inp.value = '';
     try {
-      await api('/api/t/' + T.id + '/chat_post', { room, text, token: myToken() });
+      await api('/api/t/' + T.id + '/chat_post', { room, text, token: viewToken() });
       await load(true);
     } catch (e) { toast(e.message, true); inp.value = text; }
   };
   host.querySelector('#chatSend').onclick = send;
   inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } };
+  const pingBtn = host.querySelector('#chatPing');
+  if (pingBtn) pingBtn.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/chat_post', { room, text: '!organizer ' + (inp.value.trim() || ''), token: viewToken() });
+      inp.value = '';
+      toast('Organizers pinged');
+      await load(true);
+    } catch (e) { toast(e.message, true); }
+  };
 
   logEl.onclick = async (e) => {
     const del = e.target.closest('[data-chatdel]');
@@ -991,11 +1028,15 @@ async function drawChatTab(el) {
   try { data = await chatRooms(); } catch (e) { el.innerHTML = '<div class="panel section"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
   const rooms = data.rooms || [];
   if (!rooms.length) { el.innerHTML = '<div class="panel section"><div class="empty">No chats available to you yet.</div></div>'; return; }
+  const orgLine = (T.organizersPublic && T.organizersPublic.length)
+    ? '<div class="muted small" style="margin-bottom:8px">Organizer' + (T.organizersPublic.length === 1 ? '' : 's') + ': <strong>' + T.organizersPublic.map(esc).join(', ') + '</strong> \u2014 type <code>!organizer</code> in any chat to get their attention.</div>'
+    : '<div class="muted small" style="margin-bottom:8px">Type <code>!organizer</code> in any chat to get the organizers\u2019 attention.</div>';
   el.innerHTML = `<div class="chat-layout">
     <div class="chat-rooms panel section">
       <h2>Chats</h2>
+      ${orgLine}
       ${data.muted ? '<div class="warn small" style="margin-bottom:8px">You are muted.</div>' : ''}
-      <div class="chat-roomlist">${rooms.map((r, i) => `<button class="chat-room ${i === 0 ? 'active' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${esc(r.label)}${r.count ? ' <span class="muted small">(' + r.count + ')</span>' : ''}</button>`).join('')}</div>
+      <div class="chat-roomlist">${rooms.map((r, i) => `<button class="chat-room ${i === 0 ? 'active' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${r.ping && viewerIsOrganizer() ? '\uD83D\uDD14 ' : ''}${esc(r.label)}${r.count ? ' <span class="muted small">(' + r.count + ')</span>' : ''}</button>`).join('')}</div>
     </div>
     <div class="chat-host" id="chatHost"></div>
   </div>`;

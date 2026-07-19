@@ -391,7 +391,7 @@ function formHasFocus() {
 }
 
 async function loadTournament() {
-  const tok = myToken();
+  const tok = viewToken();
   T = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
 }
 
@@ -476,7 +476,7 @@ async function renderTournament() {
     app.innerHTML = '<div class="page"><div class="panel"><div class="empty">Tournament not found.</div><a href="/">← Back</a></div></div>';
     return;
   }
-  drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : '');
+  drawTopbar(viewerIsOrganizer() ? 'ORGANIZER' : (T.viewer && T.viewer.streamer ? 'STREAMER' : ''));
   lastSnapshot = JSON.stringify(T);
   drawTournament();
   maybePromptOrganizerClaim();
@@ -486,7 +486,7 @@ async function renderTournament() {
     if (document.getElementById('modalRoot').innerHTML) return; // modal open
     if (formHasFocus()) return;                                  // user is typing
     try {
-      const tok = myToken();
+      const tok = viewToken();
       const fresh = await api('/api/t/' + tourneyId() + (tok ? '?token=' + encodeURIComponent(tok) : ''));
       const snap = JSON.stringify(fresh);
       if (snap === lastSnapshot) return;                         // nothing changed
@@ -582,7 +582,7 @@ function drawTournament() {
   const tabs = ['overview', 'news', 'chat', 'players', 'teams', 'bracket'];
   // Vetoes tab appears once the bracket is running and vetoes are enabled
   const vetoActive = T.veto && T.veto.enabled && (T.status === 'running' || T.status === 'finished') && T.matches.some(m => m.veto);
-  if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId))) {
+  if (!(T.viewer && (T.viewer.organizer || T.viewer.signedUpPlayerId || T.viewer.memberTeamId || T.viewer.streamer))) {
     const ci = tabs.indexOf('chat'); if (ci >= 0) tabs.splice(ci, 1);
   }
   if (vetoActive) tabs.push('vetoes');
@@ -620,7 +620,8 @@ function drawTournament() {
       </div>
       <div class="tabs">
         ${tabs.map(tb => {
-          const badge = (tb === 'news' && tb !== currentTab) ? newsUnreadCount() : 0;
+          let badge = (tb === 'news' && tb !== currentTab) ? newsUnreadCount() : 0;
+          if (tb === 'chat' && T.viewer && T.viewer.organizer && (T.chatPingCount || 0) > 0) badge = '\uD83D\uDD14' + T.chatPingCount;
           return `<button class="tab ${tb === currentTab ? 'active' : ''}" data-tab="${tb}">${esc(tabLabel(tb))}${badge ? '<span class="tab-badge">' + badge + '</span>' : ''}</button>`;
         }).join('')}
       </div>
@@ -693,7 +694,7 @@ function gameInfoPanel() {
   }
   if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
   if (T.mods) cells.push(['Mods', T.mods]);
-  const inlineRef = (T.description || '') + ' ' + (T.rewards || '');
+  const inlineRef = (T.description || '') + ' ' + (T.rewards || '') + ' ' + (T.sponsors || '');
   const imgs = (T.descImages || []).filter(f => inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) < 0 && inlineRef.indexOf('/desc-images/' + f) < 0);
   const gallery = imgs.length ? `<div class="desc-gallery">${imgs.map(f => `<a href="/desc-images/${encodeURIComponent(f)}" target="_blank" rel="noopener"><img src="/desc-images/${encodeURIComponent(f)}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
   if (!cells.length && !imgs.length && !T.description && !headline) return '';
@@ -843,9 +844,12 @@ function drawOverview(el) {
     html += `<div class="champ"><div class="champ-label">Champion</div><h1>${esc(teamName(T.championTeamId))}</h1></div>`;
   }
 
-  if (T.rewards) {
-    html += `<div class="panel section reward-panel"><h2>Rewards</h2>
-      <div class="ic-body reward-body">${renderArticleBody(T.rewards)}</div></div>`;
+  if (T.rewards || T.sponsors) {
+    const rw = T.rewards ? `<div class="panel section reward-panel" style="flex:1;min-width:280px"><h2>Rewards</h2>
+      <div class="ic-body reward-body">${renderArticleBody(T.rewards)}</div></div>` : '';
+    const sp = T.sponsors ? `<div class="panel section sponsor-panel" style="flex:1;min-width:280px"><h2>Sponsors</h2>
+      <div class="ic-body reward-body">${renderArticleBody(T.sponsors)}</div></div>` : '';
+    html += `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">${rw}${sp}</div>`;
   }
 
   html += gameInfoPanel();

@@ -101,6 +101,9 @@ function capToken() {
   return id ? localStorage.getItem('cap_' + id) : null;
 }
 function myToken() { return adminToken() || capToken(); }
+function streamerToken() { const id = tourneyId(); return id ? localStorage.getItem('streamer_' + id) : null; }
+// token for read-style calls (tournament GET, chat): organizer token wins, else streamer link
+function viewToken() { return myToken() || streamerToken(); }
 
 const VALID_TABS = ['overview', 'news', 'chat', 'players', 'teams', 'bracket', 'maps', 'vetoes', 'standings', 'admin', 'log'];
 let pendingOrganizerClaim = null; // { id, token } — set when an ?admin= link is opened
@@ -115,9 +118,10 @@ function captureTokensFromURL() {
     pendingOrganizerClaim = { id, token: q.get('admin') };
   }
   if (q.get('late')) pendingLateSignup = { id, token: q.get('late') };
+  if (q.get('streamer')) localStorage.setItem('streamer_' + id, q.get('streamer'));
   const tab = q.get('tab');
   if (tab && VALID_TABS.indexOf(tab) >= 0) currentTab = tab;
-  if (q.get('admin') || q.get('late') || q.get('tab')) {
+  if (q.get('admin') || q.get('late') || q.get('tab') || q.get('streamer')) {
     history.replaceState(null, '', '/t/' + id + (currentTab !== 'overview' ? '?tab=' + currentTab : ''));
   }
 }

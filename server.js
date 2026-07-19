@@ -339,6 +339,12 @@ function recomputeAllRatings(t) {
   for (const p of (t.players || [])) applyRatingCap(t, p);
 }
 
+// Streamer/caster access: a share link that opens every chat room and marks the viewer
+// as STREAMER, with zero organizer powers (no admin tab, no log, no mutations).
+function isStreamer(t, token) {
+  return !!(token && t.streamerToken && token === t.streamerToken);
+}
+
 function teamOfSession(t, req) {
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return null;
@@ -391,6 +397,7 @@ function viewerTeamIds(t, req) {
 // Can this request read/write the given room? organizer => everything.
 function chatAccess(t, req, room, token) {
   if (isAdmin(t, token, req) || isOrganizer(t, req)) return true;
+  if (isStreamer(t, token)) return room === 'global' || (room.indexOf('match:') === 0 && !!matchById(t, room.slice(6)));
   const sess = currentSession(req);
   if (!sess || !sess.fafId) return false;
   // must be a participant of the tournament at all
@@ -407,20 +414,21 @@ function chatAccess(t, req, room, token) {
 // The list of rooms a viewer can see, with labels and unread counts.
 function chatRoomsFor(t, req, token) {
   const organizer = isAdmin(t, token, req) || isOrganizer(t, req);
+  const streamer = !organizer && isStreamer(t, token);
   const rooms = [];
   const store = t.chat || {};
   const push = (id, label) => {
     const msgs = (store[id] || []);
-    rooms.push({ id, label, count: msgs.length, last: msgs.length ? msgs[msgs.length - 1].at : 0 });
+    rooms.push({ id, label, count: msgs.length, last: msgs.length ? msgs[msgs.length - 1].at : 0, ping: (t.chatPings && t.chatPings[id]) ? 1 : 0 });
   };
   // global first
-  if (organizer || (currentSession(req) && (t.players || []).some(p => { const sess = currentSession(req); return sess && p.fafId === sess.fafId; }))) {
+  if (organizer || streamer || (currentSession(req) && (t.players || []).some(p => { const sess = currentSession(req); return sess && p.fafId === sess.fafId; }))) {
     push('global', 'Global \u2014 everyone');
   }
-  const mine = organizer ? null : viewerTeamIds(t, req);
+  const mine = (organizer || streamer) ? null : viewerTeamIds(t, req);
   for (const m of (t.matches || [])) {
     if (!m.team1 || !m.team2) continue;
-    const canSee = organizer || (mine && (mine.indexOf(m.team1) >= 0 || mine.indexOf(m.team2) >= 0));
+    const canSee = organizer || streamer || (mine && (mine.indexOf(m.team1) >= 0 || mine.indexOf(m.team2) >= 0));
     if (!canSee) continue;
     push('match:' + m.id, matchLabel(t, m) + ' \u2014 ' + (teamById(t, m.team1) ? teamById(t, m.team1).name : '?') + ' vs ' + (teamById(t, m.team2) ? teamById(t, m.team2).name : '?'));
   }
@@ -436,12 +444,17 @@ function teamOfCaptainToken(t, token) {
 
 function publicView(t) {
   return {
-    id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', category: t.category || null,
+    id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', sponsors: t.sponsors || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
     signupOpensAt: t.signupOpensAt || null,
     descImages: (t.descImages || []).slice(),
     news: (t.news || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
     streams: (t.streams || []).slice(),
+    organizersPublic: (t.organizerFafIds || []).filter(fid => !(t.organizerHidden && t.organizerHidden[fid])).map(fid => {
+      const names = t.organizerNames || {};
+      const viaPlayer = (t.players || []).find(pp => pp.fafId === fid);
+      return names[fid] || (t.organizerFafIds[0] === fid && t.createdByName) || (viaPlayer && viaPlayer.name) || 'Organizer';
+    }),
     minRating: t.minRating != null ? t.minRating : null,
     maxRating: t.maxRating != null ? t.maxRating : null,
     maxTeamRating: t.maxTeamRating != null ? t.maxTeamRating : null,
@@ -998,7 +1011,7 @@ async function handleAPI(req, res, url) {
     }
     const maxTeams = intIn(b.maxTeams, 0, 128, 0);
     const t = {
-      id: uid(5), adminToken: uid(12), lateToken: uid(12),
+      id: uid(5), adminToken: uid(12), lateToken: uid(12), streamerToken: uid(12),
       name, description: cleanName(b.description, 500),
       category,
       published: false, archived: false, descImages: [],
@@ -1482,6 +1495,7 @@ async function handleAPI(req, res, url) {
       const capTeam = teamOfCaptainToken(t, tok) || teamOfSession(t, req);
       const sess = currentSession(req);
       const organizer = isAdmin(t, tok, req) || isOrganizer(t, req);
+      const streamer = !organizer && isStreamer(t, tok);
       // Who organizes a tournament is visible to its organizers and site admins only.
       if (!organizer) delete view.createdByName;
       if (organizer) {
@@ -1493,8 +1507,9 @@ async function handleAPI(req, res, url) {
             || (viaPlayer && viaPlayer.name)
             || (db.hostAllowed[fid] && db.hostAllowed[fid].name)
             || ('FAF ' + fid);
-          return { fafId: fid, name };
+          return { fafId: fid, name, hidden: (t.organizerHidden && t.organizerHidden[fid]) ? 1 : 0 };
         });
+        view.chatPingCount = Object.keys(t.chatPings || {}).length;
       }
       // is the logged-in viewer already signed up (by FAF id)?
       let signedUpId = null;
@@ -1536,12 +1551,13 @@ async function handleAPI(req, res, url) {
         memberTeamId: memberTeamId,
         invited: (sess && (t.invites || []).some(i => i.fafId === sess.fafId)) ? 1 : 0,
         oauthEnabled: FAF_OAUTH_ON ? 1 : 0,
+        streamer: streamer ? 1 : 0,
         newsReadAt: (sess && db.profiles[sess.fafId] && db.profiles[sess.fafId].newsRead && db.profiles[sess.fafId].newsRead[t.id]) || 0
       };
       // Hide prep from non-organizers: unpublished maps and unpublished pools.
       // Exception: a map that's already on screen somewhere (in a live veto or a round's
       // map pool) must keep its name, or players would see a raw id.
-      if (!organizer) {
+      if (!organizer && !streamer) {
         const inPlay = {};
         for (const m of (view.matches || [])) {
           if (!m.veto) continue;
@@ -1570,9 +1586,11 @@ async function handleAPI(req, res, url) {
 
     if (method === 'GET' && sub === 'secrets') {
       if (!isAdmin(t, url.searchParams.get('admin'), req) && !isOrganizer(t, req)) return json(res, 403, { error: 'Organizer rights required' });
+      if (!t.streamerToken) { t.streamerToken = uid(12); saveDB(); }
       return json(res, 200, {
         adminToken: t.adminToken,
-        lateToken: t.lateToken
+        lateToken: t.lateToken,
+        streamerToken: t.streamerToken
       });
     }
 
@@ -1589,6 +1607,11 @@ async function handleAPI(req, res, url) {
       const since = parseInt(url.searchParams.get('since'), 10) || 0;
       const all = (t.chat && t.chat[room]) || [];
       const msgs = since ? all.filter(mm => mm.at > since) : all.slice(-200);
+      // an organizer reading the room acknowledges any pending ping
+      if (t.chatPings && t.chatPings[room] && (isAdmin(t, tok, req) || isOrganizer(t, req))) {
+        delete t.chatPings[room];
+        saveDB();
+      }
       return json(res, 200, { room, messages: msgs, muted: chatMuted(t, (currentSession(req) || {}).fafId) ? 1 : 0 });
     }
 
@@ -2178,6 +2201,18 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // Toggle whether an organizer is shown to players (Chat tab list etc). Default: shown.
+    if (sub === 'organizer_visibility') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const fid = String(b.fafId || '').trim();
+      if (!Array.isArray(t.organizerFafIds) || t.organizerFafIds.indexOf(fid) < 0) return bad(res, 'Not an organizer of this tournament');
+      t.organizerHidden = t.organizerHidden || {};
+      if (b.hidden) t.organizerHidden[fid] = 1; else delete t.organizerHidden[fid];
+      tlog(t, req, b.admin, (b.hidden ? 'hid' : 'made visible') + ' organizer ' + ((t.organizerNames || {})[fid] || fid) + ' ' + (b.hidden ? 'from' : 'to') + ' players');
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     // Official vs community is picked once at creation by the organizer; only the
     // site admin can change it afterwards.
     if (sub === 'set_category') {
@@ -2531,14 +2566,27 @@ async function handleAPI(req, res, url) {
       if (!chatAccess(t, req, room, b.token)) return json(res, 403, { error: 'No access to this chat' });
       const sess = currentSession(req);
       const organizer = isAdmin(t, b.token, req) || isOrganizer(t, req);
+      const streamer = !organizer && isStreamer(t, b.token);
       // Everyone posting must be identifiable so muting and attribution work.
-      if (!sess && !organizer) return json(res, 401, { error: 'Log in to chat' });
+      if (!sess && !organizer && !streamer) return json(res, 401, { error: 'Log in to chat' });
       if (sess && chatMuted(t, sess.fafId)) return json(res, 403, { error: 'You are muted in this tournament\u2019s chat' });
       let text = String(b.text || '').trim().slice(0, CHAT_MSG_LEN);
       if (!text) return bad(res, 'Empty message');
-      const who = organizer && !sess ? 'Organizer' : (sess ? (sess.fafName || ('FAF ' + sess.fafId)) : 'Anonymous');
+      const who = (sess ? (sess.fafName || ('FAF ' + sess.fafId)) : (organizer ? 'Organizer' : 'Streamer')) + (streamer ? ' [caster]' : '');
       t.chat = t.chat || {};
       t.chat[room] = t.chat[room] || [];
+      // !organizer — flag this room so organizers see it needs attention, without them
+      // having to skim every chat. Cleared when an organizer opens the room.
+      if (/^!organizer\b/i.test(text)) {
+        const extra = text.replace(/^!organizer\b/i, '').trim();
+        t.chatPings = t.chatPings || {};
+        t.chatPings[room] = { at: now(), by: who };
+        t.chat[room].push({ id: uid(8), at: now(), fafId: sess ? sess.fafId : null, who, sys: 1, ping: 1, text: who + ' pinged the organizers' + (extra ? ': ' + extra : '') + ' \u2014 they\u2019ve been notified.' });
+        if (t.chat[room].length > CHAT_MAX) t.chat[room] = t.chat[room].slice(-CHAT_MAX);
+        tlog(t, req, b.admin || b.token, who + ' pinged the organizers in ' + (room === 'global' ? 'the global chat' : 'a match chat') + (extra ? ': ' + extra : ''));
+        saveDB();
+        return json(res, 200, { ok: true, pinged: 1 });
+      }
       // !roll — server rolls so nobody can fake it
       const rollMatch = /^!roll\b\s*(\d+)?(?:\s*-\s*(\d+))?/.exec(text);
       if (rollMatch) {
@@ -2580,10 +2628,11 @@ async function handleAPI(req, res, url) {
 
     if (sub === 'edit_info') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
-      const touched = ['description', 'rewards', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'ratingCap', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
+      const touched = ['description', 'rewards', 'sponsors', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'ratingCap', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
       if (touched.length) tlog(t, req, b.admin, 'updated settings: ' + touched.join(', '));
       if (b.description !== undefined) t.description = cleanName(b.description, 2000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
+      if (b.sponsors !== undefined) t.sponsors = cleanName(b.sponsors, 2000);
       if (Array.isArray(b.streams)) {
         t.streams = b.streams.map(x => ({
           url: String((x && x.url) || '').trim().slice(0, 300),
