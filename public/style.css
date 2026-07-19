@@ -409,6 +409,13 @@ tbody tr:hover { background: #ffffff05; }
 .stream-panel { border-left: 3px solid #a855f7; }
 .sponsor-panel { border-left: 3px solid var(--green); }
 .chat-room.pinged { border-color: #e5484d; color: #ff6369; background: #3a181a40; font-weight: 700; }
+/* organizer callout at the top of the Chats sidebar */
+.org-callout { border: 1px solid #6b5220; border-left: 3px solid var(--amber); background: linear-gradient(90deg, #2a211360, transparent); border-radius: 4px; padding: 10px 12px; margin-bottom: 12px; }
+.org-callout-title { font-family: var(--display); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin-bottom: 6px; }
+.org-callout-names { font-size: 13px; }
+.org-name { display: inline-block; font-weight: 700; font-size: 14px; color: var(--amber); border: 1px solid #6b5220; background: #2a2113; border-radius: 3px; padding: 3px 10px; margin: 2px 5px 2px 0; }
+.org-callout-hint { font-size: 12px; color: var(--muted); }
+.org-callout-hint code { color: var(--amber); background: #2a2113; border-radius: 3px; padding: 0 4px; }
 .stream-line { font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
 /* chat */
 .chat-layout { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }

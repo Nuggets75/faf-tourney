@@ -1060,8 +1060,11 @@ async function drawChatTab(el) {
   const rooms = data.rooms || [];
   if (!rooms.length) { el.innerHTML = '<div class="panel section"><div class="empty">No chats available to you yet.</div></div>'; return; }
   const orgLine = (T.organizersPublic && T.organizersPublic.length)
-    ? '<div class="muted small" style="margin-bottom:8px">Organizer' + (T.organizersPublic.length === 1 ? '' : 's') + ': <strong>' + T.organizersPublic.map(esc).join(', ') + '</strong> \u2014 type <code>!organizer</code> in any chat to get their attention.</div>'
-    : '<div class="muted small" style="margin-bottom:8px">Type <code>!organizer</code> in any chat to get the organizers\u2019 attention.</div>';
+    ? `<div class="org-callout">
+      <div class="org-callout-title">Organizer${T.organizersPublic.length === 1 ? '' : 's'}</div>
+      <div class="org-callout-names">${T.organizersPublic.map(n => '<span class="org-name">' + esc(n) + '</span>').join(' ')}</div>
+    </div>`
+    : '';
   el.innerHTML = `<div class="chat-layout">
     <div class="chat-rooms panel section">
       <h2>Chats</h2>
