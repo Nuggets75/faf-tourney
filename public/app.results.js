@@ -981,7 +981,7 @@ async function mountChat(host, room, label) {
     <div class="chat-head">${esc(label)}</div>
     <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
     <div class="chat-input">
-      <input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer for help)" autocomplete="off">
+      <input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers in this chat)" autocomplete="off">
       <button class="btn primary small" id="chatSend">Send</button>
       ${viewerIsOrganizer() ? '' : '<button class="btn ghost small" id="chatPing" title="Flags this chat for the organizers so they know you need help">\uD83D\uDD14 Ping organizer</button>'}
     </div>
@@ -1063,6 +1063,7 @@ async function drawChatTab(el) {
     ? `<div class="org-callout">
       <div class="org-callout-title">Organizer${T.organizersPublic.length === 1 ? '' : 's'}</div>
       <div class="org-callout-names">${T.organizersPublic.map(n => '<span class="org-name">' + esc(n) + '</span>').join(' ')}</div>
+      <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
     </div>`
     : '';
   el.innerHTML = `<div class="chat-layout">
