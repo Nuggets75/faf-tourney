@@ -2230,6 +2230,26 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true, category: t.category });
     }
 
+    // Site admin attaches organizer rights to a FAF account directly (useful for
+    // tournaments that predate identity tracking, where the list is empty).
+    if (sub === 'add_organizer') {
+      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
+      if (t.organizerFafIds.indexOf(fid) >= 0) return bad(res, 'Already an organizer');
+      t.organizerFafIds.push(fid);
+      t.organizerNames = t.organizerNames || {};
+      t.organizerNames[fid] = cleanName(b.name, 60) || ('FAF ' + fid);
+      saveDB();
+      audit(req, 'organizer_added', {
+        tournamentId: t.id, tournamentName: t.name,
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: t.organizerNames[fid] + ' (' + fid + ') \u2014 added directly'
+      });
+      return json(res, 200, { ok: true });
+    }
+
     // Site admin strips organizer rights from a FAF account on this tournament.
     if (sub === 'remove_organizer') {
       if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });

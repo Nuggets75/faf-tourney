@@ -332,16 +332,22 @@ async function drawAdmin(el) {
     ${secrets.streamerToken ? copyRow('Streamer/caster link — read access to EVERYTHING (all chats, hidden maps & pools) and can post in every chat, but zero organizer powers: no Admin tab, no Log, no player changes. For casters & production.', base + '?streamer=' + secrets.streamerToken) : ''}
   </div>`;
 
-  if ((T.organizers || []).length) {
+  { // Organizers: always visible in the Admin tab, even when the identity list is empty
     const sa = !!siteAdmin();
-    html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${T.organizers.length})</span></h2>
+    const orgs = T.organizers || [];
+    html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${orgs.length})</span></h2>
       <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
       <p class="muted small">Players see the visible organizers listed on the Chat tab. Hide an organizer to keep them off that public list \u2014 by default everyone is shown.</p>
-      <div class="pick-rows" style="margin-top:10px">${T.organizers.map(o => `<div class="pick-row on" style="cursor:default">
+      ${orgs.length ? '' : '<div class="empty" style="margin:10px 0">No FAF account holds organizer rights here yet \u2014 this tournament predates identity tracking or was created without being logged in. Rights so far come only from the organizer link' + (sa ? ' or the site admin password' : '') + '. Use the buttons below to fix that.</div>'}
+      <div class="pick-rows" style="margin-top:10px">${orgs.map(o => `<div class="pick-row on" style="cursor:default">
         <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
         <button class="btn ghost small" data-orgvis="${esc(o.fafId)}" data-hidden="${o.hidden ? 1 : 0}">${o.hidden ? 'Show to players' : 'Hide from players'}</button>
         ${sa ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '">Remove</button>' : ''}
-      </div>`).join('')}</div></div>`;
+      </div>`).join('')}</div>
+      <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+        ${fafAuth.user && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
+        ${sa ? '<button class="btn ghost small" id="orgAddId">+ Add by FAF id</button>' : ''}
+      </div></div>`;
   }
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
@@ -599,6 +605,31 @@ async function drawAdmin(el) {
     </div></div>`;
 
   el.innerHTML = html;
+  const claimSelf = document.getElementById('orgClaimSelf');
+  if (claimSelf) claimSelf.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/claim_organizer', { adminToken: secrets.adminToken });
+      toast('You are now listed as an organizer');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const orgAdd = document.getElementById('orgAddId');
+  if (orgAdd) orgAdd.onclick = () => {
+    modal(`<h3>Add an organizer by FAF id</h3>
+      <label>FAF id</label><input type="text" id="oaId" autocomplete="off">
+      <label>Name <span class="muted small">(optional, for the list)</span></label><input type="text" id="oaName" maxlength="60" autocomplete="off">
+      <div class="actions"><button class="btn ghost" id="oaCancel">Cancel</button><button class="btn primary" id="oaGo">Add</button></div>`, root => {
+      root.querySelector('#oaCancel').onclick = closeModal;
+      root.querySelector('#oaGo').onclick = async () => {
+        const fafId = root.querySelector('#oaId').value.trim();
+        if (!fafId) return toast('FAF id required', true);
+        try {
+          await api('/api/t/' + T.id + '/add_organizer', { fafId, name: root.querySelector('#oaName').value.trim(), admin: siteAdmin() });
+          closeModal(); toast('Added'); await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+    });
+  };
   el.querySelectorAll('[data-orgvis]').forEach(b => b.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/organizer_visibility', { fafId: b.dataset.orgvis, hidden: b.dataset.hidden === '1' ? 0 : 1, admin: adminToken() });
