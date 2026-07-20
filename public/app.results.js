@@ -332,6 +332,28 @@ async function drawAdmin(el) {
     ${secrets.streamerToken ? copyRow('Streamer/caster link — read access to EVERYTHING (all chats, hidden maps & pools) and can post in every chat, but zero organizer powers: no Admin tab, no Log, no player changes. For casters & production.', base + '?streamer=' + secrets.streamerToken) : ''}
   </div>`;
 
+  { // Tournament details — name, dates, team counts — editable any time
+    const dv = splitDateTimeUTC(T.eventDate || '');
+    const su = splitDateTimeUTC(T.signupOpensAt || '');
+    const sc = splitDateTimeUTC(T.signupClosesAt || '');
+    html += `<div class="panel section"><h2>Tournament details</h2>
+      <p class="muted small">Times are in <strong>UTC</strong> and display in each viewer's own time zone. All editable at any time.</p>
+      <label>Tournament name</label>
+      <input type="text" id="td_name" maxlength="60" value="${esc(T.name || '')}">
+      ${T.imported ? '' : `<label style="margin-top:12px">Event date &amp; time</label>
+      <div style="display:flex;gap:8px"><input type="date" id="td_date" value="${esc(dv.date)}" style="flex:1"><input type="time" id="td_time" value="${esc(dv.time)}" style="width:130px"></div>
+      <label style="margin-top:12px">Signups open at <span class="muted small">(before this, only organizers can add players)</span></label>
+      <div style="display:flex;gap:8px"><input type="date" id="td_sudate" value="${esc(su.date)}" style="flex:1"><input type="time" id="td_sutime" value="${esc(su.time)}" style="width:130px"></div>
+      <label style="margin-top:12px">Signups close at <span class="muted small">(auto-closes signups; team forming &amp; picks still work. Empty = manual)</span></label>
+      <div style="display:flex;gap:8px"><input type="date" id="td_scdate" value="${esc(sc.date)}" style="flex:1"><input type="time" id="td_sctime" value="${esc(sc.time)}" style="width:130px"></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
+        <div style="flex:1;min-width:150px"><label>Min teams / entrants <span class="muted small">(display only)</span></label><input type="number" id="td_min" min="0" max="128" value="${T.minTeams || 0}"></div>
+        <div style="flex:1;min-width:150px"><label>Max teams / entrants <span class="muted small">(0 = unlimited)</span></label><input type="number" id="td_max" min="0" max="128" value="${T.maxTeams || 0}"></div>
+      </div>`}
+      <div style="margin-top:14px"><button class="btn amber" id="td_save">Save details</button></div>
+    </div>`;
+  }
+
   { // Organizers: always visible in the Admin tab, even when the identity list is empty
     const sa = !!siteAdmin();
     const orgs = T.organizers || [];
@@ -479,7 +501,9 @@ async function drawAdmin(el) {
     <label style="margin-top:12px">Lobby options</label>
     ${mdToolbarHTML()}
     <textarea id="aiLobby" maxlength="20000" rows="6">${esc(T.lobbyOptions || '')}</textarea>
-    <label>Mods</label><input type="text" id="aiMods" maxlength="500" value="${esc(T.mods || '')}">
+    <label style="margin-top:12px">Mods</label>
+    ${mdToolbarHTML()}
+    <textarea id="aiMods" maxlength="500" rows="2">${esc(T.mods || '')}</textarea>
     <div style="margin-top:14px"><button class="btn" id="aiSave">Save setup</button></div>
   </div>`;
 
@@ -613,6 +637,24 @@ async function drawAdmin(el) {
     </div></div>`;
 
   el.innerHTML = html;
+  const tdSave = document.getElementById('td_save');
+  if (tdSave) tdSave.onclick = async () => {
+    try {
+      const info = { admin: adminToken() };
+      const nm = document.getElementById('td_name'); if (nm && nm.value.trim()) info.name = nm.value.trim();
+      const dd = document.getElementById('td_date');
+      if (dd) {
+        info.eventDate = combineDateTimeUTC(dd, document.getElementById('td_time'));
+        info.signupOpensAt = combineDateTimeUTC(document.getElementById('td_sudate'), document.getElementById('td_sutime'));
+        info.signupClosesAt = combineDateTimeUTC(document.getElementById('td_scdate'), document.getElementById('td_sctime'));
+        info.minTeams = document.getElementById('td_min').value;
+        info.maxTeams = document.getElementById('td_max').value;
+      }
+      await api('/api/t/' + T.id + '/edit_info', info);
+      toast('Details saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
   const claimSelf = document.getElementById('orgClaimSelf');
   if (claimSelf) claimSelf.onclick = async () => {
     try {
@@ -686,6 +728,8 @@ async function drawAdmin(el) {
   if (aiDescTa) { wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile')); wireMdToolbar(aiDescTa.previousElementSibling, aiDescTa); }
   const aiLobbyTa = document.getElementById('aiLobby');
   if (aiLobbyTa) { wireImagePaste(aiLobbyTa, descUploader, null, null); wireMdToolbar(aiLobbyTa.previousElementSibling, aiLobbyTa); }
+  const aiModsTa = document.getElementById('aiMods');
+  if (aiModsTa) wireMdToolbar(aiModsTa.previousElementSibling, aiModsTa);
   const aiRwTa = document.getElementById('aiRewards');
   if (aiRwTa) { wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile')); wireMdToolbar(aiRwTa.previousElementSibling, aiRwTa); }
   const aiSpTa = document.getElementById('aiSponsors');

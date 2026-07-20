@@ -135,10 +135,13 @@ async function renderHost() {
         ${mdToolbarHTML()}
         <textarea id="cLobby" maxlength="20000" rows="4" placeholder="e.g. 1500 unit cap, full share"></textarea>
         <label>Mods</label>
-        <input type="text" id="cMods" maxlength="500" placeholder="e.g. M28 / Random events">
+        ${mdToolbarHTML()}
+        <textarea id="cMods" maxlength="500" rows="2" placeholder="e.g. M28 / Random events"></textarea>
         <label>Rewards <span class="muted small">(optional)</span></label>
+        ${mdToolbarHTML()}
         <textarea id="cRewards" maxlength="2000" rows="3" placeholder="1st: avatar + 500 credits..."></textarea>
         <label>Sponsors <span class="muted small">(optional)</span></label>
+        ${mdToolbarHTML()}
         <textarea id="cSponsors" maxlength="2000" rows="3" placeholder="Powered by [YourSponsor](https://...)"></textarea>
         <label>Livestream links <span class="muted small">(optional)</span></label>
         <div id="cStreamRows"></div>
@@ -373,6 +376,12 @@ async function renderHost() {
   if (cDescTa) wireMdToolbar(cDescTa.previousElementSibling, cDescTa);
   const cLobbyTa = document.getElementById('cLobby');
   if (cLobbyTa) wireMdToolbar(cLobbyTa.previousElementSibling, cLobbyTa);
+  const cModsTa = document.getElementById('cMods');
+  if (cModsTa) wireMdToolbar(cModsTa.previousElementSibling, cModsTa);
+  const cRewardsTa = document.getElementById('cRewards');
+  if (cRewardsTa) wireMdToolbar(cRewardsTa.previousElementSibling, cRewardsTa);
+  const cSponsorsTa = document.getElementById('cSponsors');
+  if (cSponsorsTa) wireMdToolbar(cSponsorsTa.previousElementSibling, cSponsorsTa);
   const cVetoBox = document.getElementById('cVeto');
   const cVetoCfg = document.getElementById('cVetoCfg');
   if (cVetoBox && cVetoCfg) cVetoBox.onchange = () => { cVetoCfg.style.display = cVetoBox.checked ? '' : 'none'; };
@@ -835,8 +844,8 @@ function gameInfoPanel() {
     ${topCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
   </div>
     ${richCells.length ? '<div class="infogrid">' + richCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${c[1]}</div></div>`).join('') + '</div>' : ''}
-    ${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}
-    <div class="infocell briefing-wide"><div class="ic-label">Links</div><div class="ic-body">${faqLinksHTML()}</div></div>${gallery}</div>`;
+    ${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`
+    + `<div class="panel section"><h2>Links</h2><div class="ic-body">${faqLinksHTML()}</div></div>`;
 }
 
 // Always-present FAQ / rules links under the briefing. Official tournaments also link the
@@ -884,7 +893,7 @@ function newsPostHTML(n, admin) {
       <span class="muted small">${esc(fmtDateTime(n.at))} \u00b7 ${esc(n.by || 'Organizer')}${n.editedAt ? ' \u00b7 edited' : ''}</span>
       ${admin ? `<span class="news-actions"><a href="#" data-newsedit="${n.id}">edit</a> <a href="#" data-newsdel="${n.id}" class="danger-link">delete</a></span>` : ''}
     </div>
-    <div class="news-body">${esc(n.body)}</div>
+    <div class="news-body">${renderArticleBody(n.body)}</div>
   </div>`;
 }
 
@@ -896,7 +905,8 @@ function drawNews(el) {
   if (admin) {
     html += `<div class="panel section"><h2>Post an update</h2>
       <p class="muted small">Short updates for the players \u2014 newest shows on top and on the Overview. Tick "highlight" for things everyone must see (date moved, cancelled); leave it off for routine notes (player swap etc.).</p>
-      <textarea id="newsBody" rows="3" maxlength="1000" placeholder="e.g. Tourney moved from 18.07. to 20.07., same time."></textarea>
+      ${mdToolbarHTML()}
+      <textarea id="newsBody" rows="3" maxlength="1000" placeholder="e.g. Tourney moved from 18.07. to 20.07., same time. (supports **bold**, lists, links)"></textarea>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="newsImp"> Highlight as important (schedule change / cancellation)</label>
       <div style="margin-top:10px"><button class="btn primary" id="newsPost">Post update</button></div></div>`;
   }
@@ -911,6 +921,8 @@ function drawNews(el) {
   // opening the tab counts as reading everything currently posted
   newsMarkRead();
 
+  const nbTa = document.getElementById('newsBody');
+  if (nbTa) wireMdToolbar(nbTa.previousElementSibling, nbTa);
   const pb = document.getElementById('newsPost');
   if (pb) pb.onclick = async () => {
     const body = document.getElementById('newsBody').value.trim();
@@ -926,9 +938,12 @@ function drawNews(el) {
     const n = (T.news || []).find(x => x.id === a.dataset.newsedit);
     if (!n) return;
     modal(`<h3>Edit update</h3>
+      ${mdToolbarHTML()}
       <textarea id="neBody" rows="4" maxlength="1000">${esc(n.body)}</textarea>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="neImp" ${n.important ? 'checked' : ''}> Highlight as important</label>
       <div class="actions"><button class="btn ghost" id="neCancel">Cancel</button><button class="btn primary" id="neGo">Save</button></div>`, root => {
+      const neTa = root.querySelector('#neBody');
+      if (neTa) wireMdToolbar(neTa.previousElementSibling, neTa);
       root.querySelector('#neCancel').onclick = closeModal;
       root.querySelector('#neGo').onclick = async () => {
         try {
@@ -984,7 +999,7 @@ function drawOverview(el) {
         ${n.important ? '<span class="news-chip">Important</span>' : ''}
         <span class="muted small">${esc(fmtDateTime(n.at))}</span>
       </div>
-      <div class="news-body">${esc(n.body)}</div>
+      <div class="news-body">${renderArticleBody(n.body)}</div>
       <div class="muted small" style="margin-top:10px">To see all news for this tournament, <a href="#" data-goto="news">click here</a>${unread ? ' <span class="tab-badge">' + unread + '</span>' : ''}</div>
     </div>`;
   }
