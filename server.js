@@ -2744,6 +2744,37 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true, id: pool.id });
     }
 
+    // Copy one pool's ban/pick order onto others. Because the order length is welded to the
+    // map count (steps = maps - 1), only pools with the SAME number of maps can receive it;
+    // those are also the only ones where the pick count matches the same Bo. With applyAll,
+    // every same-size pool gets it; otherwise just the given targetIds.
+    if (sub === 'pool_copy_sequence') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const src = poolById(t, b.sourceId);
+      if (!src) return bad(res, 'Source pool not found');
+      const srcSize = (src.mapIds || []).length;
+      if (!(src.sequence || []).length) return bad(res, 'The source pool has no ban/pick order to copy yet');
+      if ((src.sequence || []).length !== srcSize - 1) return bad(res, 'Set a valid order on the source pool first');
+      let targets;
+      if (b.applyAll) {
+        targets = (t.mapPools || []).filter(pl => pl.id !== src.id && (pl.mapIds || []).length === srcSize);
+      } else {
+        const ids = Array.isArray(b.targetIds) ? b.targetIds : [];
+        targets = (t.mapPools || []).filter(pl => pl.id !== src.id && ids.indexOf(pl.id) >= 0);
+      }
+      const skipped = [];
+      let applied = 0;
+      for (const pl of targets) {
+        if ((pl.mapIds || []).length !== srcSize) { skipped.push(pl.name + ' (' + (pl.mapIds || []).length + ' maps)'); continue; }
+        pl.sequence = (src.sequence || []).map(x => ({ action: x.action, team: x.team }));
+        pl.bo = src.bo;   // same size + same order => same Bo
+        applied++;
+      }
+      tlog(t, req, b.admin, 'copied the ban/pick order from pool "' + src.name + '" to ' + applied + ' pool' + (applied === 1 ? '' : 's') + (b.applyAll ? ' (all with ' + srcSize + ' maps)' : ''));
+      saveDB();
+      return json(res, 200, { ok: true, applied, skipped });
+    }
+
     if (sub === 'pool_publish') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const pool = poolById(t, b.id);

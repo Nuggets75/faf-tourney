@@ -411,6 +411,7 @@ function drawMaps(el) {
           ${assignedTo.length ? '<div class="pool-card-assign">Used for: ' + assignedTo.map(a => esc(a)).join(', ') + '</div>' : (admin ? '<div class="pool-card-assign muted">Not assigned yet' + (pools.length === 1 ? ' (used as default)' : '') + '</div>' : '')}
           ${admin ? `<div class="pool-card-actions">
             <button class="btn ghost small" data-pooledit="${pool.id}">Edit</button>
+            ${(pool.sequence || []).length === names.length - 1 && names.length > 1 ? '<button class="btn ghost small" data-poolcopyseq="' + pool.id + '">Copy order to\u2026</button>' : ''}
             <button class="btn ghost small" data-poolassign="${pool.id}">Assign to rounds</button>
             <button class="btn ghost small" data-poolpub="${pool.id}">${pool.published ? 'Hide' : 'Publish'}</button>
             <button class="btn danger small" data-pooldel="${pool.id}">Delete</button>
@@ -463,6 +464,7 @@ function drawMaps(el) {
   const poolAdd = document.getElementById('poolAdd');
   if (poolAdd) poolAdd.onclick = () => editPool(null);
   el.querySelectorAll('[data-pooledit]').forEach(b => b.onclick = () => editPool((T.mapPools || []).find(p => p.id === b.dataset.pooledit)));
+  el.querySelectorAll('[data-poolcopyseq]').forEach(b => b.onclick = () => copyPoolSequence((T.mapPools || []).find(p => p.id === b.dataset.poolcopyseq)));
   el.querySelectorAll('[data-poolassign]').forEach(b => b.onclick = () => assignPool((T.mapPools || []).find(p => p.id === b.dataset.poolassign)));
   el.querySelectorAll('[data-poolpub]').forEach(b => b.onclick = async () => {
     const pool = (T.mapPools || []).find(p => p.id === b.dataset.poolpub);
@@ -545,6 +547,51 @@ function roundKeyLabel(bracket, round) {
 }
 
 // create/edit a map pool: name, which maps are in it, and its ban/pick order
+// Copy this pool's ban/pick order onto other pools. Only pools with the same map count are
+// eligible (the order length is fixed by map count), and those share the same Bo.
+function copyPoolSequence(src) {
+  if (!src) return;
+  const srcSize = (src.mapIds || []).length;
+  const eligible = (T.mapPools || []).filter(p => p.id !== src.id && (p.mapIds || []).length === srcSize);
+  const others = (T.mapPools || []).filter(p => p.id !== src.id && (p.mapIds || []).length !== srcSize);
+  const doCopy = async (body, msg) => {
+    try {
+      const r = await api('/api/t/' + T.id + '/pool_copy_sequence', Object.assign({ sourceId: src.id, admin: adminToken() }, body));
+      closeModal();
+      toast(msg(r));
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  if (!eligible.length) {
+    modal(`<h3>Copy ban/pick order</h3>
+      <p class="muted small">The order from <strong>${esc(src.name)}</strong> can only go to pools with the same number of maps (${srcSize}), because the order length is fixed by the map count. You have no other ${srcSize}-map pools right now.</p>
+      ${others.length ? '<p class="muted small">Different-size pools (need their own order): ' + others.map(p => esc(p.name) + ' (' + (p.mapIds || []).length + ')').join(', ') + '</p>' : ''}
+      <div class="actions"><button class="btn ghost" id="cpClose">Close</button></div>`, root => {
+      root.querySelector('#cpClose').onclick = closeModal;
+    });
+    return;
+  }
+  modal(`<h3>Copy ban/pick order from "${esc(src.name)}"</h3>
+    <p class="muted small">This copies the order (and Bo${src.bo || 1}) onto other <strong>${srcSize}-map</strong> pools. Pools with a different map count aren't shown \u2014 they need their own order.</p>
+    <div class="pick-rows" style="margin-top:6px">${eligible.map(p => `<label class="pick-row" style="cursor:pointer">
+      <span class="pr-name"><input type="checkbox" class="cpTarget" value="${p.id}" style="width:auto;margin-right:8px">${esc(p.name)} <span class="muted small">Bo${p.bo || 1}${(p.sequence || []).length ? '' : ' \u00b7 no order yet'}</span></span>
+    </label>`).join('')}</div>
+    ${others.length ? '<p class="muted small" style="margin-top:8px">Not eligible (different size): ' + others.map(p => esc(p.name) + ' (' + (p.mapIds || []).length + ')').join(', ') + '</p>' : ''}
+    <div class="actions" style="flex-wrap:wrap;gap:8px">
+      <button class="btn ghost" id="cpCancel">Cancel</button>
+      <button class="btn" id="cpAll">Apply to all ${srcSize}-map pools (${eligible.length})</button>
+      <button class="btn primary" id="cpSel">Apply to selected</button>
+    </div>`, root => {
+    root.querySelector('#cpCancel').onclick = closeModal;
+    root.querySelector('#cpAll').onclick = () => doCopy({ applyAll: 1 }, r => 'Applied to ' + r.applied + ' pool' + (r.applied === 1 ? '' : 's'));
+    root.querySelector('#cpSel').onclick = () => {
+      const ids = Array.from(root.querySelectorAll('.cpTarget:checked')).map(c => c.value);
+      if (!ids.length) return toast('Pick at least one pool, or use "Apply to all"', true);
+      doCopy({ targetIds: ids }, r => 'Applied to ' + r.applied + ' pool' + (r.applied === 1 ? '' : 's'));
+    };
+  });
+}
+
 function editPool(existing) {
   const pool = existing || { name: '', mapIds: [], sequence: [] };
   const db = T.mapDb || [];
