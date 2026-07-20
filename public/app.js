@@ -437,7 +437,7 @@ function drawTopbar(modeText) {
   topbarRight.innerHTML =
     '<button class="btn ghost small" id="navStart" title="Home">Overview</button>' +
     '<button class="btn ghost small" id="navHall" title="Hall of Fame">Hall of Fame</button>' +
-    '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">Rules</button>' +
+    '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">FAQ / Rules</button>' +
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
     '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' +
     (me()
@@ -445,9 +445,11 @@ function drawTopbar(modeText) {
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
     (siteAdmin()
       ? '<button class="btn ghost small" id="saLink" title="Open the site admin console">SITE ADMIN</button>'
-      : (fafAuth.user && fafAuth.user.editor
+      : (fafAuth.user && fafAuth.user.director
+        ? '<button class="btn ghost small" id="saLink" title="Open the tournament-director console">DIRECTOR</button>'
+        : (fafAuth.user && fafAuth.user.editor
         ? '<button class="btn ghost small" id="edLink" title="Open the articles editor">EDITOR</button>'
-        : (mode ? '<span>' + esc(mode) + '</span>' : ''))) +
+        : (mode ? '<span>' + esc(mode) + '</span>' : '')))) +
     '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Log out of site admin' : 'Site admin log in') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
@@ -618,15 +620,22 @@ async function renderSiteAdmin() {
   setTitle('Site admin');
   drawTopbar('');
   const app = document.getElementById('app');
-  if (!siteAdmin()) {
+  const isDirector = !!(fafAuth.user && fafAuth.user.director);
+  if (!siteAdmin() && !isDirector) {
     app.innerHTML = `<div class="page"><div class="panel"><div class="empty">
       Site admin only - use the lock button in the top right to log in.</div></div></div>`;
     return;
   }
+  // Directors see a reduced console (no Requests, no Directors management).
+  const director = !siteAdmin() && isDirector;
+  const validTabs = director ? ['bans', 'logs', 'archived', 'articles'] : ['requests', 'directors', 'bans', 'logs', 'archived', 'articles'];
+  if (validTabs.indexOf(saTab) < 0) saTab = validTabs[0];
   app.innerHTML = `<div class="page">
-    <h1 style="margin:0 0 14px">Site admin</h1>
+    <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
     <div class="tabs" style="margin-bottom:14px">
-      <button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>
+      ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
+      ${director ? '' : `<button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>`}
+      <button class="tab ${saTab === 'bans' ? 'active' : ''}" data-satab="bans">Tournament bans${(saData && (saData.bans || []).length) ? ' (' + saData.bans.length + ')' : ''}</button>
       <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
       <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
       <button class="tab ${saTab === 'articles' ? 'active' : ''}" data-satab="articles">Articles</button>
@@ -648,9 +657,110 @@ async function renderSiteAdmin() {
   }
   const body = document.getElementById('saBody');
   if (saTab === 'requests') drawSaRequests(body);
+  else if (saTab === 'directors') drawSaDirectors(body);
+  else if (saTab === 'bans') drawSaBans(body);
   else if (saTab === 'archived') drawSaArchived(body);
   else if (saTab === 'articles') drawSaArticles(body);
   else drawSaLogs(body);
+}
+
+// A small FAF-name search box shared by the Directors and Bans tabs. Resolves a name to a
+// {fafId,name} via /api/admin_lookup, then calls onPick.
+function adminLookupBox(container, onPick) {
+  container.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input type="text" class="alName" placeholder="Exact FAF name" autocomplete="off" style="flex:1;min-width:200px">
+    <button class="btn alGo">Look up</button></div>
+  <div class="alResult muted small" style="margin-top:6px"></div>`;
+  const name = container.querySelector('.alName');
+  const result = container.querySelector('.alResult');
+  const go = async () => {
+    const v = name.value.trim();
+    if (!v) return;
+    result.textContent = 'Looking up…';
+    try {
+      const r = await saPost('../admin_lookup'.replace('../', ''), { name: v }).catch(async () => {
+        // admin_lookup isn't under /siteadmin/, call it directly
+        const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: siteAdmin(), name: v }) });
+        const d = await rr.json().catch(() => ({}));
+        if (!rr.ok) throw new Error(d.error || 'Lookup failed');
+        return d;
+      });
+      result.innerHTML = '';
+      onPick(r, result);
+    } catch (e) { result.textContent = e.message; }
+  };
+  container.querySelector('.alGo').onclick = go;
+  name.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+}
+
+function drawSaDirectors(el) {
+  const dirs = saData.directors || [];
+  let html = `<div class="panel section"><h2>Global tournament directors <span class="h2-strong">(${dirs.length})</span></h2>
+    <p class="muted small">Directors get organizer rights on every <strong>official</strong> tournament (not community ones), plus this console's Logs, Archived, Articles and Tournament bans tabs (not Requests or director management).</p>
+    <div id="dirAdd" style="margin:10px 0"></div>`;
+  if (!dirs.length) html += '<div class="empty">No directors yet.</div>';
+  else html += '<div>' + dirs.map(d => `<div class="sa-req">
+    <div class="sa-req-main"><div class="sa-req-name">${esc(d.name)} <span class="muted small">FAF id ${esc(d.fafId)}</span></div><div class="muted small">Added ${esc(fmtWhen(d.at))}</div></div>
+    <div class="sa-req-act"><button class="btn danger small" data-dirrev="${esc(d.fafId)}">Remove</button></div>
+  </div>`).join('') + '</div>';
+  html += '</div>';
+  el.innerHTML = html;
+  adminLookupBox(el.querySelector('#dirAdd'), (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="dirGrantGo">Make director</button>`;
+    result.querySelector('#dirGrantGo').onclick = async () => {
+      try { await saPost('director_grant', { fafId: found.fafId, name: found.name }); toast('Director added'); renderSiteAdmin(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
+  el.querySelectorAll('[data-dirrev]').forEach(b => b.onclick = async () => {
+    if (!confirm('Remove this director? They will lose access to all official tournaments.')) return;
+    try { await saPost('director_revoke', { fafId: b.dataset.dirrev }); toast('Removed'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+function drawSaBans(el) {
+  const bans = saData.bans || [];
+  const today = new Date().toISOString().slice(0, 10);
+  let html = `<div class="panel section"><h2>Tournament bans <span class="h2-strong">(${bans.length})</span></h2>
+    <p class="muted small">Banned accounts can't sign up, be added, or be invited to <strong>official</strong> tournaments (community tournaments are unaffected). Set an expiry date; it's changeable any time. An expired ban stops applying automatically.</p>
+    <div id="banAdd" style="margin:10px 0"></div>`;
+  if (!bans.length) html += '<div class="empty">Nobody is banned.</div>';
+  else html += '<table><thead><tr><th>Player</th><th>Reason</th><th>Expires</th><th></th></tr></thead><tbody>' +
+    bans.map(b => {
+      const expired = b.expires && new Date(b.expires).getTime() < Date.now();
+      return `<tr>
+        <td>${esc(b.name)} <span class="muted small">${esc(b.fafId)}</span></td>
+        <td class="small">${esc(b.reason || '—')}</td>
+        <td class="small">${b.expires ? '<input type="date" class="banExp" data-fid="' + esc(b.fafId) + '" data-name="' + esc(b.name) + '" value="' + esc(b.expires.slice(0, 10)) + '">' + (expired ? ' <span class="idbadge late">expired</span>' : '') : '<input type="date" class="banExp" data-fid="' + esc(b.fafId) + '" data-name="' + esc(b.name) + '" value=""> <span class="muted small">no expiry</span>'}</td>
+        <td><button class="btn danger small" data-banrem="${esc(b.fafId)}">Lift ban</button></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+  html += '</div>';
+  el.innerHTML = html;
+  adminLookupBox(el.querySelector('#banAdd'), (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)})
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="banReason" placeholder="Reason (optional)" maxlength="300" style="flex:1;min-width:180px">
+        <label class="muted small">Expires <input type="date" id="banExpNew" min="${today}"></label>
+        <button class="btn danger small" id="banGo">Ban</button>
+      </div>`;
+    result.querySelector('#banGo').onclick = async () => {
+      try {
+        await saPost('ban_set', { fafId: found.fafId, name: found.name, reason: result.querySelector('#banReason').value, expires: result.querySelector('#banExpNew').value || null });
+        toast('Ban set'); renderSiteAdmin();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
+  el.querySelectorAll('[data-banrem]').forEach(b => b.onclick = async () => {
+    if (!confirm('Lift this ban?')) return;
+    try { await saPost('ban_remove', { fafId: b.dataset.banrem }); toast('Ban lifted'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('.banExp').forEach(inp => inp.onchange = async () => {
+    try { await saPost('ban_set', { fafId: inp.dataset.fid, name: inp.dataset.name, expires: inp.value || null }); toast('Expiry updated'); }
+    catch (e) { toast(e.message, true); renderSiteAdmin(); }
+  });
 }
 
 function drawSaRequests(el) {
@@ -926,15 +1036,25 @@ function drawSaArticles(el) {
   let html = `<div class="panel section"><div class="row" style="justify-content:space-between;align-items:center">
     <h2 style="margin:0">FAQ / Rules articles (${arts.length})</h2>
     <button class="btn primary small" id="saArtNew">+ New article</button></div>`;
-  const childrenOf = (id) => arts.filter(a => a.parentId === id);
-  const top = arts.filter(a => !a.parentId);
+  const active = arts.filter(a => !a.archived);
+  const archived = arts.filter(a => a.archived);
+  const childrenOf = (id) => active.filter(a => a.parentId === id);
+  const top = active.filter(a => !a.parentId);
   const row = (a, isChild) => `<div class="sa-req" style="${isChild ? 'margin-left:24px;border-left:2px solid var(--line-solid)' : ''}">
-      <div class="sa-req-main"><div class="sa-req-name">${isChild ? '\u21B3 ' : ''}${esc(a.title)}${isChild ? ' <span class="idbadge late">sub-page</span>' : ''}</div><div class="muted small">Updated ${esc(fmtWhen(a.updatedAt || a.createdAt))}</div></div>
-      <div class="sa-req-act"><button class="btn ghost small" data-artedit="${a.id}">Edit</button><button class="btn danger small" data-artdel="${a.id}">Delete</button></div>
+      <div class="sa-req-main"><div class="sa-req-name">${isChild ? '\u21B3 ' : ''}${esc(a.title)}${isChild ? ' <span class="idbadge late">sub-page</span>' : ''}</div><div class="muted small">Updated ${esc(fmtWhen(a.updatedAt || a.createdAt))} \u00b7 <span class="mono">${esc(a.id)}</span></div></div>
+      <div class="sa-req-act"><button class="btn ghost small" data-artedit="${a.id}">Edit</button><button class="btn ghost small" data-artarch="${a.id}">Archive</button></div>
     </div>`;
-  if (!arts.length) html += '<div class="empty" style="margin-top:10px">No articles yet. These show on the public Rules page. Make a top-level page, then attach sub-pages to it to keep things short.</div>';
+  if (!active.length) html += '<div class="empty" style="margin-top:10px">No articles yet. These show on the public Rules page. Make a top-level page, then attach sub-pages to it to keep things short.</div>';
   else html += '<div style="margin-top:10px">' + top.map(a => row(a, false) + childrenOf(a.id).map(c => row(c, true)).join('')).join('') + '</div>';
   html += '</div>';
+  if (archived.length) {
+    html += `<div class="panel section"><h2>Archived articles <span class="h2-strong">(${archived.length})</span></h2>
+      <p class="muted small">Hidden from the public FAQ but kept. Restore to bring one back exactly as it was.</p>
+      <div style="margin-top:10px">${archived.map(a => `<div class="sa-req" style="opacity:.8">
+        <div class="sa-req-main"><div class="sa-req-name">${esc(a.title)}</div><div class="muted small">Archived ${esc(fmtWhen(a.archivedAt || a.updatedAt))} \u00b7 <span class="mono">${esc(a.id)}</span></div></div>
+        <div class="sa-req-act"><button class="btn ghost small" data-artedit="${a.id}">Edit</button><button class="btn primary small" data-artrestore="${a.id}">Restore</button></div>
+      </div>`).join('')}</div></div>`;
+  }
   el.innerHTML = html;
 
   const editor = (art) => {
@@ -1000,9 +1120,13 @@ function drawSaArticles(el) {
   };
   const nb = document.getElementById('saArtNew'); if (nb) nb.onclick = () => editor(null);
   el.querySelectorAll('[data-artedit]').forEach(b => b.onclick = () => editor(arts.find(a => a.id === b.dataset.artedit)));
-  el.querySelectorAll('[data-artdel]').forEach(b => b.onclick = async () => {
-    if (!confirm('Delete this article?')) return;
-    try { await saPost('article_delete', { id: b.dataset.artdel }); toast('Deleted'); saRefresh(); }
+  el.querySelectorAll('[data-artarch]').forEach(b => b.onclick = async () => {
+    if (!confirm('Archive this article? It will be hidden from the public FAQ but can be restored.')) return;
+    try { await saPost('article_delete', { id: b.dataset.artarch }); toast('Archived'); saRefresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-artrestore]').forEach(b => b.onclick = async () => {
+    try { await saPost('article_delete', { id: b.dataset.artrestore, restore: 1 }); toast('Restored'); saRefresh(); }
     catch (e) { toast(e.message, true); }
   });
 }

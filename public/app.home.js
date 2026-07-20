@@ -35,8 +35,8 @@ async function renderHome() {
     const d = Math.floor(ms / 86400000), h = Math.floor(ms % 86400000 / 3600000), mn = Math.floor(ms % 3600000 / 60000);
     const parts = [];
     if (d) parts.push(d + ' day' + (d === 1 ? '' : 's'));
-    if (h || d) parts.push(h + ' hr' + (h === 1 ? '' : 's'));
-    parts.push(mn + ' mnt' + (mn === 1 ? '' : 's'));
+    if (h || d) parts.push(h + ' h');
+    parts.push(mn + ' min');
     return parts.join(', ');
   };
 
@@ -65,6 +65,11 @@ async function renderHome() {
           : t.minRating != null ? 'Rating ' + t.minRating + '+' : 'Rating up to ' + t.maxRating;
       }
       if (t.maxTeamRating != null) ratingLine += (ratingLine ? ' \u00b7 ' : '') + 'Team cap ' + t.maxTeamRating;
+      const unit = t.competition === 'ffa' ? 'players' : (t.teamSize === 1 ? 'players' : 'teams');
+      let teamsLine = '';
+      if (t.minTeams && t.maxTeams) teamsLine = t.minTeams + '\u2013' + t.maxTeams + ' ' + unit;
+      else if (t.minTeams) teamsLine = 'min ' + t.minTeams + ' ' + unit;
+      else if (t.maxTeams) teamsLine = 'max ' + t.maxTeams + ' ' + unit;
       const signupEta = (t.status === 'signup' && !t.abandoned && t.signupOpensAt) ? eta(t.signupOpensAt) : null;
       const eventEta = (!t.abandoned && ['signup', 'draft', 'drafted'].indexOf(t.status) >= 0 && t.eventDate) ? eta(t.eventDate) : null;
       const countdown = signupEta
@@ -76,7 +81,7 @@ async function renderHome() {
       div.innerHTML = `
         <div>
           <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="catbox ' + (t.category === 'official' ? 'official' : 'community') + '">' + (t.category === 'official' ? 'OFFICIAL' : 'COMMUNITY') + '</span>' : ''}</div>
-          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}</div>
+          <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}</div>
         </div>
         <span style="display:flex;align-items:center;gap:10px">
           ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
@@ -104,8 +109,15 @@ async function renderHost() {
   stopPoll();
   drawTopbar('');
   app.innerHTML = `
-    <div class="page" style="max-width:640px">
+    <div class="page" style="max-width:900px">
       <p style="margin:0 0 16px"><a href="/">\u2190 Back to tournaments</a></p>
+      <div class="panel section" id="copyFromPanel">
+        <label>Copy from an existing tournament <span class="muted small">(optional \u2014 fills everything except dates; maps are copied later on the Maps tab)</span></label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="cCopyFrom" style="flex:1;min-width:220px"><option value="">\u2014 Start blank \u2014</option></select>
+          <button class="btn ghost small" id="cCopyBtn">Fill from this</button>
+        </div>
+      </div>
       <div class="panel section">
         <h2>Host a <span class="h2-strong">Tournament</span></h2>
         <label>Tournament name</label>
@@ -114,6 +126,8 @@ async function renderHost() {
         <div style="display:flex;gap:8px"><input type="date" id="cDate" style="flex:1"><input type="time" id="cTime" style="width:130px"></div>
         <label>Signups open at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 before this, only organizers can add players)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cSuDate" style="flex:1"><input type="time" id="cSuTime" style="width:130px"></div>
+        <label>Signups close at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 after this, signups auto-close; team forming &amp; captain picks still work. Leave empty to close manually)</span></label>
+        <div style="display:flex;gap:8px"><input type="date" id="cScDate" style="flex:1"><input type="time" id="cScTime" style="width:130px"></div>
         <label>Description (rules, schedule)</label>
         ${mdToolbarHTML()}
         <textarea id="cDesc" maxlength="20000" rows="6" placeholder="Sunday 19:00 CEST. Check-in in Discord... (supports **bold**, headings, lists, links)"></textarea>
@@ -126,8 +140,9 @@ async function renderHost() {
         <textarea id="cRewards" maxlength="2000" rows="3" placeholder="1st: avatar + 500 credits..."></textarea>
         <label>Sponsors <span class="muted small">(optional)</span></label>
         <textarea id="cSponsors" maxlength="2000" rows="3" placeholder="Powered by [YourSponsor](https://...)"></textarea>
-        <label>Livestream links <span class="muted small">(optional, one per line: URL then a space then info)</span></label>
-        <textarea id="cStreams" maxlength="1500" rows="3" placeholder="https://twitch.tv/faflive Main stream (English)"></textarea>
+        <label>Livestream links <span class="muted small">(optional)</span></label>
+        <div id="cStreamRows"></div>
+        <button class="btn ghost small" id="cStreamAdd" type="button">+ Add another stream</button>
 
         <label>Competition</label>
         <select id="cComp">
@@ -240,8 +255,12 @@ async function renderHost() {
           </div>
         </div>
 
-        <label>Max ${'\u200b'}teams / entrants (0 = unlimited)</label>
-        <input type="number" id="cMaxTeams" min="0" max="128" value="0" autocomplete="off">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:160px"><label>Min ${'\u200b'}teams / entrants <span class="muted small">(0 = none; display only)</span></label>
+          <input type="number" id="cMinTeams" min="0" max="128" value="0" autocomplete="off"></div>
+          <div style="flex:1;min-width:160px"><label>Max ${'\u200b'}teams / entrants <span class="muted small">(0 = unlimited)</span></label>
+          <input type="number" id="cMaxTeams" min="0" max="128" value="0" autocomplete="off"></div>
+        </div>
 
         <label>Seeding</label>
         <select id="cSeed">
@@ -358,6 +377,84 @@ async function renderHost() {
   const cVetoCfg = document.getElementById('cVetoCfg');
   if (cVetoBox && cVetoCfg) cVetoBox.onchange = () => { cVetoCfg.style.display = cVetoBox.checked ? '' : 'none'; };
 
+  // livestream rows (same style as the Admin tab)
+  const streamRows = document.getElementById('cStreamRows');
+  const addStreamRow = (url, info) => {
+    const div = document.createElement('div');
+    div.className = 'row stream-row';
+    div.style.cssText = 'display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap';
+    div.innerHTML = '<input type="text" class="stUrl" placeholder="https://twitch.tv/..." maxlength="300" style="flex:2;min-width:200px" autocomplete="off">'
+      + '<input type="text" class="stInfo" placeholder="Info, e.g. Main stream (English)" maxlength="120" style="flex:2;min-width:200px" autocomplete="off">';
+    if (url) div.querySelector('.stUrl').value = url;
+    if (info) div.querySelector('.stInfo').value = info;
+    streamRows.appendChild(div);
+  };
+  addStreamRow();
+  document.getElementById('cStreamAdd').onclick = () => addStreamRow();
+
+  // Copy-from: list the tournaments this account organizes, then pre-fill on demand.
+  const copySel = document.getElementById('cCopyFrom');
+  (async () => {
+    try {
+      const r = await api('/api/my_tournaments');
+      const list = (r.tournaments || []);
+      if (!list.length) { document.getElementById('copyFromPanel').style.display = 'none'; return; }
+      for (const t of list) {
+        const o = document.createElement('option');
+        o.value = t.id; o.textContent = t.name + (t.category ? ' (' + t.category + ')' : '');
+        copySel.appendChild(o);
+      }
+    } catch (e) { document.getElementById('copyFromPanel').style.display = 'none'; }
+  })();
+  document.getElementById('cCopyBtn').onclick = async () => {
+    const id = copySel.value;
+    if (!id) return toast('Pick a tournament to copy from', true);
+    let src;
+    try { src = await api('/api/t/' + id + (siteAdmin() ? '?token=' + encodeURIComponent(siteAdmin()) : '')); }
+    catch (e) { return toast(e.message, true); }
+    prefillFromTournament(src);
+    toast('Filled from "' + src.name + '" \u2014 review, then create. Maps are copied on the Maps tab afterwards.');
+  };
+
+  // Pre-fill every creation field from a source tournament EXCEPT event/signup dates.
+  function prefillFromTournament(t) {
+    const setv = (id, v) => { const el = document.getElementById(id); if (el != null && v != null) el.value = v; };
+    const setc = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+    setv('cName', t.name || '');
+    setv('cDesc', t.description || ''); setv('cLobby', t.lobbyOptions || ''); setv('cMods', t.mods || '');
+    setv('cRewards', t.rewards || ''); setv('cSponsors', t.sponsors || '');
+    if (document.getElementById('cCategory')) setv('cCategory', t.category || '');
+    setv('cRatingType', t.ratingType || 'none'); setv('cRatingDate', t.ratingDate || '');
+    setv('cSignupMode', t.signupMode || 'open'); setc('cPlayerReporting', t.playerReporting !== 0);
+    setv('cMinRating', t.minRating != null ? t.minRating : ''); setv('cMaxRating', t.maxRating != null ? t.maxRating : '');
+    setv('cMaxTeamRating', t.maxTeamRating != null ? t.maxTeamRating : ''); setv('cRatingCap', t.ratingCap != null ? t.ratingCap : '');
+    setv('cMaxTeams', t.maxTeams || ''); setv('cMinTeams', t.minTeams || '');
+    // competition / format
+    if (comp) { comp.value = t.competition || 'team'; }
+    if (t.competition === 'ffa') { if (ffaSize) ffaSize.value = t.teamSize; }
+    else { if (size) size.value = t.teamSize; if (formation) formation.value = t.formation || 'draft'; if (cBracket) cBracket.value = t.bracketType || 'single'; }
+    setv('cDraftOrder', t.draftOrder || 'linear');
+    setv('cSeed', t.seeding || '');
+    // plan / Bo
+    const pl = t.plan || {};
+    if (t.bracketType === 'single') { setv('pEarly', pl.early); setv('pSemi', pl.semi); setv('pFinal', pl.final); }
+    else if (t.bracketType === 'double') { setv('pWb', pl.wb); setv('pWbFinal', pl.wbFinal); setv('pLb', pl.lb); setv('pLbFinal', pl.lbFinal); setv('pGf', pl.gf); setc('pHcap', pl.lbHandicap); }
+    else if (t.bracketType === 'swiss') { setv('pSwBo', pl.bo); setc('pSwFinal', pl.final); setv('pSwFinalBo', pl.finalBo); setc('pSwFast', pl.fast); }
+    if (t.competition === 'ffa' && t.ffa) {
+      setv('cAdvance', t.ffa.advance); setv('cFfaRounds', t.ffa.rounds);
+      if (perMatch) perMatch.value = t.ffa.perMatch; if (ffaMode) ffaMode.value = t.ffa.mode || 'elim';
+    }
+    // veto config (not the maps themselves)
+    if (t.veto) { setc('cVeto', t.veto.enabled); setv('cVetoMode', t.veto.mode || 'upfront'); setv('cVetoAb', t.veto.abMode || 'lowerA'); if (cVetoCfg) cVetoCfg.style.display = t.veto.enabled ? '' : 'none'; }
+    // streams
+    streamRows.innerHTML = '';
+    (t.streams || []).forEach(st => addStreamRow(st.url, st.info));
+    if (!streamRows.children.length) addStreamRow();
+    // rich previews / dependent selects
+    if (cDescTa) cDescTa.dispatchEvent(new Event('input'));
+    syncVis();
+  }
+
   document.getElementById('cGo').onclick = async () => {
     const name = document.getElementById('cName').value.trim();
     if (!name) return toast('Give the tournament a name', true);
@@ -383,6 +480,7 @@ async function renderHost() {
         bracketType: bt,
         plan,
         maxTeams: document.getElementById('cMaxTeams').value,
+        minTeams: document.getElementById('cMinTeams').value,
         perMatch: perMatch.value,
         advance: ffaMode.value === 'elim' ? document.getElementById('cAdvance').value : 1,
         mode: ffaMode.value,
@@ -397,10 +495,11 @@ async function renderHost() {
         admin: siteAdmin() || undefined,
         rewards: document.getElementById('cRewards').value,
         sponsors: document.getElementById('cSponsors').value,
-        streams: document.getElementById('cStreams').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const sp = l.indexOf(' '); return sp < 0 ? { url: l, info: '' } : { url: l.slice(0, sp), info: l.slice(sp + 1).trim() }; }),
+        streams: Array.from(document.querySelectorAll('#cStreamRows .stream-row')).map(r => ({ url: r.querySelector('.stUrl').value.trim(), info: r.querySelector('.stInfo').value.trim() })).filter(x => x.url),
         veto: { enabled: document.getElementById('cVeto').checked, mode: document.getElementById('cVetoMode').value, abMode: document.getElementById('cVetoAb').value },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime')),
         signupOpensAt: combineDateTimeUTC(document.getElementById('cSuDate'), document.getElementById('cSuTime')),
+        signupClosesAt: combineDateTimeUTC(document.getElementById('cScDate'), document.getElementById('cScTime')),
         minRating: document.getElementById('cMinRating').value,
         maxRating: document.getElementById('cMaxRating').value,
         maxTeamRating: document.getElementById('cMaxTeamRating').value,
@@ -430,7 +529,7 @@ async function loadTournament() {
 }
 
 // When someone opens an organizer link (?admin=), confirm they want to become an organizer.
-function maybePromptOrganizerClaim() {
+async function maybePromptOrganizerClaim() {
   const claim = pendingOrganizerClaim;
   if (!claim || claim.id !== tourneyId()) return;
   pendingOrganizerClaim = null;
@@ -449,20 +548,13 @@ function maybePromptOrganizerClaim() {
     });
     return;
   }
-  modal(`<h3>Join as organizer?</h3>
-    <p>Do you want to join <strong>${esc(T.name)}</strong> as an organizer?</p>
-    <p class="muted small">You'll be able to manage signups, teams, the bracket, and replace players.</p>
-    <div class="actions"><button class="btn ghost" id="ocNo">No thanks</button><button class="btn primary" id="ocYes">Yes, join as organizer</button></div>`, root => {
-    root.querySelector('#ocNo').onclick = closeModal;
-    root.querySelector('#ocYes').onclick = async () => {
-      try {
-        await api('/api/t/' + claim.id + '/claim_organizer', { adminToken: claim.token });
-        closeModal();
-        toast('You are now an organizer');
-        await refresh();
-      } catch (e) { toast(e.message, true); }
-    };
-  });
+  // Opening the organizer link makes you an organizer automatically — no prompt. Only a
+  // site admin can remove an organizer afterwards.
+  try {
+    await api('/api/t/' + claim.id + '/claim_organizer', { adminToken: claim.token });
+    toast('You are now an organizer of ' + T.name);
+    await refresh();
+  } catch (e) { toast(e.message, true); }
 }
 
 // When someone opens a late-signup link (?late=), confirm they want to sign up late.
@@ -715,8 +807,10 @@ function gameInfoPanel() {
     ? 'Rating: ' + ratingTypeLabel(T.ratingType) + (T.ratingDate ? ', taken as of ' + new Date(T.ratingDate).toLocaleDateString() : ', taken at signup time') + ' — pulled from FAF'
     : 'Rating: entered by players';
   const headline = [typeTxt, ratingTxt].filter(Boolean).join(' · ');
-  const cells = [];
-  cells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
+  // Format + rating requirements are always short — put them in a compact top row of their
+  // own so they don't get stretched by a long Lobby options block underneath.
+  const topCells = [];
+  topCells.push(['Format', typeLine(T) + '\n' + planSummary(T)]);
   if (T.minRating != null || T.maxRating != null || T.maxTeamRating != null || T.ratingCap != null) {
     const parts = [];
     if (T.minRating != null && T.maxRating != null) parts.push('Player rating ' + T.minRating + '\u2013' + T.maxRating);
@@ -724,19 +818,40 @@ function gameInfoPanel() {
     else if (T.maxRating != null) parts.push('Player rating up to ' + T.maxRating);
     if (T.maxTeamRating != null) parts.push('Max combined team rating ' + T.maxTeamRating);
     if (T.ratingCap != null) parts.push('Ratings above ' + T.ratingCap + ' count as ' + T.ratingCap + ' (capped)');
-    cells.push(['Rating requirements', parts.join('\n') + '\n(organizer invites/adds are exempt from min/max)']);
+    topCells.push(['Rating requirements', parts.join('\n') + '\n(organizer invites/adds are exempt from min/max)']);
   }
-  if (T.lobbyOptions) cells.push(['Lobby options', T.lobbyOptions]);
-  if (T.mods) cells.push(['Mods', T.mods]);
+  // Lobby options and mods can be long and support formatting — their own row, rendered rich.
+  const richCells = [];
+  if (T.lobbyOptions) richCells.push(['Lobby options', renderArticleBody(T.lobbyOptions)]);
+  if (T.mods) richCells.push(['Mods', renderArticleBody(T.mods)]);
+
   const inlineRef = (T.description || '') + ' ' + (T.rewards || '') + ' ' + (T.sponsors || '');
   const imgs = (T.descImages || []).filter(f => inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) < 0 && inlineRef.indexOf('/desc-images/' + f) < 0);
   const gallery = imgs.length ? `<div class="desc-gallery">${imgs.map(f => `<a href="/desc-images/${encodeURIComponent(f)}" target="_blank" rel="noopener"><img src="/desc-images/${encodeURIComponent(f)}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
-  if (!cells.length && !imgs.length && !T.description && !headline) return '';
+  if (!topCells.length && !richCells.length && !imgs.length && !T.description && !headline) return '';
   return `<div class="panel section"><h2>Game <span class="h2-strong">Setup</span></h2>
     ${headline ? '<p class="setup-headline">' + esc(headline) + '</p>' : ''}
-    <div class="infogrid">
-    ${cells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
-  </div>${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}${gallery}</div>`;
+    <div class="infogrid infogrid-top">
+    ${topCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${esc(c[1])}</div></div>`).join('')}
+  </div>
+    ${richCells.length ? '<div class="infogrid">' + richCells.map(c => `<div class="infocell"><div class="ic-label">${esc(c[0])}</div><div class="ic-body">${c[1]}</div></div>`).join('') + '</div>' : ''}
+    ${T.description ? '<div class="infocell briefing-wide"><div class="ic-label">Briefing</div><div class="ic-body">' + renderArticleBody(T.description) + '</div></div>' : ''}
+    <div class="infocell briefing-wide"><div class="ic-label">Links</div><div class="ic-body">${faqLinksHTML()}</div></div>${gallery}</div>`;
+}
+
+// Always-present FAQ / rules links under the briefing. Official tournaments also link the
+// three governing articles directly (by article id, so a domain change doesn't break them).
+function faqLinksHTML() {
+  const rows = [`<div><a href="/faq">FAQ / Rules</a></div>`];
+  if (T.category === 'official') {
+    const arts = [
+      ['FAF Official Tournament Payout Guidelines', '/faq?p=art33adc81d9f78'],
+      ['Official FAF Tournament Rules', '/faq?p=art8f783c6882c5'],
+      ['Tournament Code of Conduct', '/faq?p=art7e0d7816a012'],
+    ];
+    arts.forEach(a => rows.push(`<div><a href="${a[1]}">${esc(a[0])}</a></div>`));
+  }
+  return '<div class="faq-links">' + rows.join('') + '</div>';
 }
 
 // ---- tournament news: read tracking + rendering ----
@@ -841,7 +956,7 @@ function drawOverview(el) {
     html += `<div class="datebar">
       <span class="db-label">${esc(dateLabel)}</span>
       <span class="db-value">${dv ? esc(fmtDateTime(dv)) : '<span class="muted">not set</span>'}</span>
-      ${canEditDate ? '<button class="btn ghost small" id="editDateBtn">' + (dv ? 'Change' : 'Set date') + '</button>' : ''}
+      ${canEditDate ? '<button class="btn ghost small" id="editDateBtn">' + (dv ? 'Edit details' : 'Set date &amp; details') + '</button>' : ''}
     </div>`;
   }
 
@@ -879,9 +994,9 @@ function drawOverview(el) {
   }
 
   if (T.rewards || T.sponsors) {
-    const rw = T.rewards ? `<div class="panel section reward-panel" style="flex:1;min-width:280px"><h2>Rewards</h2>
+    const rw = T.rewards ? `<div class="panel section" style="flex:1;min-width:280px"><h2>Rewards</h2>
       <div class="ic-body reward-body">${renderArticleBody(T.rewards)}</div></div>` : '';
-    const sp = T.sponsors ? `<div class="panel section sponsor-panel" style="flex:1;min-width:280px"><h2>Sponsors</h2>
+    const sp = T.sponsors ? `<div class="panel section" style="flex:1;min-width:280px"><h2>Sponsors</h2>
       <div class="ic-body reward-body">${renderArticleBody(T.sponsors)}</div></div>` : '';
     html += `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">${rw}${sp}</div>`;
   }
@@ -924,30 +1039,51 @@ function drawOverview(el) {
     const cur = (!T.imported ? T.eventDate : (T.eventDate || '')) || '';
     const parts = splitDateTimeUTC(cur);
     const suParts = splitDateTimeUTC(T.signupOpensAt || '');
-    modal(`<h3>${T.imported ? 'Set display date' : 'Event date &amp; time'}</h3>
-      <p class="muted small">Enter times in <strong>UTC</strong>. They display in each viewer's chosen time zone. Leave blank to clear.</p>
+    const scParts = splitDateTimeUTC(T.signupClosesAt || '');
+    modal(`<h3>Tournament details</h3>
+      <label>Tournament name</label>
+      <input type="text" id="edName" maxlength="60" value="${esc(T.name || '')}">
+      <p class="muted small" style="margin-top:12px">Enter times in <strong>UTC</strong>. They display in each viewer's chosen time zone. Leave blank to clear.</p>
+      <label>${T.imported ? 'Display date' : 'Event date &amp; time'}</label>
       <div style="display:flex;gap:8px">
         <input type="date" id="edDate" value="${esc(parts.date)}" style="flex:1">
         <input type="time" id="edTime" value="${esc(parts.time)}" style="width:130px">
       </div>
-      <div class="muted small" style="margin-top:6px">Date only (no time) is fine — just leave the time blank.</div>
       ${T.imported ? '' : `<label style="margin-top:12px">Signups open at <span class="muted small">(optional — before this, only organizers can add players)</span></label>
       <div style="display:flex;gap:8px">
         <input type="date" id="edSuDate" value="${esc(suParts.date)}" style="flex:1">
         <input type="time" id="edSuTime" value="${esc(suParts.time)}" style="width:130px">
+      </div>
+      <label style="margin-top:12px">Signups close at <span class="muted small">(optional — auto-closes signups; team forming &amp; picks still work. Empty = manual)</span></label>
+      <div style="display:flex;gap:8px">
+        <input type="date" id="edScDate" value="${esc(scParts.date)}" style="flex:1">
+        <input type="time" id="edScTime" value="${esc(scParts.time)}" style="width:130px">
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
+        <div style="flex:1;min-width:150px"><label>Min teams / entrants <span class="muted small">(display only)</span></label><input type="number" id="edMinTeams" min="0" max="128" value="${T.minTeams || 0}"></div>
+        <div style="flex:1;min-width:150px"><label>Max teams / entrants <span class="muted small">(0 = unlimited)</span></label><input type="number" id="edMaxTeams" min="0" max="128" value="${T.maxTeams || 0}"></div>
       </div>`}
       <div class="actions"><button class="btn ghost" id="edCancel">Cancel</button><button class="btn primary" id="edSave">Save</button></div>`, root => {
       root.querySelector('#edCancel').onclick = closeModal;
       root.querySelector('#edSave').onclick = async () => {
         const v = combineDateTimeUTC(root.querySelector('#edDate'), root.querySelector('#edTime'));
         try {
+          // dates go through edit_date; name / close / team counts through edit_info
           const body = { eventDate: v, admin: myToken() };
           const sd = root.querySelector('#edSuDate');
           if (sd) body.signupOpensAt = combineDateTimeUTC(sd, root.querySelector('#edSuTime'));
           await api('/api/t/' + T.id + '/edit_date', body);
+          const info = { admin: myToken() };
+          const nm = root.querySelector('#edName').value.trim();
+          if (nm) info.name = nm;
+          const sc = root.querySelector('#edScDate');
+          if (sc) { info.signupClosesAt = combineDateTimeUTC(sc, root.querySelector('#edScTime')); }
+          const mn = root.querySelector('#edMinTeams'); if (mn) info.minTeams = mn.value;
+          const mx = root.querySelector('#edMaxTeams'); if (mx) info.maxTeams = mx.value;
+          await api('/api/t/' + T.id + '/edit_info', info);
           closeModal();
           await refresh();
-          toast(v ? 'Date updated' : 'Date cleared');
+          toast('Details updated');
         } catch (e) { toast(e.message, true); }
       };
     });

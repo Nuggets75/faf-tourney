@@ -145,7 +145,7 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .catbox { display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: 1px; border-radius: 3px; padding: 2px 7px; margin-left: 8px; vertical-align: middle; }
 .catbox.official { color: var(--green); border: 1px solid #2f6b45; background: #12331f; }
 .catbox.community { color: var(--muted); border: 1px solid var(--line-solid); background: #141d28; }
-.countchip { display: inline-block; font-family: var(--display); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #1a1206; background: var(--amber); border-radius: 3px; padding: 5px 12px; font-weight: 700; white-space: nowrap; }
+.countchip { display: inline-block; font-family: var(--display); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); background: #2a2113; border: 1px solid #6b5220; border-radius: 3px; padding: 5px 12px; font-weight: 700; white-space: nowrap; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* phase stepper */
@@ -420,6 +420,8 @@ tbody tr:hover { background: #ffffff05; }
 .faq-sublinks { display: flex; flex-direction: column; gap: 6px; }
 .faq-sublink { display: inline-block; padding: 8px 12px; border: 1px solid var(--line-solid); border-left: 3px solid var(--amber); border-radius: 4px; background: var(--panel2); color: var(--text); font-size: 14px; }
 .faq-sublink:hover { border-color: var(--amber); color: var(--amber); }
+.faq-links { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.faq-links a { color: var(--blue); }
 .stream-line { font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
 /* chat */
 .chat-layout { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
@@ -531,6 +533,8 @@ tbody tr:hover { background: #ffffff05; }
 .tlist-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
 .infogrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.infogrid-top { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 14px; }
+.infogrid + .infogrid { margin-top: 0; }
 .infocell { background: #0c121980; border: 1px solid var(--line-solid); border-radius: 4px; padding: 12px 14px; min-width: 0; }
 .infocell .ic-label { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--amber); margin-bottom: 5px; }
 .ic-body { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
@@ -629,11 +633,18 @@ tbody tr:hover { background: #ffffff05; }
 .bo-tab { background: var(--panel2); border: 1px solid var(--line-solid); color: var(--muted); padding: 6px 16px; border-radius: 4px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
 .bo-tab.active { color: var(--amber); border-color: var(--amber); background: #2a2110; }
 /* map pool cards */
-.pool-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 12px; }
+.pool-cards { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
 .pool-card { background: var(--panel2); border: 1px solid var(--line-solid); border-radius: 6px; padding: 12px; }
 .pool-card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .pool-card-name { font-weight: 600; font-size: 15px; }
 .pool-card-maps { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.pool-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.pool-thumb { position: relative; border: 1px solid var(--line-solid); border-radius: 4px; overflow: hidden; background: var(--panel); cursor: pointer; aspect-ratio: 1 / 1; }
+.pool-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pool-thumb.noimg { display: flex; align-items: center; justify-content: center; }
+.pool-thumb-noimg { color: var(--muted); font-size: 11px; }
+.pool-thumb-name { position: absolute; left: 0; right: 0; bottom: 0; background: linear-gradient(transparent, #000a); color: #fff; font-size: 11px; padding: 10px 6px 4px; line-height: 1.1; }
+@media (max-width: 720px) { .pool-thumbs { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); } }
 .pool-map-chip { font-size: 11px; color: var(--text2, #b8c0cc); border: 1px solid var(--line-solid); border-radius: 3px; padding: 1px 6px; }
 .pool-card-assign { font-size: 12px; color: var(--amber); margin-bottom: 8px; }
 .pool-card-assign.muted { color: var(--muted); }

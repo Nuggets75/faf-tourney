@@ -256,6 +256,68 @@ function vetoIndicator(m) {
 
 // ---- Maps tab: the map database + where each map is played ----
 // Add or edit a map in the tournament's map database. `map` is null for a new entry.
+// Import maps and/or pools from another tournament the organizer runs. The server dedupes
+// by map name, so re-importing never piles up copies.
+async function openMapImport() {
+  let sources;
+  try { sources = (await api('/api/my_tournaments')).tournaments || []; }
+  catch (e) { return toast(e.message, true); }
+  sources = sources.filter(t => t.id !== T.id && (t.mapCount > 0 || t.poolCount > 0));
+  if (!sources.length) return toast('No other tournament of yours has maps to import', true);
+
+  modal(`<h3>Import maps from another tournament</h3>
+    <p class="muted small">Pick one of your tournaments, then choose whole pools or individual maps. Maps you already have (matched by name) won't be duplicated.</p>
+    <label>Source tournament</label>
+    <select id="miSrc" style="width:100%">${sources.map(t => `<option value="${t.id}">${esc(t.name)} (${t.mapCount} maps, ${t.poolCount} pools)</option>`).join('')}</select>
+    <div id="miBody" style="margin-top:12px"><div class="empty">Loading\u2026</div></div>
+    <div class="actions"><button class="btn ghost" id="miCancel">Cancel</button></div>`, root => {
+    root.querySelector('#miCancel').onclick = closeModal;
+    const sel = root.querySelector('#miSrc');
+    const body = root.querySelector('#miBody');
+
+    const loadSource = async () => {
+      body.innerHTML = '<div class="empty">Loading\u2026</div>';
+      let src;
+      try { src = await api('/api/t/' + sel.value + (siteAdmin() ? '?token=' + encodeURIComponent(siteAdmin()) : '')); }
+      catch (e) { body.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+      const maps = src.mapDb || [];
+      const pools = src.mapPools || [];
+      const haveNames = new Set((T.mapDb || []).map(m => (m.name || '').toLowerCase()));
+      body.innerHTML = `
+        <input type="text" id="miSearch" placeholder="Search maps\u2026" autocomplete="off" style="width:100%;margin-bottom:10px">
+        ${pools.length ? '<div class="muted small" style="text-transform:uppercase;letter-spacing:1px;margin:6px 0">Pools</div><div id="miPools" class="pick-rows">' + pools.map(p => `<label class="pick-row" style="cursor:pointer"><span class="pr-name"><input type="checkbox" class="miPool" value="${p.id}" style="width:auto;margin-right:8px">${esc(p.name)} <span class="muted small">${(p.mapIds||[]).length} maps · Bo${p.bo||1}</span></span></label>`).join('') + '</div>' : ''}
+        <div class="muted small" style="text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px">Individual maps</div>
+        <div id="miMaps" class="pick-rows">${maps.map(m => `<label class="pick-row miMapRow" data-name="${esc((m.name||'').toLowerCase())}" style="cursor:pointer"><span class="pr-name"><input type="checkbox" class="miMap" value="${m.id}" style="width:auto;margin-right:8px">${esc(m.name || '(unnamed)')} ${haveNames.has((m.name||'').toLowerCase()) ? '<span class="idbadge verified" title="Already in this tournament">have it</span>' : ''}</span></label>`).join('') || '<div class="empty">No maps.</div>'}</div>
+        <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+          <button class="btn" id="miAll">Import everything</button>
+          <button class="btn primary" id="miSelected">Import selected</button>
+        </div>`;
+      const search = body.querySelector('#miSearch');
+      search.oninput = () => {
+        const q = search.value.toLowerCase();
+        body.querySelectorAll('.miMapRow').forEach(r => { r.style.display = r.dataset.name.indexOf(q) >= 0 ? '' : 'none'; });
+      };
+      const doImport = async (payload, msg) => {
+        try {
+          const r = await api('/api/t/' + T.id + '/copy_maps', Object.assign({ sourceId: sel.value, admin: adminToken() }, payload));
+          closeModal();
+          toast('Imported ' + r.importedMaps + ' map' + (r.importedMaps === 1 ? '' : 's') + (r.importedPools ? ' and ' + r.importedPools + ' pool' + (r.importedPools === 1 ? '' : 's') : '') + (r.importedMaps === 0 && r.importedPools === 0 ? ' (all already present)' : ''));
+          await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+      body.querySelector('#miAll').onclick = () => doImport({}, '');
+      body.querySelector('#miSelected').onclick = () => {
+        const poolIds = Array.from(body.querySelectorAll('.miPool:checked')).map(c => c.value);
+        const mapIds = Array.from(body.querySelectorAll('.miMap:checked')).map(c => c.value);
+        if (!poolIds.length && !mapIds.length) return toast('Select at least one pool or map, or use "Import everything"', true);
+        doImport({ pools: poolIds.length ? undefined : false, poolIds: poolIds.length ? poolIds : undefined, mapIds: mapIds.length ? mapIds : undefined }, '');
+      };
+    };
+    sel.onchange = loadSource;
+    loadSource();
+  }, { wide: true });
+}
+
 function editMapEntry(map) {
   const editing = !!map;
   const curImg = map && map.image ? '/map-images/' + encodeURIComponent(map.image) : '';
@@ -337,7 +399,7 @@ function drawMaps(el) {
     html += `<div class="panel section">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div><h2 style="margin:0">Map database</h2><div class="muted small">${db.length} map${db.length === 1 ? '' : 's'} · ${published} published${db.length - published > 0 ? ' · ' + (db.length - published) + ' hidden (prep)' : ''}</div></div>
-        <div style="display:flex;gap:8px">${db.length - published > 0 ? '<button class="btn ghost" id="mapPubAll">Publish all</button>' : ''}<button class="btn primary" id="mapAdd">+ Add map</button></div>
+        <div style="display:flex;gap:8px">${db.length - published > 0 ? '<button class="btn ghost" id="mapPubAll">Publish all</button>' : ''}<button class="btn ghost" id="mapImport">Import from another tourney</button><button class="btn primary" id="mapAdd">+ Add map</button></div>
       </div>
       <p class="muted small" style="margin-top:8px">Add every map that might be played. Hidden maps are only visible to organizers — use that to prep a pool before revealing it. Group maps into pools below and assign each pool to rounds or matches; when vetoes are on, captains ban/pick from the pool assigned to their match.</p>
     </div>`;
@@ -399,7 +461,14 @@ function drawMaps(el) {
         }
         html += `<div class="pool-card">
           <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}${(admin && !pool.published) ? ' <span class="idbadge late">hidden</span>' : ''}</span><span class="muted small">Bo${pool.bo || 1} &middot; ${names.length} map${names.length === 1 ? '' : 's'}</span></div>
-          <div class="pool-card-maps">${names.length ? (pool.mapIds || []).map(id => mapChip(id, 'pool-map-chip')).join('') : '<span class="muted small">no maps</span>'}</div>
+          <div class="pool-card-maps pool-thumbs">${names.length ? (pool.mapIds || []).map(id => {
+            const mo = mapObj(id);
+            if (!mo) return '';
+            return `<div class="pool-thumb${mo.image ? '' : ' noimg'}"${mo.image ? ' data-map-info="' + esc(id) + '"' : ''}>
+              ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">no image</span>'}
+              <span class="pool-thumb-name">${esc(mo.name)}</span>
+            </div>`;
+          }).join('') : '<span class="muted small">no maps</span>'}</div>
           ${admin ? (function(){
             const steps = (pool.sequence || []).length, need = names.length - 1;
             const picks = (pool.sequence || []).filter(x => x.action === 'pick').length;
@@ -428,6 +497,8 @@ function drawMaps(el) {
 
   const addBtn = document.getElementById('mapAdd');
   if (addBtn) addBtn.onclick = () => editMapEntry(null);
+  const importBtn = document.getElementById('mapImport');
+  if (importBtn) importBtn.onclick = () => openMapImport();
   const pubAllBtn = document.getElementById('mapPubAll');
   if (pubAllBtn) pubAllBtn.onclick = async () => {
     try { await api('/api/t/' + T.id + '/map_publish', { all: 1, published: 1, admin: adminToken() }); toast('All maps published'); await refresh(); }

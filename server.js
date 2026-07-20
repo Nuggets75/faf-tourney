@@ -89,6 +89,8 @@ function loadDB() {
   if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
   if (!Array.isArray(db.editorRequests)) db.editorRequests = [];
   if (!db.editorAllowed || typeof db.editorAllowed !== 'object') db.editorAllowed = {};
+  if (!db.directors || typeof db.directors !== 'object') db.directors = {};   // fafId -> {name, at, by}: global TDs over all official tournaments
+  if (!db.tourneyBans || typeof db.tourneyBans !== 'object') db.tourneyBans = {};  // fafId -> {name, reason, expires, at, by}
   if (!Array.isArray(db.articles)) db.articles = [];
   if (!db.profiles || typeof db.profiles !== 'object') db.profiles = {};   // per-FAF-account profile (e.g. discord handle)
   // migrate v1 records so old test tournaments don't crash the client
@@ -224,16 +226,32 @@ function canHost(req, token) {
   if (!FAF_OAUTH_ON) return true;                       // pre-login: unchanged, open to all
   const sess = currentSession(req);
   if (!sess) return false;
+  if (db.directors && db.directors[sess.fafId]) return true;   // global directors can always host
   return !!db.hostAllowed[sess.fafId];
 }
 
 // A tournament's authorized organizers: the creator's FAF id plus anyone who claimed the
 // organizer link while logged in. Site admin always counts.
+// A tournament is "official" only when explicitly tagged so (site admin sets this).
+function isOfficial(t) { return t && t.category === 'official'; }
+// Global tournament directors: organizer rights on every OFFICIAL tournament.
+function isDirector(req) {
+  const sess = currentSession(req);
+  return !!(sess && sess.fafId && db.directors && db.directors[sess.fafId]);
+}
 function isOrganizer(t, req) {
   const sess = currentSession(req);
   if (sess && Array.isArray(t.organizerFafIds) && sess.fafId && t.organizerFafIds.indexOf(sess.fafId) >= 0) return true;
-  // site admin via cookie? no — site admin is the ADMIN_PASSWORD token, checked separately per-endpoint.
+  if (isOfficial(t) && isDirector(req)) return true;   // global TD over all official tournaments
   return false;
+}
+// Active tournament ban for a FAF id (expired bans return null). Blocks official tournaments only.
+function activeBan(fafId) {
+  if (!fafId || !db.tourneyBans) return null;
+  const b = db.tourneyBans[fafId];
+  if (!b) return null;
+  if (b.expires && Date.now() > new Date(b.expires).getTime()) return null;
+  return b;
 }
 // Combined check most mutating endpoints use: site-admin token OR a logged-in authorized organizer.
 function canOrganize(t, req, body) {
@@ -265,6 +283,18 @@ function saveMapImage(dataUrl) {
 function deleteMapImage(fname) {
   if (!fname) return;
   try { fs.unlinkSync(path.join(MAP_IMG_DIR, path.basename(fname))); } catch (e) {}
+}
+// Duplicate a stored map image on disk so two tournaments don't share one file (a delete
+// in one shouldn't blank the other). Returns the new filename, or null if the source is gone.
+function copyMapImageFile(fname) {
+  if (!fname) return null;
+  const src = path.join(MAP_IMG_DIR, path.basename(fname));
+  if (!fs.existsSync(src)) return null;
+  const ext = (path.extname(src) || '.png').slice(1);
+  const dest = 'map_' + uid(10) + '.' + ext;
+  fs.mkdirSync(MAP_IMG_DIR, { recursive: true });
+  fs.copyFileSync(src, path.join(MAP_IMG_DIR, dest));
+  return dest;
 }
 
 // --- description/briefing images (separate directory, see DESC_IMG_DIR) ---
@@ -447,6 +477,8 @@ function publicView(t) {
     id: t.id, name: t.name, description: t.description, rewards: t.rewards || '', sponsors: t.sponsors || '', category: t.category || null,
     published: t.published !== false ? 1 : 0, archived: t.archived ? 1 : 0, abandoned: t.abandoned ? 1 : 0,
     signupOpensAt: t.signupOpensAt || null,
+    signupClosesAt: t.signupClosesAt || null,
+    minTeams: t.minTeams || 0,
     descImages: (t.descImages || []).slice(),
     news: (t.news || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
     streams: (t.streams || []).slice(),
@@ -858,7 +890,7 @@ async function handleAuth(req, res, url) {
     const prof = sess ? (db.profiles[sess.fafId] || {}) : {};
     return json(res, 200, {
       enabled: FAF_OAUTH_ON,
-      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0 } : null
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId])) ? 1 : 0 } : null
     });
   }
 
@@ -1031,6 +1063,8 @@ async function handleAPI(req, res, url) {
       veto: cleanVeto(b.veto),
       eventDate: cleanDate(b.eventDate),
       signupOpensAt: cleanDate(b.signupOpensAt),
+      signupClosesAt: cleanDate(b.signupClosesAt),
+      minTeams: intIn(b.minTeams, 0, 128, 0),
       status: 'signup', createdAt: now(),
       minRating: (parseInt(b.minRating, 10) >= 0) ? parseInt(b.minRating, 10) : null,
       maxRating: (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null,
@@ -1064,7 +1098,7 @@ async function handleAPI(req, res, url) {
     const pending = (db.hostRequests || []).some(r => r.fafId === sess.fafId && r.status === 'pending');
     return json(res, 200, {
       oauth: 1,
-      allowed: db.hostAllowed[sess.fafId] ? 1 : 0,
+      allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId])) ? 1 : 0,
       pending: pending ? 1 : 0,
       loggedIn: 1,
       name: sess.fafName || ''
@@ -1133,6 +1167,22 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // FAF player lookup for the site-admin/director tools (ban list, director list). Uses the
+  // caller's own FAF token; requires site-admin password or a director session.
+  if (parts.length === 2 && parts[1] === 'admin_lookup' && method === 'POST') {
+    const b = await readBody(req);
+    const okAdmin = !!(GADMIN && b.password === GADMIN) || isDirector(req);
+    if (!okAdmin) return json(res, 403, { error: 'Site admin or director only' });
+    const login = cleanName(b.name, 40);
+    if (!login) return bad(res, 'Enter a FAF name');
+    const token = await fafValidToken(currentSession(req));
+    if (!token) return json(res, 409, { error: 'This lookup needs your FAF login. Log out and back in, then retry.', needsRelogin: 1 });
+    const found = await fafLookupPlayer(login, token);
+    if (found && found.error) return bad(res, found.error);
+    if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
+    return json(res, 200, { ok: true, fafId: found.fafId, name: found.name });
+  }
+
   // ---- site admin data + decisions ----
   if (parts.length === 3 && parts[1] === 'siteadmin' && method === 'POST') {
     const b = await readBody(req, 8 * 1024 * 1024);   // article_image carries base64 images up to 5MB
@@ -1140,17 +1190,35 @@ async function handleAPI(req, res, url) {
     const fullAdmin = !!(GADMIN && b.password === GADMIN);
     const editorSess = fullAdmin ? null : editorSession(req);
     const editor = !!editorSess;
-    if (!fullAdmin && !editor) return json(res, 403, { error: b.password ? 'Wrong password' : 'Site admin or approved articles editor only' });
+    // A global tournament director gets a subset of the console (logs, archived, articles,
+    // tournament bans) — but NOT hosting requests, editor management, or the director list.
+    const director = !fullAdmin && !editor && isDirector(req);
+    if (!fullAdmin && !editor && !director) return json(res, 403, { error: b.password ? 'Wrong password' : 'Site admin, director, or approved editor only' });
     const act = parts[2];
-    // Editors get the articles surface and nothing else — no requests, logs,
-    // archived tournaments, host management, or any player data.
+    // Editors get the articles surface and nothing else.
     const EDITOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete'];
     if (editor && EDITOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Site admin only' });
+    // Directors: logs, archived, articles, and tournament bans — not requests/hosts/editors/directors.
+    const DIRECTOR_ACTS = ['data', 'article_save', 'article_image', 'article_delete', 'ban_set', 'ban_remove'];
+    if (director && DIRECTOR_ACTS.indexOf(act) < 0) return json(res, 403, { error: 'Directors can\u2019t do that \u2014 site admin only' });
     if (editor && act === 'data') {
-      return json(res, 200, { role: 'editor', articles: (db.articles || []).slice().sort((a, c) => (a.order || 0) - (c.order || 0) || (a.createdAt || 0) - (c.createdAt || 0)) });
+      return json(res, 200, { role: 'editor', articles: (db.articles || []).slice().sort((a, c) => (a.order || 0) - (c.order || 0) || (a.createdAt || 0) - (c.createdAt || 0)).map(a => Object.assign({}, a, { archived: a.archived ? 1 : 0 })) });
     }
 
     if (act === 'data') {
+      const bansList = Object.keys(db.tourneyBans || {}).map(fid => ({
+        fafId: fid, name: db.tourneyBans[fid].name || fid, reason: db.tourneyBans[fid].reason || '',
+        expires: db.tourneyBans[fid].expires || null, at: db.tourneyBans[fid].at || 0, by: db.tourneyBans[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
+      if (director) {
+        return json(res, 200, {
+          role: 'director', oauth: FAF_OAUTH_ON ? 1 : 0,
+          logs: db.auditLog.slice().reverse().slice(0, 500),
+          archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({ id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length })).sort((x, y) => y.at - x.at),
+          articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0)),
+          bans: bansList
+        });
+      }
       const allowed = Object.keys(db.hostAllowed).map(fid => ({
         fafId: fid,
         name: db.hostAllowed[fid].name || '',
@@ -1174,7 +1242,9 @@ async function handleAPI(req, res, url) {
         archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({
           id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length
         })).sort((x, y) => y.at - x.at),
-        articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0))
+        articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0)),
+        directors: Object.keys(db.directors || {}).map(fid => ({ fafId: fid, name: db.directors[fid].name || fid, at: db.directors[fid].at || 0, by: db.directors[fid].by || '' })).sort((x, y) => y.at - x.at),
+        bans: bansList
       });
     }
 
@@ -1244,18 +1314,13 @@ async function handleAPI(req, res, url) {
 
     if (act === 'article_delete') {
       const art = (db.articles || []).find(a => a.id === b.id);
-      if (art) {
-        // remove any images this article referenced, so they don't orphan on disk
-        const used = String(art.body || '').match(/\/article-images\/[A-Za-z0-9_.-]+/g) || [];
-        used.forEach(u => deleteArticleImage(u.split('/').pop()));
-      }
-      // any sub-pages of a deleted page float back up to top level (no data loss)
-      (db.articles || []).forEach(a => { if (a.parentId === b.id) a.parentId = null; });
-      db.articles = (db.articles || []).filter(a => a.id !== b.id);
+      if (!art) return json(res, 200, { ok: true });
+      art.archived = b.restore ? 0 : 1;
+      art.archivedAt = b.restore ? null : Date.now();
       saveDB();
-      audit(req, 'article_deleted', {
+      audit(req, b.restore ? 'article_restored' : 'article_archived', {
         actor: editor ? { kind: 'editor', fafId: editorSess.fafId, name: editorSess.fafName || ('FAF ' + editorSess.fafId) } : { kind: 'siteadmin', fafId: null, name: 'Site admin' },
-        detail: (art ? art.title : b.id) + (editor ? ' by articles editor' : '')
+        detail: art.title + (editor ? ' by articles editor' : '')
       });
       return json(res, 200, { ok: true });
     }
@@ -1318,6 +1383,57 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // ---- global tournament directors (site admin only) ----
+    if (act === 'director_grant') {
+      if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (db.directors[fid]) return bad(res, 'Already a director');
+      db.directors[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: 'site admin' };
+      if (!db.hostAllowed[fid]) db.hostAllowed[fid] = { name: db.directors[fid].name, at: Date.now(), by: 'director grant' };
+      saveDB();
+      audit(req, 'director_granted', { actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' }, detail: db.directors[fid].name + ' (' + fid + ')' });
+      return json(res, 200, { ok: true });
+    }
+    if (act === 'director_revoke') {
+      if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
+      const fid = String(b.fafId || '').trim();
+      if (!db.directors[fid]) return bad(res, 'Not a director');
+      const nm = db.directors[fid].name || fid;
+      delete db.directors[fid];
+      saveDB();
+      audit(req, 'director_revoked', { actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' }, detail: nm + ' (' + fid + ')' });
+      return json(res, 200, { ok: true });
+    }
+
+    // ---- tournament bans (site admin OR director) ----
+    if (act === 'ban_set') {
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      let expires = null;
+      if (b.expires) { const d = new Date(b.expires); if (isNaN(d.getTime())) return bad(res, 'Invalid expiry date'); expires = d.toISOString(); }
+      const existed = !!db.tourneyBans[fid];
+      db.tourneyBans[fid] = {
+        name: cleanName(b.name, 60) || (db.tourneyBans[fid] && db.tourneyBans[fid].name) || ('FAF ' + fid),
+        reason: cleanName(b.reason, 300) || (db.tourneyBans[fid] && db.tourneyBans[fid].reason) || '',
+        expires,
+        at: (db.tourneyBans[fid] && db.tourneyBans[fid].at) || Date.now(),
+        by: actorOf(req, b.password).name || 'Site admin'
+      };
+      saveDB();
+      audit(req, existed ? 'tourney_ban_updated' : 'tourney_ban_set', { actor: actorOf(req, b.password), detail: db.tourneyBans[fid].name + ' (' + fid + ')' + (expires ? ' until ' + expires.slice(0, 10) : ' (no expiry)') });
+      return json(res, 200, { ok: true });
+    }
+    if (act === 'ban_remove') {
+      const fid = String(b.fafId || '').trim();
+      if (!db.tourneyBans[fid]) return bad(res, 'Not banned');
+      const nm = db.tourneyBans[fid].name || fid;
+      delete db.tourneyBans[fid];
+      saveDB();
+      audit(req, 'tourney_ban_removed', { actor: actorOf(req, b.password), detail: nm + ' (' + fid + ')' });
+      return json(res, 200, { ok: true });
+    }
+
     return bad(res, 'Unknown site admin action');
   }
 
@@ -1362,6 +1478,17 @@ async function handleAPI(req, res, url) {
     }
   }
 
+  // Tournaments the logged-in user organizes (or is a director over) — sources for "copy".
+  if (parts.length === 2 && parts[1] === 'my_tournaments' && method === 'GET') {
+    const sess = currentSession(req);
+    if (!sess) return json(res, 200, { tournaments: [] });
+    const mine = Object.values(db.tournaments).filter(t => !t.archived && (
+      (Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(sess.fafId) >= 0) ||
+      (isOfficial(t) && db.directors[sess.fafId])
+    )).sort((a, c) => (c.createdAt || 0) - (a.createdAt || 0)).map(t => ({ id: t.id, name: t.name, category: t.category || null, mapCount: (t.mapDb || []).length, poolCount: (t.mapPools || []).length }));
+    return json(res, 200, { tournaments: mine });
+  }
+
   if (parts.length === 2 && parts[1] === 'tournaments' && method === 'GET') {
     const sess = currentSession(req);
     const myFid = sess && sess.fafId;
@@ -1378,6 +1505,8 @@ async function handleAPI(req, res, url) {
         teams: t.teams.length, createdAt: t.createdAt,
         imported: t.imported || false,
         eventDate: t.eventDate || null,
+        signupClosesAt: t.signupClosesAt || null,
+        minTeams: t.minTeams || 0,
         challongeDate: t.challongeDate || null,
         abandoned: t.abandoned ? 1 : 0,
         signupOpensAt: t.signupOpensAt || null,
@@ -1425,7 +1554,9 @@ async function handleAPI(req, res, url) {
   }
 
   if (parts.length === 2 && parts[1] === 'articles' && method === 'GET') {
-    const arts = (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+    const archivedIds = new Set((db.articles || []).filter(a => a.archived).map(a => a.id));
+    const arts = (db.articles || []).filter(a => !a.archived && !(a.parentId && archivedIds.has(a.parentId)))
+      .slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
     return json(res, 200, arts);
   }
 
@@ -1661,6 +1792,10 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       t.eventDate = cleanDate(b.eventDate); // null clears it
       if (b.signupOpensAt !== undefined) t.signupOpensAt = cleanDate(b.signupOpensAt);
+      if (b.signupClosesAt !== undefined) t.signupClosesAt = cleanDate(b.signupClosesAt);
+      if (b.name !== undefined) { const nm = cleanName(b.name, 60); if (nm) t.name = nm; }
+      if (b.minTeams !== undefined) t.minTeams = intIn(b.minTeams, 0, 128, 0);
+      if (b.maxTeams !== undefined) t.maxTeams = intIn(b.maxTeams, 0, 128, 0);
       tlog(t, req, b.admin, 'changed the event date' + (t.eventDate ? ' to ' + t.eventDate : ' (cleared)'));
       saveDB();
       return json(res, 200, { ok: true });
@@ -1733,6 +1868,9 @@ async function handleAPI(req, res, url) {
       if (t.signupOpensAt && Date.now() < new Date(t.signupOpensAt).getTime() && !adminAdding) {
         return bad(res, 'Signups haven\u2019t opened yet \u2014 they open ' + new Date(t.signupOpensAt).toUTCString().replace(':00 GMT', ' UTC') + '.');
       }
+      if (t.signupClosesAt && Date.now() > new Date(t.signupClosesAt).getTime() && !adminAdding && !lateOk) {
+        return bad(res, 'Signups have closed for this tournament.');
+      }
 
       let name, fafId = null, manual = false;
       if (!FAF_OAUTH_ON && adminAdding && b.name) {
@@ -1780,6 +1918,17 @@ async function handleAPI(req, res, url) {
       }
       // Rating requirements apply to self-signups only. Organizer adds and invited
       // accounts bypass them (an invite IS the organizer's decision).
+      // Tournament ban blocks official tournaments on every path (self-signup, organizer add,
+      // invite acceptance). Organizers cannot override; only lifting/expiring the ban helps.
+      if (isOfficial(t)) {
+        const banFid = manual ? null : (fafId || (sess && sess.fafId));
+        const ban = banFid ? activeBan(banFid) : null;
+        if (ban) {
+          return bad(res, 'You are currently banned from official FAF tournaments.' +
+            (ban.expires ? ' Expires on: ' + new Date(ban.expires).toISOString().slice(0, 10) + '.' : ' This ban has no expiry date.') +
+            ' For more information regarding your ban please contact the TD team.');
+        }
+      }
       const invitedHere = !!(sess && (t.invites || []).some(i => i.fafId === sess.fafId));
       if (!adminAdding && !invitedHere && rating != null) {
         if (t.minRating != null && rating < t.minRating) {
@@ -2393,6 +2542,7 @@ async function handleAPI(req, res, url) {
       if (!found) return bad(res, 'No FAF player named \u201c' + login + '\u201d \u2014 names are exact');
       t.invites = t.invites || [];
       if (t.invites.some(i => i.fafId === found.fafId)) return bad(res, found.name + ' is already invited');
+      if (isOfficial(t) && activeBan(found.fafId)) return bad(res, found.name + ' is banned from official tournaments and can\u2019t be invited.');
       t.invites.push({ fafId: found.fafId, name: found.name, at: now() });
       tlog(t, req, b.admin, 'invited ' + found.name);
       saveDB();
@@ -2683,6 +2833,12 @@ async function handleAPI(req, res, url) {
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
       if (b.playerReporting !== undefined) t.playerReporting = !!b.playerReporting;
+      if (b.name !== undefined) { const nm = cleanName(b.name, 60); if (nm) t.name = nm; }
+      if (b.eventDate !== undefined) t.eventDate = cleanDate(b.eventDate);
+      if (b.signupOpensAt !== undefined) t.signupOpensAt = cleanDate(b.signupOpensAt);
+      if (b.signupClosesAt !== undefined) t.signupClosesAt = cleanDate(b.signupClosesAt);
+      if (b.minTeams !== undefined) t.minTeams = intIn(b.minTeams, 0, 128, 0);
+      if (b.maxTeams !== undefined) t.maxTeams = intIn(b.maxTeams, 0, 128, 0);
       if (b.checkInDeadline !== undefined) {
         if (!b.checkInDeadline) t.checkInDeadline = null;
         else { const ms = new Date(b.checkInDeadline).getTime(); t.checkInDeadline = isNaN(ms) ? null : ms; }
@@ -2748,6 +2904,66 @@ async function handleAPI(req, res, url) {
     // map count (steps = maps - 1), only pools with the SAME number of maps can receive it;
     // those are also the only ones where the pick count matches the same Bo. With applyAll,
     // every same-size pool gets it; otherwise just the given targetIds.
+    // Import maps (and optionally whole pools) from another tournament the requester
+    // organizes. Deduplicates by map name so repeat imports don't pile up copies.
+    if (sub === 'copy_maps') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const src = db.tournaments[String(b.sourceId || '')];
+      if (!src) return bad(res, 'Source tournament not found');
+      const sess = currentSession(req);
+      const mayRead = (Array.isArray(src.organizerFafIds) && sess && src.organizerFafIds.indexOf(sess.fafId) >= 0) ||
+        (isOfficial(src) && isDirector(req)) || isAdmin(t, b.admin, req);
+      if (!mayRead) return json(res, 403, { error: 'You must organize the source tournament to copy from it' });
+
+      t.mapDb = t.mapDb || [];
+      const byName = {};
+      for (const m of t.mapDb) byName[(m.name || '').toLowerCase()] = m;
+      const idMap = {};   // source map id -> our map id (existing or newly created)
+      const wantMapIds = Array.isArray(b.mapIds) ? new Set(b.mapIds) : null;  // subset, or null = all referenced
+
+      const ensureMap = (sm) => {
+        if (!sm) return null;
+        const key = (sm.name || '').toLowerCase();
+        if (byName[key]) { idMap[sm.id] = byName[key].id; return byName[key].id; }
+        // copy the image file so deletes in either tournament don't affect the other
+        let img = null;
+        if (sm.image) { try { img = copyMapImageFile(sm.image); } catch (e) { img = null; } }
+        const nm = { id: 'map' + uid(5), name: sm.name || '', image: img, description: sm.description || '', published: 0 };
+        t.mapDb.push(nm); byName[key] = nm; idMap[sm.id] = nm.id;
+        return nm.id;
+      };
+
+      let importedMaps = 0, importedPools = 0;
+      const poolIds = Array.isArray(b.poolIds) ? new Set(b.poolIds) : null;   // subset of pools, or null
+
+      // pools first (they pull in their maps), unless caller only wants loose maps
+      if (b.pools !== false && Array.isArray(src.mapPools)) {
+        t.mapPools = t.mapPools || [];
+        for (const sp of src.mapPools) {
+          if (poolIds && !poolIds.has(sp.id)) continue;
+          const mids = (sp.mapIds || []).map(mid => ensureMap((src.mapDb || []).find(m => m.id === mid))).filter(Boolean);
+          // avoid duplicate pool by same name
+          if ((t.mapPools || []).some(pp => (pp.name || '').toLowerCase() === (sp.name || '').toLowerCase())) continue;
+          t.mapPools.push({ id: 'pool' + uid(5), name: sp.name, mapIds: mids, sequence: (sp.sequence || []).map(x => ({ action: x.action, team: x.team })), bo: sp.bo || 1, published: 0 });
+          importedPools++;
+        }
+      }
+      // loose maps: import the explicit subset if given; otherwise only sweep in ALL maps
+      // on a genuine "import everything" (no pool subset and pools not disabled). When the
+      // caller picked specific pools, we must NOT drag in every other map.
+      const before = t.mapDb.length;
+      const fullSweep = !wantMapIds && !poolIds && b.pools !== false;
+      for (const sm of (src.mapDb || [])) {
+        if (wantMapIds) { if (!wantMapIds.has(sm.id)) continue; }
+        else if (!fullSweep) continue;   // only selected pools' maps (already handled above)
+        ensureMap(sm);
+      }
+      importedMaps = t.mapDb.length - before;
+      tlog(t, req, b.admin, 'imported ' + importedMaps + ' map' + (importedMaps === 1 ? '' : 's') + (importedPools ? ' and ' + importedPools + ' pool' + (importedPools === 1 ? '' : 's') : '') + ' from "' + src.name + '"');
+      saveDB();
+      return json(res, 200, { ok: true, importedMaps, importedPools });
+    }
+
     if (sub === 'pool_copy_sequence') {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const src = poolById(t, b.sourceId);

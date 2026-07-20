@@ -337,7 +337,7 @@ async function drawAdmin(el) {
     const orgs = T.organizers || [];
     html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${orgs.length})</span></h2>
       <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
-      <p class="muted small">Players see the visible organizers listed on the Chat tab. Hide an organizer to keep them off that public list \u2014 by default everyone is shown.</p>
+      <p class="muted small">Anyone who opens the organizer link is added here automatically, and only a site admin can remove an organizer. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
       ${orgs.length ? '' : '<div class="empty" style="margin:10px 0">No FAF account holds organizer rights here yet \u2014 this tournament predates identity tracking or was created without being logged in. Rights so far come only from the organizer link' + (sa ? ' or the site admin password' : '') + '. Use the buttons below to fix that.</div>'}
       <div class="pick-rows" style="margin-top:10px">${orgs.map(o => `<div class="pick-row on" style="cursor:default">
         <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
@@ -345,7 +345,7 @@ async function drawAdmin(el) {
         ${sa ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '">Remove</button>' : ''}
       </div>`).join('')}</div>
       <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
-        ${fafAuth.user && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
+        ${fafAuth.user && (sa || (fafAuth.user.director && T.category === 'official')) && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
         ${sa ? '<button class="btn ghost small" id="orgAddId">+ Add by FAF id</button>' : ''}
       </div></div>`;
   }
@@ -489,6 +489,7 @@ async function drawAdmin(el) {
       <label style="margin:0">Rewards</label>
       <span class="muted small">Paste a screenshot straight in (e.g. an avatar), or <a href="#" id="aiRwImgBtn">insert an image</a>.</span>
     </div>
+    ${mdToolbarHTML()}
     <textarea id="aiRewards" maxlength="2000" rows="5" placeholder="e.g. 1st place: exclusive avatar + 500 credits...">${esc(T.rewards || '')}</textarea>
     <input type="file" id="aiRwImgFile" accept="image/*" style="display:none">
     <div style="margin-top:14px"><button class="btn" id="aiRwSave">Save rewards</button></div>
@@ -686,7 +687,7 @@ async function drawAdmin(el) {
   const aiLobbyTa = document.getElementById('aiLobby');
   if (aiLobbyTa) { wireImagePaste(aiLobbyTa, descUploader, null, null); wireMdToolbar(aiLobbyTa.previousElementSibling, aiLobbyTa); }
   const aiRwTa = document.getElementById('aiRewards');
-  if (aiRwTa) wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile'));
+  if (aiRwTa) { wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile')); wireMdToolbar(aiRwTa.previousElementSibling, aiRwTa); }
   const aiSpTa = document.getElementById('aiSponsors');
   if (aiSpTa) { wireImagePaste(aiSpTa, descUploader, document.getElementById('aiSpImgBtn'), document.getElementById('aiSpImgFile')); wireMdToolbar(aiSpTa.previousElementSibling, aiSpTa); }
   const stAdd = document.getElementById('aiStAdd');
