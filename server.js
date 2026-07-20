@@ -1012,10 +1012,12 @@ async function handleAPI(req, res, url) {
     const maxTeams = intIn(b.maxTeams, 0, 128, 0);
     const t = {
       id: uid(5), adminToken: uid(12), lateToken: uid(12), streamerToken: uid(12),
-      name, description: cleanName(b.description, 500),
+      name, description: cleanName(b.description, 20000),
+      rewards: cleanName(b.rewards, 2000), sponsors: cleanName(b.sponsors, 2000),
+      streams: (Array.isArray(b.streams) ? b.streams.map(x => ({ url: String((x && x.url) || '').trim().slice(0, 300), info: cleanName((x && x.info) || '', 120) || '' })).filter(x => /^https?:\/\/[^\s"'<>]+$/.test(x.url)).slice(0, 10) : []),
       category,
       published: false, archived: false, descImages: [],
-      lobbyOptions: cleanName(b.lobbyOptions, 500),
+      lobbyOptions: cleanName(b.lobbyOptions, 20000),
       mods: cleanName(b.mods, 500),
       competition, formation, teamSize, draftOrder, bracketType, ffaCfg,
       plan, maxTeams,
@@ -1208,12 +1210,23 @@ async function handleAPI(req, res, url) {
       const title = cleanName(b.title, 120);
       if (!title) return bad(res, 'Title required');
       const body2 = String(b.body || '').slice(0, 20000);
+      // Optional parent for sub-pages. A parent must be a real top-level article (no
+      // grandchildren) and an article can't be its own parent.
+      let parentId = b.parentId ? String(b.parentId) : null;
+      if (parentId) {
+        const par = (db.articles || []).find(x => x.id === parentId);
+        if (!par || par.id === b.id) parentId = null;
+        else if (par.parentId) return bad(res, 'Sub-pages can only be one level deep');
+      }
       if (b.id) {
         const a = (db.articles || []).find(x => x.id === b.id);
         if (!a) return bad(res, 'Article not found');
+        // don't let an article that already has children become a child itself
+        if (parentId && (db.articles || []).some(x => x.parentId === a.id)) return bad(res, 'This page has sub-pages, so it can\u2019t become a sub-page itself');
         a.title = title; a.body = body2; a.updatedAt = Date.now();
+        if (b.parentId !== undefined) a.parentId = parentId;
       } else {
-        db.articles.push({ id: 'art' + uid(6), title, body: body2, order: db.articles.length, createdAt: Date.now(), updatedAt: Date.now() });
+        db.articles.push({ id: 'art' + uid(6), title, body: body2, parentId: parentId, order: db.articles.length, createdAt: Date.now(), updatedAt: Date.now() });
       }
       saveDB();
       audit(req, 'article_saved', {
@@ -1236,6 +1249,8 @@ async function handleAPI(req, res, url) {
         const used = String(art.body || '').match(/\/article-images\/[A-Za-z0-9_.-]+/g) || [];
         used.forEach(u => deleteArticleImage(u.split('/').pop()));
       }
+      // any sub-pages of a deleted page float back up to top level (no data loss)
+      (db.articles || []).forEach(a => { if (a.parentId === b.id) a.parentId = null; });
       db.articles = (db.articles || []).filter(a => a.id !== b.id);
       saveDB();
       audit(req, 'article_deleted', {
@@ -2650,7 +2665,7 @@ async function handleAPI(req, res, url) {
       if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
       const touched = ['description', 'rewards', 'sponsors', 'streams', 'minRating', 'maxRating', 'maxTeamRating', 'ratingCap', 'lobbyOptions', 'mods', 'signupMode', 'playerReporting', 'checkInDeadline', 'veto'].filter(k => b[k] !== undefined);
       if (touched.length) tlog(t, req, b.admin, 'updated settings: ' + touched.join(', '));
-      if (b.description !== undefined) t.description = cleanName(b.description, 2000);
+      if (b.description !== undefined) t.description = cleanName(b.description, 20000);
       if (b.rewards !== undefined) t.rewards = cleanName(b.rewards, 2000);
       if (b.sponsors !== undefined) t.sponsors = cleanName(b.sponsors, 2000);
       if (Array.isArray(b.streams)) {
@@ -2664,7 +2679,7 @@ async function handleAPI(req, res, url) {
       if (b.maxRating !== undefined) t.maxRating = (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null;
       if (b.maxTeamRating !== undefined) t.maxTeamRating = (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null;
       if (b.ratingCap !== undefined) { t.ratingCap = (parseInt(b.ratingCap, 10) > 0) ? parseInt(b.ratingCap, 10) : null; recomputeAllRatings(t); }
-      if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 500);
+      if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 20000);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
       if (b.playerReporting !== undefined) t.playerReporting = !!b.playerReporting;

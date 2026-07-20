@@ -473,9 +473,12 @@ async function drawAdmin(el) {
       <label style="margin:0">Description</label>
       <span class="muted small">Paste a screenshot straight in, or <a href="#" id="aiDescImgBtn">insert an image</a>.</span>
     </div>
-    <textarea id="aiDesc" maxlength="2000" rows="6">${esc(T.description || '')}</textarea>
+    ${mdToolbarHTML()}
+    <textarea id="aiDesc" maxlength="20000" rows="8">${esc(T.description || '')}</textarea>
     <input type="file" id="aiDescImgFile" accept="image/*" style="display:none">
-    <label>Lobby options</label><textarea id="aiLobby" maxlength="500">${esc(T.lobbyOptions || '')}</textarea>
+    <label style="margin-top:12px">Lobby options</label>
+    ${mdToolbarHTML()}
+    <textarea id="aiLobby" maxlength="20000" rows="6">${esc(T.lobbyOptions || '')}</textarea>
     <label>Mods</label><input type="text" id="aiMods" maxlength="500" value="${esc(T.mods || '')}">
     <div style="margin-top:14px"><button class="btn" id="aiSave">Save setup</button></div>
   </div>`;
@@ -492,7 +495,11 @@ async function drawAdmin(el) {
   </div>`;
 
   html += `<div class="panel section"><h2>Sponsors</h2>
-    <p class="muted small">Shown prominently on the Overview next to the rewards. Text, links as [name](https://\u2026), or paste a logo image straight in.</p>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <p class="muted small" style="margin:0">Shown prominently on the Overview next to the rewards. Text, links, or images.</p>
+      <span class="muted small">Paste a screenshot straight in, or <a href="#" id="aiSpImgBtn">insert an image</a>.</span>
+    </div>
+    ${mdToolbarHTML()}
     <textarea id="aiSponsors" maxlength="2000" rows="5" placeholder="e.g. Powered by [YourSponsor](https://sponsor.example) \u2014 thanks for the prize pool!">${esc(T.sponsors || '')}</textarea>
     <input type="file" id="aiSpImgFile" accept="image/*" style="display:none">
     <div style="margin-top:14px"><button class="btn" id="aiSpSave">Save sponsors</button></div>
@@ -675,11 +682,13 @@ async function drawAdmin(el) {
     return d;
   };
   const aiDescTa = document.getElementById('aiDesc');
-  if (aiDescTa) wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile'));
+  if (aiDescTa) { wireImagePaste(aiDescTa, descUploader, document.getElementById('aiDescImgBtn'), document.getElementById('aiDescImgFile')); wireMdToolbar(aiDescTa.previousElementSibling, aiDescTa); }
+  const aiLobbyTa = document.getElementById('aiLobby');
+  if (aiLobbyTa) { wireImagePaste(aiLobbyTa, descUploader, null, null); wireMdToolbar(aiLobbyTa.previousElementSibling, aiLobbyTa); }
   const aiRwTa = document.getElementById('aiRewards');
   if (aiRwTa) wireImagePaste(aiRwTa, descUploader, document.getElementById('aiRwImgBtn'), document.getElementById('aiRwImgFile'));
   const aiSpTa = document.getElementById('aiSponsors');
-  if (aiSpTa) wireImagePaste(aiSpTa, descUploader, null, document.getElementById('aiSpImgFile'));
+  if (aiSpTa) { wireImagePaste(aiSpTa, descUploader, document.getElementById('aiSpImgBtn'), document.getElementById('aiSpImgFile')); wireMdToolbar(aiSpTa.previousElementSibling, aiSpTa); }
   const stAdd = document.getElementById('aiStAdd');
   if (stAdd) stAdd.onclick = () => {
     const wrap = document.getElementById('aiStreams');
@@ -1152,10 +1161,36 @@ async function renderFaq() {
   let arts;
   try { const r = await fetch('/api/articles'); arts = await r.json(); if (!r.ok) throw new Error('Failed to load'); }
   catch (e) { document.getElementById('faqBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
-  let html;
-  if (!arts.length) html = '<div class="panel"><div class="empty">Nothing here yet.' + (siteAdmin() ? ' Add articles from the site-admin console (Articles tab).' : '') + '</div></div>';
-  else html = arts.map(a => `<div class="panel section"><h2>${esc(a.title)}</h2><div class="ic-body" style="margin-top:8px">${renderArticleBody(a.body)}</div></div>`).join('');
-  document.getElementById('faqBody').innerHTML = html;
+  const body = document.getElementById('faqBody');
+  if (!arts.length) {
+    body.innerHTML = '<div class="panel"><div class="empty">Nothing here yet.' + (siteAdmin() ? ' Add articles from the site-admin console (Articles tab).' : '') + '</div></div>';
+    return;
+  }
+  const childrenOf = (id) => arts.filter(a => a.parentId === id);
+  const topLevel = arts.filter(a => !a.parentId);
+
+  // ?p=<id> opens a single sub-page (or a parent) with a back link
+  const wanted = new URLSearchParams(location.search).get('p');
+  const focus = wanted ? arts.find(a => a.id === wanted) : null;
+  if (focus) {
+    const kids = childrenOf(focus.id);
+    let h = `<div class="panel section"><a href="/faq" class="muted small">\u2190 Back to FAQ / Rules</a>
+      <h2 style="margin-top:8px">${esc(focus.title)}</h2>
+      <div class="ic-body" style="margin-top:8px">${renderArticleBody(focus.body)}</div></div>`;
+    if (kids.length) h += '<div class="panel section"><h2>Sub-pages</h2><div class="faq-sublinks">' +
+      kids.map(k => `<a class="faq-sublink" href="/faq?p=${encodeURIComponent(k.id)}">${esc(k.title)} \u2192</a>`).join('') + '</div></div>';
+    body.innerHTML = h;
+    return;
+  }
+
+  // main page: each top-level article, with links to its sub-pages beneath it
+  body.innerHTML = topLevel.map(a => {
+    const kids = childrenOf(a.id);
+    const sub = kids.length
+      ? '<div class="faq-sublinks" style="margin-top:12px">' + kids.map(k => `<a class="faq-sublink" href="/faq?p=${encodeURIComponent(k.id)}">${esc(k.title)} \u2192</a>`).join('') + '</div>'
+      : '';
+    return `<div class="panel section"><h2>${esc(a.title)}</h2><div class="ic-body" style="margin-top:8px">${renderArticleBody(a.body)}</div>${sub}</div>`;
+  }).join('');
 }
 
 window.addEventListener('popstate', route);

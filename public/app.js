@@ -926,11 +926,14 @@ function drawSaArticles(el) {
   let html = `<div class="panel section"><div class="row" style="justify-content:space-between;align-items:center">
     <h2 style="margin:0">FAQ / Rules articles (${arts.length})</h2>
     <button class="btn primary small" id="saArtNew">+ New article</button></div>`;
-  if (!arts.length) html += '<div class="empty" style="margin-top:10px">No articles yet. These show on the public Rules page.</div>';
-  else html += '<div style="margin-top:10px">' + arts.map(a => `<div class="sa-req">
-      <div class="sa-req-main"><div class="sa-req-name">${esc(a.title)}</div><div class="muted small">Updated ${esc(fmtWhen(a.updatedAt || a.createdAt))}</div></div>
+  const childrenOf = (id) => arts.filter(a => a.parentId === id);
+  const top = arts.filter(a => !a.parentId);
+  const row = (a, isChild) => `<div class="sa-req" style="${isChild ? 'margin-left:24px;border-left:2px solid var(--line-solid)' : ''}">
+      <div class="sa-req-main"><div class="sa-req-name">${isChild ? '\u21B3 ' : ''}${esc(a.title)}${isChild ? ' <span class="idbadge late">sub-page</span>' : ''}</div><div class="muted small">Updated ${esc(fmtWhen(a.updatedAt || a.createdAt))}</div></div>
       <div class="sa-req-act"><button class="btn ghost small" data-artedit="${a.id}">Edit</button><button class="btn danger small" data-artdel="${a.id}">Delete</button></div>
-    </div>`).join('') + '</div>';
+    </div>`;
+  if (!arts.length) html += '<div class="empty" style="margin-top:10px">No articles yet. These show on the public Rules page. Make a top-level page, then attach sub-pages to it to keep things short.</div>';
+  else html += '<div style="margin-top:10px">' + top.map(a => row(a, false) + childrenOf(a.id).map(c => row(c, true)).join('')).join('') + '</div>';
   html += '</div>';
   el.innerHTML = html;
 
@@ -938,6 +941,11 @@ function drawSaArticles(el) {
     modal(`<h3>${art ? 'Edit' : 'New'} article</h3>
       <label>Title</label>
       <input type="text" id="artTitle" maxlength="120" autocomplete="off" value="${art ? esc(art.title) : ''}">
+      <label style="margin-top:12px">Parent page <span class="muted small">(optional \u2014 makes this a linked sub-page under another article)</span></label>
+      <select id="artParent" style="width:100%">
+        <option value="">\u2014 Top-level page \u2014</option>
+        ${(saData.articles || []).filter(x => !x.parentId && (!art || (x.id !== art.id && !(saData.articles || []).some(k => k.parentId === (art && art.id))))).map(x => '<option value="' + x.id + '"' + (art && art.parentId === x.id ? ' selected' : '') + '>' + esc(x.title) + '</option>').join('')}
+      </select>
       <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px">
         <label style="margin:0">Body</label>
         <span class="muted small">Paste a screenshot straight in, or <a href="#" id="artImgBtn">insert an image</a>.</span>
@@ -984,7 +992,8 @@ function drawSaArticles(el) {
       root.querySelector('#artSave').onclick = async () => {
         const title = root.querySelector('#artTitle').value.trim();
         if (!title) return toast('Title required', true);
-        try { await saPost('article_save', art ? { id: art.id, title, body: ta.value } : { title, body: ta.value }); closeModal(); toast('Saved'); saRefresh(); }
+        const parentId = root.querySelector('#artParent').value || null;
+        try { await saPost('article_save', art ? { id: art.id, title, body: ta.value, parentId } : { title, body: ta.value, parentId }); closeModal(); toast('Saved'); saRefresh(); }
         catch (e) { toast(e.message, true); }
       };
     }, { wide: true });

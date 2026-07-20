@@ -416,6 +416,10 @@ tbody tr:hover { background: #ffffff05; }
 .org-name { display: inline-block; font-weight: 700; font-size: 14px; color: var(--amber); border: 1px solid #6b5220; background: #2a2113; border-radius: 3px; padding: 3px 10px; margin: 2px 5px 2px 0; }
 .org-callout-hint { font-size: 12px; color: var(--muted); }
 .org-callout-hint code { color: var(--amber); background: #2a2113; border-radius: 3px; padding: 0 4px; }
+/* FAQ sub-page links */
+.faq-sublinks { display: flex; flex-direction: column; gap: 6px; }
+.faq-sublink { display: inline-block; padding: 8px 12px; border: 1px solid var(--line-solid); border-left: 3px solid var(--amber); border-radius: 4px; background: var(--panel2); color: var(--text); font-size: 14px; }
+.faq-sublink:hover { border-color: var(--amber); color: var(--amber); }
 .stream-line { font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
 /* chat */
 .chat-layout { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
@@ -590,6 +594,14 @@ tbody tr:hover { background: #ffffff05; }
 
   /* tables: let them scroll rather than overflow the panel */
   .panel table { display: block; overflow-x: auto; white-space: nowrap; }
+
+  /* queue / recent-results: stack cleanly on narrow screens instead of squishing */
+  .qitem { flex-direction: column; align-items: stretch; gap: 8px; }
+  .qround { white-space: normal; }
+  .qteams { font-size: 15px; gap: 6px; }
+  .qteams .qvs { margin: 0 2px; }
+  .qscore { font-size: 18px; }
+  .qitem .btn.small { align-self: flex-start; }
 
   .headrow { flex-direction: column; align-items: flex-start; gap: 8px; }
   .copybox input { font-size: 11px; }

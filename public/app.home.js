@@ -115,11 +115,19 @@ async function renderHost() {
         <label>Signups open at (UTC) <span class="muted" style="font-weight:400">(optional \u2014 before this, only organizers can add players)</span></label>
         <div style="display:flex;gap:8px"><input type="date" id="cSuDate" style="flex:1"><input type="time" id="cSuTime" style="width:130px"></div>
         <label>Description (rules, schedule)</label>
-        <textarea id="cDesc" maxlength="500" placeholder="Sunday 19:00 CEST. Check-in in Discord..."></textarea>
+        ${mdToolbarHTML()}
+        <textarea id="cDesc" maxlength="20000" rows="6" placeholder="Sunday 19:00 CEST. Check-in in Discord... (supports **bold**, headings, lists, links)"></textarea>
         <label>Lobby options</label>
-        <textarea id="cLobby" maxlength="500" placeholder="e.g. 1500 unit cap, full share"></textarea>
+        ${mdToolbarHTML()}
+        <textarea id="cLobby" maxlength="20000" rows="4" placeholder="e.g. 1500 unit cap, full share"></textarea>
         <label>Mods</label>
         <input type="text" id="cMods" maxlength="500" placeholder="e.g. M28 / Random events">
+        <label>Rewards <span class="muted small">(optional)</span></label>
+        <textarea id="cRewards" maxlength="2000" rows="3" placeholder="1st: avatar + 500 credits..."></textarea>
+        <label>Sponsors <span class="muted small">(optional)</span></label>
+        <textarea id="cSponsors" maxlength="2000" rows="3" placeholder="Powered by [YourSponsor](https://...)"></textarea>
+        <label>Livestream links <span class="muted small">(optional, one per line: URL then a space then info)</span></label>
+        <textarea id="cStreams" maxlength="1500" rows="3" placeholder="https://twitch.tv/faflive Main stream (English)"></textarea>
 
         <label>Competition</label>
         <select id="cComp">
@@ -279,7 +287,21 @@ async function renderHost() {
         <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer">
           <input type="checkbox" id="cVeto" style="width:auto"> Enable map vetoes (captains ban/pick maps before matches)
         </label>
-        <div class="muted small" style="margin-top:6px">You'll build your maps, pools and ban/pick orders on the tournament's <strong>Maps</strong> tab afterwards. You can also turn this on or off later from the Admin tab.</div>
+        <div id="cVetoCfg" style="display:none;margin-top:12px;padding-left:12px;border-left:2px solid var(--line-solid)">
+          <label>Who is Team A?</label>
+          <select id="cVetoAb" style="max-width:420px">
+            <option value="lowerA">Lower rated is Team A (acts first)</option>
+            <option value="lowerB">Lower rated is Team B (higher rated acts first)</option>
+            <option value="random">Random per match</option>
+            <option value="manual">I set it myself for every match</option>
+          </select>
+          <label style="margin-top:12px">When is the veto done?</label>
+          <select id="cVetoMode" style="max-width:420px">
+            <option value="upfront">All upfront — captains complete the whole veto before game 1</option>
+            <option value="continuous">Continuous — reveal steps as games are played</option>
+          </select>
+          <div class="muted small" style="margin-top:8px">You'll build your maps, pools and ban/pick orders on the tournament's <strong>Maps</strong> tab afterwards. Everything here is also changeable later from the Admin tab.</div>
+        </div>
         <div style="margin-top:20px">
           <button class="btn primary" id="cGo">Create tournament</button>
         </div>
@@ -327,6 +349,15 @@ async function renderHost() {
   cutMode.onchange = syncVis; finalMode.onchange = syncVis;
   syncVis();
 
+  // markdown toolbars for the two rich fields in the creation form
+  const cDescTa = document.getElementById('cDesc');
+  if (cDescTa) wireMdToolbar(cDescTa.previousElementSibling, cDescTa);
+  const cLobbyTa = document.getElementById('cLobby');
+  if (cLobbyTa) wireMdToolbar(cLobbyTa.previousElementSibling, cLobbyTa);
+  const cVetoBox = document.getElementById('cVeto');
+  const cVetoCfg = document.getElementById('cVetoCfg');
+  if (cVetoBox && cVetoCfg) cVetoBox.onchange = () => { cVetoCfg.style.display = cVetoBox.checked ? '' : 'none'; };
+
   document.getElementById('cGo').onclick = async () => {
     const name = document.getElementById('cName').value.trim();
     if (!name) return toast('Give the tournament a name', true);
@@ -364,7 +395,10 @@ async function renderHost() {
         signupMode: document.getElementById('cSignupMode').value,
         playerReporting: document.getElementById('cPlayerReporting').checked ? 1 : 0,
         admin: siteAdmin() || undefined,
-        veto: { enabled: document.getElementById('cVeto').checked, mode: 'upfront' },
+        rewards: document.getElementById('cRewards').value,
+        sponsors: document.getElementById('cSponsors').value,
+        streams: document.getElementById('cStreams').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const sp = l.indexOf(' '); return sp < 0 ? { url: l, info: '' } : { url: l.slice(0, sp), info: l.slice(sp + 1).trim() }; }),
+        veto: { enabled: document.getElementById('cVeto').checked, mode: document.getElementById('cVetoMode').value, abMode: document.getElementById('cVetoAb').value },
         eventDate: combineDateTimeUTC(document.getElementById('cDate'), document.getElementById('cTime')),
         signupOpensAt: combineDateTimeUTC(document.getElementById('cSuDate'), document.getElementById('cSuTime')),
         minRating: document.getElementById('cMinRating').value,
