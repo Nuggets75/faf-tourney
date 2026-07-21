@@ -74,7 +74,11 @@ async function refreshPending() {
     route();
   };
 }
-function siteAdmin() { return localStorage.getItem('siteAdmin') || null; }
+// A site admin is now a FAF account linked via the master password. This reflects that
+// linked state (from /auth/faf/me). It returns a truthy marker string when the current
+// account is a site admin, so existing `admin: siteAdmin()` calls still send something —
+// the server authenticates by session cookie regardless of the value.
+function siteAdmin() { return (fafAuth.user && fafAuth.user.siteAdmin) ? 'siteadmin' : null; }
 // The bar above is otherwise only drawn on navigation, so its "your turn to ban/pick" text
 // could go stale while a veto progresses elsewhere. Keep it current.
 setInterval(() => { try { refreshPending(); } catch (e) {} }, 30000);
@@ -439,7 +443,7 @@ function drawTopbar(modeText) {
     '<button class="btn ghost small" id="navHall" title="Hall of Fame">Hall of Fame</button>' +
     '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">FAQ / Rules</button>' +
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
-    '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' +
+    (siteAdmin() ? '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' : '') +
     (me()
       ? '<button class="btn ghost small" id="cmdrBtn" title="Your profile - set your Discord handle, log out">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + ((fafAuth.enabled && isFafVerified() && !(fafAuth.user && fafAuth.user.discord)) ? ' <span class="dcpill">\uD83D\uDCAC add Discord</span>' : '') + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
@@ -450,7 +454,7 @@ function drawTopbar(modeText) {
         : (fafAuth.user && fafAuth.user.editor
         ? '<button class="btn ghost small" id="edLink" title="Open the articles editor">EDITOR</button>'
         : (mode ? '<span>' + esc(mode) + '</span>' : '')))) +
-    '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Log out of site admin' : 'Site admin log in') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
+    '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Open site admin console' : 'Link this account as site admin') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
   const saLink = document.getElementById('saLink');
@@ -466,7 +470,7 @@ function drawTopbar(modeText) {
     siteAdminFlow();
   };
   document.getElementById('cmdrBtn').onclick = loginFlow;
-  document.getElementById('importBtn').onclick = importFlow;
+  { const ib = document.getElementById('importBtn'); if (ib) ib.onclick = importFlow; }
   document.getElementById('hostBtn').onclick = async () => {
     // hosting requires FAF login (when configured)
     if (fafAuth.enabled && !isFafVerified() && !siteAdmin()) {
@@ -512,30 +516,9 @@ function hostAccessFlow(st) {
   });
 }
 
-let _importPw = null; // held in memory after a successful password check
-
 function importFlow() {
-  if (siteAdmin()) return openImportWindow();
-  if (_importPw) return openImportWindow();
-  modal(`<h3>Import tournaments</h3>
-    <p class="muted small">Enter the import password to import tournaments from Challonge.</p>
-    <input type="password" id="impPw" placeholder="Import password" style="width:100%" autocomplete="off">
-    <div class="actions"><button class="btn ghost" id="impCancel">Cancel</button><button class="btn primary" id="impOk">Continue</button></div>`, root => {
-    const submit = async () => {
-      const pw = root.querySelector('#impPw').value;
-      if (!pw) return toast('Enter the password', true);
-      try {
-        await api('/api/verify_import', { password: pw });
-        _importPw = pw;
-        closeModal();
-        openImportWindow();
-      } catch (e) { toast(e.message, true); }
-    };
-    root.querySelector('#impCancel').onclick = closeModal;
-    root.querySelector('#impOk').onclick = submit;
-    root.querySelector('#impPw').onkeydown = e => { if (e.key === 'Enter') submit(); };
-    setTimeout(() => { const el = root.querySelector('#impPw'); if (el) el.focus(); }, 30);
-  });
+  if (!siteAdmin()) return toast('Site admin only', true);
+  openImportWindow();
 }
 
 function openImportWindow() {
@@ -556,7 +539,7 @@ function openImportWindow() {
       const btn = root.querySelector('#impWinGo');
       btn.disabled = true; btn.textContent = 'Importing…';
       try {
-        const r = await api('/api/import_challonge', { tournament: urlv, apiKey: keyv, admin: siteAdmin(), importPw: _importPw });
+        const r = await api('/api/import_challonge', { tournament: urlv, apiKey: keyv });
         closeModal();
         toast('Imported "' + r.name + '"');
         history.pushState(null, '', '/t/' + r.id);
@@ -628,12 +611,13 @@ async function renderSiteAdmin() {
   }
   // Directors see a reduced console (no Requests, no Directors management).
   const director = !siteAdmin() && isDirector;
-  const validTabs = director ? ['bans', 'logs', 'archived', 'articles'] : ['requests', 'directors', 'bans', 'logs', 'archived', 'articles'];
+  const validTabs = director ? ['bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
   if (validTabs.indexOf(saTab) < 0) saTab = validTabs[0];
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
     <div class="tabs" style="margin-bottom:14px">
       ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
+      ${director ? '' : `<button class="tab ${saTab === 'siteadmins' ? 'active' : ''}" data-satab="siteadmins">Site Admins${(saData && (saData.siteAdmins || []).length) ? ' (' + saData.siteAdmins.length + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>`}
       <button class="tab ${saTab === 'bans' ? 'active' : ''}" data-satab="bans">Tournament bans${(saData && (saData.bans || []).length) ? ' (' + saData.bans.length + ')' : ''}</button>
       <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
@@ -657,6 +641,7 @@ async function renderSiteAdmin() {
   }
   const body = document.getElementById('saBody');
   if (saTab === 'requests') drawSaRequests(body);
+  else if (saTab === 'siteadmins') drawSaSiteAdmins(body);
   else if (saTab === 'directors') drawSaDirectors(body);
   else if (saTab === 'bans') drawSaBans(body);
   else if (saTab === 'archived') drawSaArchived(body);
@@ -691,6 +676,38 @@ function adminLookupBox(container, onPick) {
   };
   container.querySelector('.alGo').onclick = go;
   name.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+}
+
+function drawSaSiteAdmins(el) {
+  const admins = saData.siteAdmins || [];
+  const me = saData.me;
+  let html = `<div class="panel section"><h2>Site Admins <span class="h2-strong">(${admins.length})</span></h2>
+    <p class="muted small">Site admins have full control over every tournament and this console. Access is tied to a FAF account — a person links their account by entering the master password (lock icon, top right), which also always re-links them even if removed here. Add others by FAF name below.</p>
+    <div id="saAdd" style="margin:10px 0"></div>`;
+  if (!admins.length) html += '<div class="empty">No linked site admins yet.</div>';
+  else html += '<div>' + admins.map(d => `<div class="sa-req">
+    <div class="sa-req-main"><div class="sa-req-name">${esc(d.name)} <span class="muted small">FAF id ${esc(d.fafId)}</span>${d.fafId === me ? ' <span class="idbadge verified">you</span>' : ''}</div><div class="muted small">Linked ${esc(fmtWhen(d.at))}${d.by ? ' · by ' + esc(d.by) : ''}</div></div>
+    <div class="sa-req-act"><button class="btn danger small" data-sarev="${esc(d.fafId)}">Remove</button></div>
+  </div>`).join('') + '</div>';
+  html += '</div>';
+  el.innerHTML = html;
+  adminLookupBox(el.querySelector('#saAdd'), (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="saGrantGo">Make site admin</button>`;
+    result.querySelector('#saGrantGo').onclick = async () => {
+      try { await saPost('siteadmin_grant', { fafId: found.fafId, name: found.name }); toast('Site admin added'); renderSiteAdmin(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
+  el.querySelectorAll('[data-sarev]').forEach(b => b.onclick = async () => {
+    const self = b.dataset.sarev === me;
+    if (!confirm(self ? 'Remove YOUR OWN site-admin access? You can re-link with the password.' : 'Remove this site admin?')) return;
+    try {
+      await saPost('siteadmin_revoke', { fafId: b.dataset.sarev });
+      toast('Removed');
+      if (self) { await refreshFafAuth(); if (!siteAdmin()) { history.pushState(null, '', '/'); route(); return; } }
+      renderSiteAdmin();
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function drawSaDirectors(el) {
@@ -1277,29 +1294,38 @@ function fmtWhen(ms) {
 
 function siteAdminFlow() {
   if (siteAdmin()) {
-    localStorage.removeItem('siteAdmin');
-    toast('Site admin off');
-    if (location.pathname === '/siteadmin') { history.pushState(null, '', '/'); }
+    // already a linked site admin — the lock button just opens the console
+    history.pushState(null, '', '/siteadmin');
     route();
     return;
   }
+  if (fafAuth.enabled && !isFafVerified()) {
+    modal(`<h3>Site admin</h3>
+      <p class="muted small">Site admin is now tied to your FAF account. Log in with FAF first, then enter the password to link this account.</p>
+      <div class="actions"><button class="btn ghost" id="saCancel">Cancel</button><button class="btn faf" id="saLogin">Log in with FAF</button></div>`, root => {
+      root.querySelector('#saCancel').onclick = closeModal;
+      root.querySelector('#saLogin').onclick = () => { location.href = '/auth/faf/login?returnTo=' + encodeURIComponent(location.pathname); };
+    });
+    return;
+  }
   modal(`
-    <h3>Site admin</h3>
-    <p class="muted small">Full control over every tournament on this server.</p>
+    <h3>Link this account as site admin</h3>
+    <p class="muted small">Enter the master password to link <strong>${esc((fafAuth.user && fafAuth.user.fafName) || 'your account')}</strong> as a site admin. You'll stay a site admin from then on (managed under the Site Admins tab); the password can always re-link you.</p>
     <label>Password</label>
     <input type="password" id="saPass" autocomplete="off">
     <div class="actions">
       <button class="btn ghost" id="saCancel">Cancel</button>
-      <button class="btn primary" id="saGo">Log in</button>
+      <button class="btn primary" id="saGo">Link account</button>
     </div>`, root => {
     const inp = root.querySelector('#saPass');
     inp.focus();
     const go = async () => {
       try {
         await api('/api/siteadmin', { password: inp.value });
-        localStorage.setItem('siteAdmin', inp.value);
+        await refreshFafAuth();          // refresh the linked flag
         closeModal();
-        toast('Site admin on');
+        toast('This account is now a site admin');
+        history.pushState(null, '', '/siteadmin');
         route();
       } catch (e) { toast(e.message, true); }
     };

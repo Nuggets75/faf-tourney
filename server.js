@@ -49,9 +49,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // Site-wide admin password. Set via ADMIN_PASSWORD environment variable in the
 // Dockhand stack — NOT in this repo, so it is never visible on GitHub.
 const GADMIN = process.env.ADMIN_PASSWORD || '';
-// Separate password that lets a trusted person use ONLY the Challonge importer,
-// without full site-admin rights. Set via IMPORT_PASSWORD env var.
-const IMPORT_PW = process.env.IMPORT_PASSWORD || '';
 
 // ===== FAF login (OAuth2 / OpenID Connect via Ory Hydra) =====
 // All three must be set for FAF login to be active; otherwise the feature stays dormant
@@ -89,6 +86,7 @@ function loadDB() {
   if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
   if (!Array.isArray(db.editorRequests)) db.editorRequests = [];
   if (!db.editorAllowed || typeof db.editorAllowed !== 'object') db.editorAllowed = {};
+  if (!db.siteAdmins || typeof db.siteAdmins !== 'object') db.siteAdmins = {};  // fafId -> {name, at, by}: FAF accounts linked as site admins
   if (!db.directors || typeof db.directors !== 'object') db.directors = {};   // fafId -> {name, at, by}: global TDs over all official tournaments
   if (!db.tourneyBans || typeof db.tourneyBans !== 'object') db.tourneyBans = {};  // fafId -> {name, reason, expires, at, by}
   if (!Array.isArray(db.articles)) db.articles = [];
@@ -151,8 +149,8 @@ function getT(id) { return db.tournaments[id] || null; }
 // account while FAF login is on — an anonymous visitor holding the link can view, not act.
 // (With FAF login off, legacy behaviour is unchanged: the token alone is enough.)
 function isAdmin(t, token, req) {
+  if (isSiteAdmin(req)) return true;        // linked site-admin session
   if (!token) return false;
-  if (GADMIN && token === GADMIN) return true;
   if (token !== t.adminToken) return false;
   if (FAF_OAUTH_ON && !currentSession(req)) return false;
   return true;
@@ -176,7 +174,6 @@ function clientIp(req) {
 function actorOf(req, token) {
   const sess = currentSession(req);
   if (sess) return { kind: 'faf', fafId: sess.fafId, name: sess.fafName || ('FAF ' + sess.fafId) };
-  if (token && GADMIN && token === GADMIN) return { kind: 'siteadmin', fafId: null, name: 'Site admin' };
   if (token) return { kind: 'token', fafId: null, name: 'Organizer link' };
   return { kind: 'anon', fafId: null, name: 'Anonymous' };
 }
@@ -222,11 +219,12 @@ function tlog(t, req, token, text) {
 // Before FAF login is configured, anyone can create (the legacy flow). Once it's on, a FAF
 // account must be approved by the site admin — that's what stops spam and accidents.
 function canHost(req, token) {
-  if (GADMIN && token === GADMIN) return true;         // site admin always can
+  if (isSiteAdmin(req)) return true;                    // site admin always can
   if (!FAF_OAUTH_ON) return true;                       // pre-login: unchanged, open to all
   const sess = currentSession(req);
   if (!sess) return false;
   if (db.directors && db.directors[sess.fafId]) return true;   // global directors can always host
+  if (db.siteAdmins && db.siteAdmins[sess.fafId]) return true;  // site admins can always host
   return !!db.hostAllowed[sess.fafId];
 }
 
@@ -234,6 +232,13 @@ function canHost(req, token) {
 // organizer link while logged in. Site admin always counts.
 // A tournament is "official" only when explicitly tagged so (site admin sets this).
 function isOfficial(t) { return t && t.category === 'official'; }
+// Site admin: a FAF account linked as site admin. The ADMIN_PASSWORD (GADMIN) is no longer an
+// identity of its own — it is only a bootstrap that links the CURRENT logged-in account (see
+// the /api/siteadmin link endpoint). So every site-admin check is now session-based.
+function isSiteAdmin(req) {
+  const sess = currentSession(req);
+  return !!(sess && sess.fafId && db.siteAdmins && db.siteAdmins[sess.fafId]);
+}
 // Global tournament directors: organizer rights on every OFFICIAL tournament.
 function isDirector(req) {
   const sess = currentSession(req);
@@ -890,7 +895,7 @@ async function handleAuth(req, res, url) {
     const prof = sess ? (db.profiles[sess.fafId] || {}) : {};
     return json(res, 200, {
       enabled: FAF_OAUTH_ON,
-      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId])) ? 1 : 0 } : null
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, siteAdmin: (db.siteAdmins && db.siteAdmins[sess.fafId]) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId]) || (db.siteAdmins && db.siteAdmins[sess.fafId])) ? 1 : 0 } : null
     });
   }
 
@@ -993,7 +998,7 @@ async function handleAPI(req, res, url) {
     // Hosting requires a FAF login (unless FAF login isn't configured yet, in which case
     // the legacy flow still applies so the site keeps working before go-live).
     const hostSess = currentSession(req);
-    if (FAF_OAUTH_ON && !hostSess && !(GADMIN && b.admin === GADMIN)) return json(res, 401, { error: 'Log in with FAF to host a tournament' });
+    if (FAF_OAUTH_ON && !hostSess && !isSiteAdmin(req)) return json(res, 401, { error: 'Log in with FAF to host a tournament' });
     // Once FAF login is live, hosting is approval-only: the site admin grants it per account.
     if (!canHost(req, b.admin)) {
       const pending = (db.hostRequests || []).some(r => r.fafId === (hostSess && hostSess.fafId) && r.status === 'pending');
@@ -1081,11 +1086,21 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { id: t.id, adminToken: t.adminToken });
   }
 
+  // Link the CURRENT logged-in FAF account as a site admin by entering the master password.
+  // This is the only place the password is accepted, and it always re-adds you (even if
+  // another admin removed you) — so the password holder can never be locked out.
   if (parts.length === 2 && parts[1] === 'siteadmin' && method === 'POST') {
     const b = await readBody(req);
     if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
+    const sess = currentSession(req);
+    if (!sess || !sess.fafId) return json(res, 401, { error: 'Log in with FAF first, then enter the site-admin password to link this account.' });
     if (b.password !== GADMIN) return json(res, 403, { error: 'Wrong password' });
-    return json(res, 200, { ok: true });
+    if (!db.siteAdmins[sess.fafId]) {
+      db.siteAdmins[sess.fafId] = { name: sess.fafName || ('FAF ' + sess.fafId), at: Date.now(), by: 'password' };
+      saveDB();
+      audit(req, 'siteadmin_linked', { actor: { kind: 'faf', fafId: sess.fafId, name: sess.fafName }, detail: 'via password' });
+    }
+    return json(res, 200, { ok: true, siteAdmin: 1 });
   }
 
   // ---- hosting access (only meaningful once FAF login is configured) ----
@@ -1171,7 +1186,7 @@ async function handleAPI(req, res, url) {
   // caller's own FAF token; requires site-admin password or a director session.
   if (parts.length === 2 && parts[1] === 'admin_lookup' && method === 'POST') {
     const b = await readBody(req);
-    const okAdmin = !!(GADMIN && b.password === GADMIN) || isDirector(req);
+    const okAdmin = isSiteAdmin(req) || isDirector(req);
     if (!okAdmin) return json(res, 403, { error: 'Site admin or director only' });
     const login = cleanName(b.name, 40);
     if (!login) return bad(res, 'Enter a FAF name');
@@ -1186,8 +1201,7 @@ async function handleAPI(req, res, url) {
   // ---- site admin data + decisions ----
   if (parts.length === 3 && parts[1] === 'siteadmin' && method === 'POST') {
     const b = await readBody(req, 8 * 1024 * 1024);   // article_image carries base64 images up to 5MB
-    if (!GADMIN) return bad(res, 'Site admin is not configured on the server (ADMIN_PASSWORD env var not set)');
-    const fullAdmin = !!(GADMIN && b.password === GADMIN);
+    const fullAdmin = isSiteAdmin(req);
     const editorSess = fullAdmin ? null : editorSession(req);
     const editor = !!editorSess;
     // A global tournament director gets a subset of the console (logs, archived, articles,
@@ -1244,6 +1258,8 @@ async function handleAPI(req, res, url) {
         })).sort((x, y) => y.at - x.at),
         articles: (db.articles || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0)),
         directors: Object.keys(db.directors || {}).map(fid => ({ fafId: fid, name: db.directors[fid].name || fid, at: db.directors[fid].at || 0, by: db.directors[fid].by || '' })).sort((x, y) => y.at - x.at),
+        siteAdmins: Object.keys(db.siteAdmins || {}).map(fid => ({ fafId: fid, name: db.siteAdmins[fid].name || fid, at: db.siteAdmins[fid].at || 0, by: db.siteAdmins[fid].by || '' })).sort((x, y) => y.at - x.at),
+        me: (currentSession(req) || {}).fafId || null,
         bans: bansList
       });
     }
@@ -1384,6 +1400,32 @@ async function handleAPI(req, res, url) {
     }
 
     // ---- global tournament directors (site admin only) ----
+    // ---- site admins (site admin only): add/remove other site admins by FAF id ----
+    if (act === 'siteadmin_grant') {
+      if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (db.siteAdmins[fid]) return bad(res, 'Already a site admin');
+      const me = (currentSession(req) || {});
+      db.siteAdmins[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: me.fafName || 'site admin' };
+      saveDB();
+      audit(req, 'siteadmin_granted', { actor: actorOf(req, null), detail: db.siteAdmins[fid].name + ' (' + fid + ')' });
+      return json(res, 200, { ok: true });
+    }
+    if (act === 'siteadmin_revoke') {
+      if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
+      const fid = String(b.fafId || '').trim();
+      if (!db.siteAdmins[fid]) return bad(res, 'Not a site admin');
+      // You can remove anyone (including yourself); the password can always re-link. But keep at
+      // least a soft guard against removing the very last admin by accident.
+      if (Object.keys(db.siteAdmins).length <= 1) return bad(res, 'Can\u2019t remove the last site admin. Add another first (the password can always re-link you).');
+      const nm = db.siteAdmins[fid].name || fid;
+      delete db.siteAdmins[fid];
+      saveDB();
+      audit(req, 'siteadmin_revoked', { actor: actorOf(req, null), detail: nm + ' (' + fid + ')' });
+      return json(res, 200, { ok: true });
+    }
+
     if (act === 'director_grant') {
       if (!fullAdmin) return json(res, 403, { error: 'Site admin only' });
       const fid = String(b.fafId || '').trim();
@@ -1437,20 +1479,10 @@ async function handleAPI(req, res, url) {
     return bad(res, 'Unknown site admin action');
   }
 
-  // verify the importer password (grants importer access only, not site admin)
-  if (parts.length === 2 && parts[1] === 'verify_import' && method === 'POST') {
-    const b = await readBody(req);
-    if (!IMPORT_PW && !GADMIN) return bad(res, 'Importing is not configured on the server (set IMPORT_PASSWORD).');
-    const pw = String(b.password || '');
-    if ((IMPORT_PW && pw === IMPORT_PW) || (GADMIN && pw === GADMIN)) return json(res, 200, { ok: true });
-    return json(res, 403, { error: 'Wrong password' });
-  }
-
   // import a completed tournament from Challonge (site admin only)
   if (parts.length === 2 && parts[1] === 'import_challonge' && method === 'POST') {
     const b = await readBody(req);
-    const okImport = (IMPORT_PW && b.importPw === IMPORT_PW) || (GADMIN && b.admin === GADMIN);
-    if (!okImport) return json(res, 403, { error: 'Not authorized to import' });
+    if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
     let cid = String(b.tournament || '').trim();
     if (!cid) return bad(res, 'Enter a Challonge tournament URL or ID');
     // accept a full URL or bare id: challonge.com/abc123 or challonge.com/subdomain/abc123
@@ -1494,7 +1526,7 @@ async function handleAPI(req, res, url) {
     const myFid = sess && sess.fafId;
     const list = Object.values(db.tournaments)
       .filter(t => !t.archived && (t.published !== false
-        || (GADMIN && req.headers['x-site-admin'] === GADMIN)   // site admin sees every draft
+        || isSiteAdmin(req)   // site admin sees every draft
         || (myFid && Array.isArray(t.organizerFafIds) && t.organizerFafIds.indexOf(myFid) >= 0)))   // organizers see their own
       .sort((a, b) => b.createdAt - a.createdAt)
       .map(t => ({
@@ -1802,7 +1834,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'delete') {
-      const siteAdmin = !!(GADMIN && b.admin === GADMIN);
+      const siteAdmin = isSiteAdmin(req);
       if (!siteAdmin) {
         // Non-site-admins never hard-delete: they archive. Archiving hides the tournament from
         // the public and can be restored (or permanently removed) by the site admin.
@@ -1835,7 +1867,7 @@ async function handleAPI(req, res, url) {
     }
 
     if (sub === 'restore') {
-      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
       t.archived = false; t.archivedAt = null;
       saveDB();
       audit(req, 'tournament_restored', { tournamentId: t.id, tournamentName: t.name, token: b.admin, detail: 'restored by site admin' });
@@ -2380,7 +2412,7 @@ async function handleAPI(req, res, url) {
     // Official vs community is picked once at creation by the organizer; only the
     // site admin can change it afterwards.
     if (sub === 'set_category') {
-      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
       const cat = (b.category === 'official' || b.category === 'community') ? b.category : null;
       if (!cat) return bad(res, 'Category must be official or community');
       const before = t.category || 'community';
@@ -2397,7 +2429,7 @@ async function handleAPI(req, res, url) {
     // Site admin attaches organizer rights to a FAF account directly (useful for
     // tournaments that predate identity tracking, where the list is empty).
     if (sub === 'add_organizer') {
-      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
       const fid = String(b.fafId || '').trim();
       if (!fid) return bad(res, 'FAF id required');
       if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
@@ -2416,7 +2448,7 @@ async function handleAPI(req, res, url) {
 
     // Site admin strips organizer rights from a FAF account on this tournament.
     if (sub === 'remove_organizer') {
-      if (!(GADMIN && b.admin === GADMIN)) return json(res, 403, { error: 'Site admin only' });
+      if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
       const fid = String(b.fafId || '').trim();
       if (!Array.isArray(t.organizerFafIds) || t.organizerFafIds.indexOf(fid) < 0) return bad(res, 'Not an organizer of this tournament');
       t.organizerFafIds = t.organizerFafIds.filter(x => x !== fid);
