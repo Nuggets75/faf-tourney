@@ -40,7 +40,7 @@ async function renderHome() {
     return parts.join(', ');
   };
 
-  app.innerHTML = '<div class="page">' + loginPanel + groups.map((g, i) => `
+  app.innerHTML = '<div class="page page-wide">' + loginPanel + groups.map((g, i) => `
     <div class="panel section">
       <h2>${esc(g[0])} <span class="h2-strong">(${g[1].length})</span></h2>
       <div id="tlist${i}">${g[1].length ? '' : '<div class="empty">' + esc(g[2]) + '</div>'}</div>
