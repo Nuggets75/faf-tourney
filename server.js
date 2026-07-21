@@ -86,6 +86,8 @@ function loadDB() {
   if (!db.hostAllowed || typeof db.hostAllowed !== 'object') db.hostAllowed = {};
   if (!Array.isArray(db.editorRequests)) db.editorRequests = [];
   if (!db.editorAllowed || typeof db.editorAllowed !== 'object') db.editorAllowed = {};
+  if (!Array.isArray(db.importerRequests)) db.importerRequests = [];
+  if (!db.importerAllowed || typeof db.importerAllowed !== 'object') db.importerAllowed = {};   // fafId -> {name, at, by}: may use the Challonge importer, nothing else
   if (!db.siteAdmins || typeof db.siteAdmins !== 'object') db.siteAdmins = {};  // fafId -> {name, at, by}: FAF accounts linked as site admins
   if (!db.directors || typeof db.directors !== 'object') db.directors = {};   // fafId -> {name, at, by}: global TDs over all official tournaments
   if (!db.tourneyBans || typeof db.tourneyBans !== 'object') db.tourneyBans = {};  // fafId -> {name, reason, expires, at, by}
@@ -159,6 +161,11 @@ function isAdmin(t, token, req) {
 function editorSession(req) {
   const sess = currentSession(req);
   return (sess && db.editorAllowed[sess.fafId]) ? sess : null;
+}
+// A FAF account approved to use the Challonge importer (importer access only).
+function isImporter(req) {
+  const sess = currentSession(req);
+  return !!(sess && db.importerAllowed[sess.fafId]);
 }
 
 // ---------- audit log ----------
@@ -895,7 +902,7 @@ async function handleAuth(req, res, url) {
     const prof = sess ? (db.profiles[sess.fafId] || {}) : {};
     return json(res, 200, {
       enabled: FAF_OAUTH_ON,
-      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, siteAdmin: (db.siteAdmins && db.siteAdmins[sess.fafId]) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId]) || (db.siteAdmins && db.siteAdmins[sess.fafId])) ? 1 : 0 } : null
+      user: sess ? { fafId: sess.fafId, fafName: sess.fafName, discord: prof.discord || '', editor: db.editorAllowed[sess.fafId] ? 1 : 0, importer: db.importerAllowed[sess.fafId] ? 1 : 0, director: (db.directors && db.directors[sess.fafId]) ? 1 : 0, siteAdmin: (db.siteAdmins && db.siteAdmins[sess.fafId]) ? 1 : 0, allowed: (db.hostAllowed[sess.fafId] || (db.directors && db.directors[sess.fafId]) || (db.siteAdmins && db.siteAdmins[sess.fafId])) ? 1 : 0 } : null
     });
   }
 
@@ -1182,6 +1189,45 @@ async function handleAPI(req, res, url) {
     return json(res, 200, { ok: true });
   }
 
+  // ---- Challonge importer access (mirrors editor access; needs FAF login) ----
+
+  if (parts.length === 2 && parts[1] === 'importer_status' && method === 'GET') {
+    const sess = currentSession(req);
+    if (!FAF_OAUTH_ON) return json(res, 200, { oauth: 0, allowed: 0, pending: 0, loggedIn: sess ? 1 : 0 });
+    if (!sess) return json(res, 200, { oauth: 1, allowed: 0, pending: 0, loggedIn: 0 });
+    const pending = (db.importerRequests || []).some(r => r.fafId === sess.fafId && r.status === 'pending');
+    return json(res, 200, {
+      oauth: 1,
+      allowed: db.importerAllowed[sess.fafId] ? 1 : 0,
+      pending: pending ? 1 : 0,
+      loggedIn: 1,
+      name: sess.fafName || ''
+    });
+  }
+
+  if (parts.length === 2 && parts[1] === 'importer_request' && method === 'POST') {
+    const b = await readBody(req);
+    const sess = currentSession(req);
+    if (!FAF_OAUTH_ON) return bad(res, 'FAF login is not configured on this server yet');
+    if (!sess) return json(res, 401, { error: 'Log in with FAF first' });
+    if (db.importerAllowed[sess.fafId]) return bad(res, 'You already have importer access');
+    const existing = (db.importerRequests || []).find(r => r.fafId === sess.fafId && r.status === 'pending');
+    if (existing) return bad(res, 'You already have a request waiting');
+    db.importerRequests.push({
+      id: uid(8),
+      fafId: sess.fafId,
+      fafName: sess.fafName || ('FAF ' + sess.fafId),
+      message: cleanName(b.message, 300) || '',
+      at: Date.now(),
+      status: 'pending',
+      decidedAt: null,
+      decidedBy: null
+    });
+    saveDB();
+    audit(req, 'importer_access_requested', { detail: sess.fafName || sess.fafId });
+    return json(res, 200, { ok: true });
+  }
+
   // FAF player lookup for the site-admin/director tools (ban list, director list). Uses the
   // caller's own FAF token; requires site-admin password or a director session.
   if (parts.length === 2 && parts[1] === 'admin_lookup' && method === 'POST') {
@@ -1245,6 +1291,12 @@ async function handleAPI(req, res, url) {
         at: db.editorAllowed[fid].at || 0,
         by: db.editorAllowed[fid].by || ''
       })).sort((x, y) => y.at - x.at);
+      const importerAllowed = Object.keys(db.importerAllowed).map(fid => ({
+        fafId: fid,
+        name: db.importerAllowed[fid].name || '',
+        at: db.importerAllowed[fid].at || 0,
+        by: db.importerAllowed[fid].by || ''
+      })).sort((x, y) => y.at - x.at);
       return json(res, 200, {
         role: 'admin',
         oauth: FAF_OAUTH_ON ? 1 : 0,
@@ -1253,6 +1305,8 @@ async function handleAPI(req, res, url) {
         allowed,
         editorRequests: (db.editorRequests || []).slice().reverse(),
         editorAllowed,
+        importerRequests: (db.importerRequests || []).slice().reverse(),
+        importerAllowed,
         archived: Object.values(db.tournaments).filter(t => t.archived).map(t => ({
           id: t.id, name: t.name, status: t.status, at: t.archivedAt || 0, players: (t.players || []).length
         })).sort((x, y) => y.at - x.at),
@@ -1399,6 +1453,50 @@ async function handleAPI(req, res, url) {
       return json(res, 200, { ok: true });
     }
 
+    // ---- Challonge importer management (full admin only) ----
+
+    if (act === 'importer_decide') {
+      const r = (db.importerRequests || []).find(x => x.id === b.id);
+      if (!r) return bad(res, 'Request not found');
+      if (r.status !== 'pending') return bad(res, 'That request was already decided');
+      r.status = b.approve ? 'approved' : 'denied';
+      r.decidedAt = Date.now();
+      r.decidedBy = 'site admin';
+      if (b.approve) db.importerAllowed[r.fafId] = { name: r.fafName, at: Date.now(), by: 'site admin' };
+      saveDB();
+      audit(req, b.approve ? 'importer_access_granted' : 'importer_access_denied', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: r.fafName + ' (' + r.fafId + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'importer_revoke') {
+      const fid = String(b.fafId || '').trim();
+      if (!db.importerAllowed[fid]) return bad(res, 'Not an importer');
+      const name = db.importerAllowed[fid].name || fid;
+      delete db.importerAllowed[fid];
+      saveDB();
+      audit(req, 'importer_access_revoked', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: name + ' (' + fid + ')'
+      });
+      return json(res, 200, { ok: true });
+    }
+
+    if (act === 'importer_grant') {
+      const fid = String(b.fafId || '').trim();
+      if (!fid) return bad(res, 'FAF id required');
+      if (db.importerAllowed[fid]) return bad(res, 'Already an importer');
+      db.importerAllowed[fid] = { name: cleanName(b.name, 60) || ('FAF ' + fid), at: Date.now(), by: 'site admin' };
+      saveDB();
+      audit(req, 'importer_access_granted', {
+        actor: { kind: 'siteadmin', fafId: null, name: 'Site admin' },
+        detail: (db.importerAllowed[fid].name) + ' (' + fid + ') \u2014 added directly'
+      });
+      return json(res, 200, { ok: true });
+    }
+
     // ---- global tournament directors (site admin only) ----
     // ---- site admins (site admin only): add/remove other site admins by FAF id ----
     if (act === 'siteadmin_grant') {
@@ -1482,7 +1580,7 @@ async function handleAPI(req, res, url) {
   // import a completed tournament from Challonge (site admin only)
   if (parts.length === 2 && parts[1] === 'import_challonge' && method === 'POST') {
     const b = await readBody(req);
-    if (!isSiteAdmin(req)) return json(res, 403, { error: 'Site admin only' });
+    if (!isSiteAdmin(req) && !isImporter(req)) return json(res, 403, { error: 'Not authorized to import \u2014 ask a site admin for importer access' });
     let cid = String(b.tournament || '').trim();
     if (!cid) return bad(res, 'Enter a Challonge tournament URL or ID');
     // accept a full URL or bare id: challonge.com/abc123 or challonge.com/subdomain/abc123

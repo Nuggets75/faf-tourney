@@ -443,7 +443,7 @@ function drawTopbar(modeText) {
     '<button class="btn ghost small" id="navHall" title="Hall of Fame">Hall of Fame</button>' +
     '<button class="btn ghost small" id="navFaq" title="FAQ / Rules">FAQ / Rules</button>' +
     '<button class="btn amber small" id="hostBtn" title="Host a tournament">Host tournament</button>' +
-    (siteAdmin() ? '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' : '') +
+    ((siteAdmin() || (fafAuth.user && fafAuth.user.importer)) ? '<button class="btn ghost small" id="importBtn" title="Import a tournament from Challonge">Import</button>' : '') +
     (me()
       ? '<button class="btn ghost small" id="cmdrBtn" title="Your profile - set your Discord handle, log out">' + esc(me()) + (isFafVerified() ? ' \u2713' : '') + ((fafAuth.enabled && isFafVerified() && !(fafAuth.user && fafAuth.user.discord)) ? ' <span class="dcpill">\uD83D\uDCAC add Discord</span>' : '') + '</button>'
       : '<button class="btn primary small" id="cmdrBtn" title="Player login">Log in</button>') +
@@ -517,7 +517,7 @@ function hostAccessFlow(st) {
 }
 
 function importFlow() {
-  if (!siteAdmin()) return toast('Site admin only', true);
+  if (!siteAdmin() && !(fafAuth.user && fafAuth.user.importer)) return toast('You don\u2019t have importer access', true);
   openImportWindow();
 }
 
@@ -616,7 +616,7 @@ async function renderSiteAdmin() {
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
     <div class="tabs" style="margin-bottom:14px">
-      ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
+      ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'siteadmins' ? 'active' : ''}" data-satab="siteadmins">Site Admins${(saData && (saData.siteAdmins || []).length) ? ' (' + saData.siteAdmins.length + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>`}
       <button class="tab ${saTab === 'bans' ? 'active' : ''}" data-satab="bans">Tournament bans${(saData && (saData.bans || []).length) ? ' (' + saData.bans.length + ')' : ''}</button>
@@ -651,9 +651,11 @@ async function renderSiteAdmin() {
 
 // A small FAF-name search box shared by the Directors and Bans tabs. Resolves a name to a
 // {fafId,name} via /api/admin_lookup, then calls onPick.
+// Shared "add by FAF name or id" box. A purely numeric entry is taken as a FAF id directly
+// (no lookup needed); anything else is resolved to an id via /api/admin_lookup by exact name.
 function adminLookupBox(container, onPick) {
   container.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap">
-    <input type="text" class="alName" placeholder="Exact FAF name" autocomplete="off" style="flex:1;min-width:200px">
+    <input type="text" class="alName" placeholder="FAF name or id" autocomplete="off" style="flex:1;min-width:200px">
     <button class="btn alGo">Look up</button></div>
   <div class="alResult muted small" style="margin-top:6px"></div>`;
   const name = container.querySelector('.alName');
@@ -661,17 +663,19 @@ function adminLookupBox(container, onPick) {
   const go = async () => {
     const v = name.value.trim();
     if (!v) return;
+    // a bare number is a FAF id — use it as-is, no name resolution required
+    if (/^\d+$/.test(v)) {
+      result.innerHTML = '';
+      onPick({ fafId: v, name: 'FAF ' + v }, result);
+      return;
+    }
     result.textContent = 'Looking up…';
     try {
-      const r = await saPost('../admin_lookup'.replace('../', ''), { name: v }).catch(async () => {
-        // admin_lookup isn't under /siteadmin/, call it directly
-        const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: siteAdmin(), name: v }) });
-        const d = await rr.json().catch(() => ({}));
-        if (!rr.ok) throw new Error(d.error || 'Lookup failed');
-        return d;
-      });
+      const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: v }) });
+      const d = await rr.json().catch(() => ({}));
+      if (!rr.ok) throw new Error(d.error || 'Lookup failed');
       result.innerHTML = '';
-      onPick(r, result);
+      onPick(d, result);
     } catch (e) { result.textContent = e.message; }
   };
   container.querySelector('.alGo').onclick = go;
@@ -682,7 +686,7 @@ function drawSaSiteAdmins(el) {
   const admins = saData.siteAdmins || [];
   const me = saData.me;
   let html = `<div class="panel section"><h2>Site Admins <span class="h2-strong">(${admins.length})</span></h2>
-    <p class="muted small">Site admins have full control over every tournament and this console. Access is tied to a FAF account — a person links their account by entering the master password (lock icon, top right), which also always re-links them even if removed here. Add others by FAF name below.</p>
+    <p class="muted small">Site admins have full control over every tournament and this console. Access is tied to a FAF account — a person links their account by entering the master password (lock icon, top right), which also always re-links them even if removed here. Add others by FAF name or id below.</p>
     <div id="saAdd" style="margin:10px 0"></div>`;
   if (!admins.length) html += '<div class="empty">No linked site admins yet.</div>';
   else html += '<div>' + admins.map(d => `<div class="sa-req">
@@ -853,10 +857,9 @@ function drawSaRequests(el) {
   html += '</div>';
 
   html += `<div class="panel section">
-    <div class="row" style="justify-content:space-between;align-items:center">
-      <h2 style="margin:0">Approved editors (${edAllowed.length})</h2>
-      <button class="btn ghost small" id="saEdGrant">+ Add by FAF id</button>
-    </div>`;
+    <h2 style="margin:0 0 8px">Approved editors (${edAllowed.length})</h2>
+    <p class="muted small" style="margin:0 0 8px">Add by FAF name or id:</p>
+    <div id="saEdAdd" style="margin-bottom:10px"></div>`;
   if (!edAllowed.length) html += '<div class="empty" style="margin-top:10px">Nobody yet.</div>';
   else html += '<div class="pick-rows" style="margin-top:10px">' + edAllowed.map(a => `<div class="pick-row on" style="cursor:default">
       <span class="pr-name">${esc(a.name)} <span class="muted small">FAF id ${esc(a.fafId)}</span></span>
@@ -868,6 +871,51 @@ function drawSaRequests(el) {
   if (edDecided.length) {
     html += '<div class="panel section"><h2>Past editor decisions</h2><table><thead><tr><th>Who</th><th>Outcome</th><th>When</th></tr></thead><tbody>' +
       edDecided.map(r => `<tr><td>${esc(r.fafName)}</td><td class="${r.status === 'approved' ? 'ok-msg' : 'muted'}">${esc(r.status)}</td><td class="muted small">${esc(fmtWhen(r.decidedAt || r.at))}</td></tr>`).join('') +
+      '</tbody></table></div>';
+  }
+
+  // ---- Challonge importer access (separate role: importing only) ----
+  const imReqs = saData.importerRequests || [];
+  const imPending = imReqs.filter(r => r.status === 'pending');
+  const imDecided = imReqs.filter(r => r.status !== 'pending');
+  const imAllowed = saData.importerAllowed || [];
+
+  html += `<div class="panel section" style="border-left:3px solid var(--amber)">
+    <h2>Tournament importers</h2>
+    <p class="muted small" style="margin:6px 0 10px">Importers can pull completed tournaments in from Challonge — nothing else. Share this link; people log in with FAF there and request access, which lands here for you to confirm:</p>
+    <div class="copybox"><input type="text" readonly value="${location.origin}/importer"><button class="btn small" data-copy="${location.origin}/importer">Copy importer link</button></div>
+  </div>`;
+
+  html += `<div class="panel section"><h2>Pending importer requests ${imPending.length ? '(' + imPending.length + ')' : ''}</h2>`;
+  if (!imPending.length) html += '<div class="empty">Nothing waiting.</div>';
+  else html += imPending.map(r => `<div class="sa-req">
+      <div class="sa-req-main">
+        <div class="sa-req-name">${esc(r.fafName)} <span class="muted small">FAF id ${esc(r.fafId)}</span> <span class="muted small">wants importer access</span></div>
+        ${r.message ? `<div class="sa-req-msg">${esc(r.message)}</div>` : ''}
+        <div class="muted small">${esc(fmtWhen(r.at))}</div>
+      </div>
+      <div class="sa-req-act">
+        <button class="btn primary small" data-saimdec="${r.id}" data-ok="1">Approve</button>
+        <button class="btn ghost small" data-saimdec="${r.id}" data-ok="0">Deny</button>
+      </div>
+    </div>`).join('');
+  html += '</div>';
+
+  html += `<div class="panel section">
+    <h2 style="margin:0 0 8px">Approved importers (${imAllowed.length})</h2>
+    <p class="muted small" style="margin:0 0 8px">Add by FAF name or id:</p>
+    <div id="saImAdd" style="margin-bottom:10px"></div>`;
+  if (!imAllowed.length) html += '<div class="empty" style="margin-top:10px">Nobody yet.</div>';
+  else html += '<div class="pick-rows" style="margin-top:10px">' + imAllowed.map(a => `<div class="pick-row on" style="cursor:default">
+      <span class="pr-name">${esc(a.name)} <span class="muted small">FAF id ${esc(a.fafId)}</span></span>
+      <span class="muted small">${esc(fmtWhen(a.at))}</span>
+      <button class="btn danger small" data-saimrev="${esc(a.fafId)}">Revoke</button>
+    </div>`).join('') + '</div>';
+  html += '</div>';
+
+  if (imDecided.length) {
+    html += '<div class="panel section"><h2>Past importer decisions</h2><table><thead><tr><th>Who</th><th>Outcome</th><th>When</th></tr></thead><tbody>' +
+      imDecided.map(r => `<tr><td>${esc(r.fafName)}</td><td class="${r.status === 'approved' ? 'ok-msg' : 'muted'}">${esc(r.status)}</td><td class="muted small">${esc(fmtWhen(r.decidedAt || r.at))}</td></tr>`).join('') +
       '</tbody></table></div>';
   }
 
@@ -896,24 +944,35 @@ function drawSaRequests(el) {
     try { await saPost('editor_revoke', { fafId: b.dataset.saedrev }); toast('Revoked'); renderSiteAdmin(); }
     catch (e) { toast(e.message, true); }
   });
+  el.querySelectorAll('[data-saimdec]').forEach(b => b.onclick = async () => {
+    try {
+      await saPost('importer_decide', { id: b.dataset.saimdec, approve: b.dataset.ok === '1' ? 1 : 0 });
+      toast(b.dataset.ok === '1' ? 'Approved' : 'Denied');
+      renderSiteAdmin();
+    } catch (e) { toast(e.message, true); }
+  });
+  el.querySelectorAll('[data-saimrev]').forEach(b => b.onclick = async () => {
+    if (!confirm('Revoke importer access for this account?')) return;
+    try { await saPost('importer_revoke', { fafId: b.dataset.saimrev }); toast('Revoked'); renderSiteAdmin(); }
+    catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
-  const eg = document.getElementById('saEdGrant');
-  if (eg) eg.onclick = () => {
-    modal(`<h3>Allow an account to edit articles</h3>
-      <label>FAF id</label><input type="text" id="segId" autocomplete="off">
-      <label>Name <span class="muted small">(optional, for the list)</span></label><input type="text" id="segName" maxlength="60" autocomplete="off">
-      <div class="actions"><button class="btn ghost" id="segCancel">Cancel</button><button class="btn primary" id="segGo">Allow</button></div>`, root => {
-      root.querySelector('#segCancel').onclick = closeModal;
-      root.querySelector('#segGo').onclick = async () => {
-        const fafId = root.querySelector('#segId').value.trim();
-        if (!fafId) return toast('FAF id required', true);
-        try {
-          await saPost('editor_grant', { fafId, name: root.querySelector('#segName').value.trim() });
-          closeModal(); toast('Allowed'); renderSiteAdmin();
-        } catch (e) { toast(e.message, true); }
-      };
-    });
-  };
+  const edAdd = document.getElementById('saEdAdd');
+  if (edAdd) adminLookupBox(edAdd, (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="edGrantGo">Make editor</button>`;
+    result.querySelector('#edGrantGo').onclick = async () => {
+      try { await saPost('editor_grant', { fafId: found.fafId, name: found.name }); toast('Editor added'); renderSiteAdmin(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
+  const imAdd = document.getElementById('saImAdd');
+  if (imAdd) adminLookupBox(imAdd, (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="imGrantGo">Make importer</button>`;
+    result.querySelector('#imGrantGo').onclick = async () => {
+      try { await saPost('importer_grant', { fafId: found.fafId, name: found.name }); toast('Importer added'); renderSiteAdmin(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
   const g = document.getElementById('saGrant');
   if (g) g.onclick = () => {
     modal(`<h3>Allow an account to host</h3>
@@ -1281,6 +1340,62 @@ async function renderEditor() {
       await api('/api/editor_request', { message: document.getElementById('edMsg').value });
       toast('Request sent');
       renderEditor();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+// ---------- /importer: Challonge importer access for approved FAF accounts ----------
+// Same approval flow as /editor: log in with FAF, request access, a site admin confirms it.
+async function renderImporter() {
+  setTitle('Tournament importer');
+  drawTopbar('');
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="page">
+    <h1 style="margin:0 0 14px">Import tournaments</h1>
+    <div id="impBody"><div class="panel"><div class="empty">Loading…</div></div></div>
+  </div>`;
+  const body = document.getElementById('impBody');
+
+  // Site admins always have importer access.
+  if (siteAdmin()) { body.innerHTML = ''; openImportWindow(); return; }
+
+  let st = null;
+  try { st = await (await fetch('/api/importer_status')).json(); } catch (e) {}
+  if (!st || !st.oauth) {
+    body.innerHTML = '<div class="panel"><div class="empty">FAF login isn\'t configured on this server yet, so importer accounts can\'t be confirmed. Ask the site admin.</div></div>';
+    return;
+  }
+  if (!st.loggedIn) {
+    body.innerHTML = `<div class="panel section"><h2>Log in first</h2>
+      <p class="muted small">Importing is tied to your FAF account. Log in, then request access here — a site admin confirms it.</p>
+      <button class="btn primary" id="impLogin">Log in with FAF</button></div>`;
+    document.getElementById('impLogin').onclick = () => {
+      location.href = '/auth/faf/login?returnTo=' + encodeURIComponent('/importer');
+    };
+    return;
+  }
+  if (st.allowed) {
+    body.innerHTML = `<div class="panel section"><h2>You have importer access</h2>
+      <p class="muted small">Logged in as <strong>${esc(st.name || '')}</strong>. You can pull completed tournaments from Challonge.</p>
+      <button class="btn primary" id="impOpen">Import from Challonge</button></div>`;
+    document.getElementById('impOpen').onclick = openImportWindow;
+    return;
+  }
+  if (st.pending) {
+    body.innerHTML = `<div class="panel section"><h2>Request sent</h2>
+      <p class="muted small">Your request for importer access is waiting for the site admin. This unlocks once it's approved.</p></div>`;
+    return;
+  }
+  body.innerHTML = `<div class="panel section"><h2>Request importer access</h2>
+    <p class="muted small">Logged in as <strong>${esc(st.name || '')}</strong>. Importer access lets you pull completed tournaments in from Challonge — nothing else. A site admin confirms each account.</p>
+    <label>Message <span class="muted small">(optional)</span></label>
+    <input type="text" id="impMsg" maxlength="300" autocomplete="off" placeholder="Who are you / why do you need access?">
+    <div style="margin-top:12px"><button class="btn primary" id="impReq">Request access</button></div></div>`;
+  document.getElementById('impReq').onclick = async () => {
+    try {
+      await api('/api/importer_request', { message: document.getElementById('impMsg').value });
+      toast('Request sent');
+      renderImporter();
     } catch (e) { toast(e.message, true); }
   };
 }
