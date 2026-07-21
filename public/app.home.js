@@ -72,9 +72,13 @@ async function renderHome() {
       else if (t.maxTeams) teamsLine = 'max ' + t.maxTeams + ' ' + unit;
       const signupEta = (t.status === 'signup' && !t.abandoned && t.signupOpensAt) ? eta(t.signupOpensAt) : null;
       const eventEta = (!t.abandoned && ['signup', 'draft', 'drafted'].indexOf(t.status) >= 0 && t.eventDate) ? eta(t.eventDate) : null;
+      // Once signups are actually open (status signup, not waiting to open) and a close time is
+      // set, show how long until they close — without hiding the "signups open" status.
+      const closeEta = (t.status === 'signup' && !t.abandoned && !signupEta && t.signupClosesAt) ? eta(t.signupClosesAt) : null;
       const countdown = signupEta
         ? '<span class="countchip">Signups start in: ' + esc(signupEta) + '</span>'
         : (eventEta ? '<span class="countchip">Event starts in: ' + esc(eventEta) + '</span>' : '');
+      const closeChip = closeEta ? '<span class="countchip countchip-close">Signups close in: ' + esc(closeEta) + '</span>' : '';
       const pill = t.abandoned
         ? '<span class="pill abandoned">ABANDONED</span>'
         : '<span class="pill ' + t.status + '">' + esc(statusLabel(t.status)) + '</span>';
@@ -83,9 +87,10 @@ async function renderHome() {
           <div class="tname"><a href="/t/${t.id}">${esc(t.name)}</a>${t.category ? ' <span class="catbox ' + (t.category === 'official' ? 'official' : 'community') + '">' + (t.category === 'official' ? 'OFFICIAL' : 'COMMUNITY') + '</span>' : ''}</div>
           <div class="tlist-meta">${esc(kind)}${t.imported ? '' : ' \u00b7 ' + t.players + ' signed up'}${tourneyDate(t) ? ' \u00b7 <span class="tdate">' + esc(fmtDateTime(tourneyDate(t))) + '</span>' : ''}${ratingLine ? ' \u00b7 ' + esc(ratingLine) : ''}${teamsLine ? ' \u00b7 ' + esc(teamsLine) : ''}</div>
         </div>
-        <span style="display:flex;align-items:center;gap:10px">
+        <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
           ${t.published === 0 ? '<span class="idbadge late" title="Draft — only you can see this until you publish it">draft</span>' : ''}
-          ${countdown || pill}
+          ${closeChip}
+          ${closeChip ? pill : (countdown || pill)}
           ${siteAdmin() ? '<button class="btn danger small" data-del="' + t.id + '">Delete</button>' : ''}
         </span>`;
       const delBtn = div.querySelector('[data-del]');

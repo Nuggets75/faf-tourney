@@ -146,6 +146,7 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .catbox.official { color: var(--green); border: 1px solid #2f6b45; background: #12331f; }
 .catbox.community { color: var(--muted); border: 1px solid var(--line-solid); background: #141d28; }
 .countchip { display: inline-block; font-family: var(--display); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); background: #2a2113; border: 1px solid #6b5220; border-radius: 3px; padding: 5px 12px; font-weight: 700; white-space: nowrap; }
+.countchip.countchip-close { color: #7fb0e0; background: #16222e; border-color: #2f4a63; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* phase stepper */
@@ -571,6 +572,8 @@ tbody tr:hover { background: #ffffff05; }
 /* ---------- mobile ---------- */
 @media (max-width: 720px) {
   main { padding: 18px 0 60px; }
+  .tlist-item { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .tlist-item > span:last-child { width: 100%; justify-content: flex-start !important; }
   .page { padding: 0 14px; }
   .widepage { padding: 0 14px; }
 

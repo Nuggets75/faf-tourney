@@ -102,7 +102,7 @@ function drawPlayers(el) {
       ${pendingReqs.length ? '<div style="margin-top:12px"><div class="ic-label">Signup requests (' + pendingReqs.length + ')</div>' + pendingReqs.map(pl => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(pl.name) + (pl.rating != null ? ' <span class="muted mono small">' + pl.rating + '</span>' : '') + '</div></div><div class="sa-req-act"><button class="btn primary small" data-sapprove="' + pl.id + '">Accept</button><button class="btn ghost small" data-sdecline="' + pl.id + '">Decline</button></div></div>').join('') + '</div>' : ''}
     </div>`;
   }
-  html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.filter(pl => !pl.pending).length})</span></h2>
+  html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.filter(pl => !pl.pending).length}${size === 1 && T.maxTeams ? ' of ' + T.maxTeams : ''}${size === 1 && T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>
     <table><thead><tr><th>#</th><th>Name</th><th>Rating</th>${T.teamSize > 1 ? '<th>Team</th>' : ''}${admin ? '<th></th>' : ''}</tr></thead>
     <tbody id="pRows"></tbody></table>
     ${T.players.length ? '' : '<div class="empty">No signups yet.</div>'}</div>`;
@@ -410,6 +410,12 @@ function drawOpenTeams(el) {
 
   // ---- teams: participants / waiting list / forming ----
   const cap = T.maxTeams > 0 ? T.maxTeams : 0;
+  const unitWord = size === 1 ? 'players' : 'teams';
+  const minMaxNote = (T.minTeams || cap)
+    ? '<p class="muted small" style="margin:-4px 0 10px">'
+      + (T.minTeams ? 'Minimum ' + T.minTeams + ' ' + unitWord + (cap ? ', maximum ' + cap : '') : 'Maximum ' + cap + ' ' + unitWord)
+      + ' \u2014 minimum is a target; the organizer decides whether to start or abandon.</p>'
+    : '';
   const fullTeams = T.teams.filter(x => x.playerIds.length >= size);
   const useCheckin = !!T.checkInDeadline || fullTeams.some(x => x.checkedIn);
   const orderedFull = fullTeams.slice().sort((a, b) => {
@@ -439,7 +445,7 @@ function drawOpenTeams(el) {
   if (!T.teams.length) {
     html += '<div class="panel section"><h2>Teams</h2><div class="empty">No teams yet. Be the first to create one.</div></div>';
   } else {
-    html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''})</span></h2>`;
+    html += `<div class="panel section"><h2>Participants <span class="h2-strong">(${participants.length}${cap ? ' of ' + cap : ''}${T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>${minMaxNote}`;
     html += participants.length ? '<div class="teamgrid">' + participants.map(teamCard).join('') + '</div>' : '<div class="empty">No full teams yet.</div>';
     html += '</div>';
     if (waitlist.length) {
