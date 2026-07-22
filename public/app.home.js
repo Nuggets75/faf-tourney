@@ -23,7 +23,7 @@ async function renderHome() {
   const completed = list.filter(t => t.status === 'finished' || t.abandoned)
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
   const groups = [
-    ['Upcoming', list.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing upcoming right now.'],
+    ['Upcoming / Open', list.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing upcoming right now.'],
     ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0 && !t.abandoned), 'No tournaments running.'],
     ['Completed', completed, 'No finished tournaments yet.']
   ];
