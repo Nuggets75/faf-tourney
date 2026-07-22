@@ -23,7 +23,7 @@ async function renderHome() {
   const completed = list.filter(t => t.status === 'finished' || t.abandoned)
     .sort((a, b) => tourneyDateMs(b) - tourneyDateMs(a)); // most recent first
   const groups = [
-    ['Open for signups', list.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing open right now.'],
+    ['Upcoming', list.filter(t => t.status === 'signup' && !t.abandoned), 'Nothing upcoming right now.'],
     ['Ongoing', list.filter(t => ['draft', 'drafted', 'running'].indexOf(t.status) >= 0 && !t.abandoned), 'No tournaments running.'],
     ['Completed', completed, 'No finished tournaments yet.']
   ];
@@ -1024,9 +1024,20 @@ function drawOverview(el) {
   html += gameInfoPanel();
 
   if (T.status === 'signup') {
-    html += `<div class="panel section"><h2>Status</h2>
-      <p>Signups are open — <strong>${T.players.length}</strong> player${T.players.length === 1 ? '' : 's'} in so far.
-      Head to the <a href="#" data-goto="players">Players</a> tab to sign up.</p></div>`;
+    const now = Date.now();
+    const opensAt = T.signupOpensAt ? new Date(T.signupOpensAt).getTime() : null;
+    const closesAt = T.signupClosesAt ? new Date(T.signupClosesAt).getTime() : null;
+    const notYetOpen = opensAt && now < opensAt;
+    const closed = closesAt && now > closesAt;
+    let msg;
+    if (notYetOpen) {
+      msg = `Signups haven't opened yet — they open <strong>${esc(fmtDateTime(T.signupOpensAt))}</strong>. Until then, only organizers can add players. <strong>${T.players.length}</strong> ${T.players.length === 1 ? 'player' : 'players'} added so far.`;
+    } else if (closed) {
+      msg = `Signups have closed — <strong>${T.players.length}</strong> ${T.players.length === 1 ? 'player' : 'players'} in. Team forming and captain picks can still continue; the organizer starts the bracket when ready.`;
+    } else {
+      msg = `Signups are open — <strong>${T.players.length}</strong> player${T.players.length === 1 ? '' : 's'} in so far. Head to the <a href="#" data-goto="players">Players</a> tab to sign up.`;
+    }
+    html += `<div class="panel section"><h2>Status</h2><p>${msg}</p></div>`;
   }
 
   if (T.status === 'draft' && T.draft) {
