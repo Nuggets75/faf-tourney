@@ -642,23 +642,30 @@ function drawTeams(el) {
           <p class="muted small" style="margin-bottom:8px">Grouped by team name as entered at signup. Teams need exactly ${T.teamSize} players; extras and players without a full team become substitutes when signups close.</p>
           <div class="teamgrid">`;
         for (const k of keys) {
-          const mems = groups[k];
+          const mems = groups[k].slice().sort((a, b) => (b.rating || 0) - (a.rating || 0));
           const dispName = (mems[0].teamName || '').trim();
           const n = mems.length, sz = T.teamSize;
           const cls = n === sz ? 'full' : 'open';
           const over = n > sz;
           html += `<div class="teamcard ${cls}">
             <div class="tc-head"><span class="tc-name">${esc(dispName)}</span>${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${n === sz ? 'ok' : ''}">${n}/${sz}${over ? ' \u26A0' : ''}</span></div>
-            <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}${admin ? ' <a href="#" class="muted small" data-pmedit="' + m.id + '">edit</a>' : ''}</div>`).join('')}</div>
+            <div class="tc-members">${mems.map(m => `<div><span class="tc-mem-name">${esc(m.name)}</span>${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}${admin ? ' <a href="#" class="muted small" data-pmedit="' + m.id + '">edit</a>' : ''}</div>`).join('')}</div>
             ${over ? '<div class="warn small" style="margin-top:6px">Too many players \u2014 only the first ' + sz + ' by signup order enter; the rest become substitutes.</div>' : ''}
           </div>`;
         }
         html += '</div></div>';
       }
       if (noTeam.length) {
+        const noTeamSorted = noTeam.slice().sort((a, b) => {
+          const ar = a.rating, br = b.rating;
+          if (ar == null && br == null) return 0;
+          if (ar == null) return 1;
+          if (br == null) return -1;
+          return br - ar;
+        });
         html += `<div class="panel section"><h2>No team name yet <span class="h2-strong">(${noTeam.length})</span></h2>
           <p class="muted small" style="margin-bottom:8px">These players become substitutes unless they enter a team name before signups close.</p>
-          <div class="unteamed">${noTeam.map(p => `<span class="unteamed-chip">${esc(p.name)}${admin ? ' <a href="#" class="assign-hint" data-pmedit="' + p.id + '">set team\u2192</a>' : ''}</span>`).join('')}</div></div>`;
+          <div class="unteamed">${noTeamSorted.map(p => `<span class="unteamed-chip">${esc(p.name)}${p.rating != null ? ' <span class="muted mono">' + p.rating + '</span>' : ''}${admin ? ' <a href="#" class="assign-hint" data-pmedit="' + p.id + '">set team\u2192</a>' : ''}</span>`).join('')}</div></div>`;
       }
       if (!keys.length && !noTeam.length && !myP) {
         html += '<div class="panel section"><div class="empty">No signups yet.</div></div>';
