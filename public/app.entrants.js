@@ -102,7 +102,7 @@ function drawPlayers(el) {
       ${pendingReqs.length ? '<div style="margin-top:12px"><div class="ic-label">Signup requests (' + pendingReqs.length + ')</div>' + pendingReqs.map(pl => '<div class="sa-req"><div class="sa-req-main"><div class="sa-req-name">' + esc(pl.name) + (pl.rating != null ? ' <span class="muted mono small">' + pl.rating + '</span>' : '') + '</div></div><div class="sa-req-act"><button class="btn primary small" data-sapprove="' + pl.id + '">Accept</button><button class="btn ghost small" data-sdecline="' + pl.id + '">Decline</button></div></div>').join('') + '</div>' : ''}
     </div>`;
   }
-  html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.filter(pl => !pl.pending).length}${size === 1 && T.maxTeams ? ' of ' + T.maxTeams : ''}${size === 1 && T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>
+  html += `<div class="panel section"><h2>Players <span class="h2-strong">(${T.players.filter(pl => !pl.pending).length}${T.teamSize === 1 && T.maxTeams ? ' of ' + T.maxTeams : ''}${T.teamSize === 1 && T.minTeams ? ', min ' + T.minTeams : ''})</span></h2>
     <table><thead><tr><th>#</th><th>Name</th><th>Rating</th>${T.teamSize > 1 ? '<th>Team</th>' : ''}${admin ? '<th></th>' : ''}</tr></thead>
     <tbody id="pRows"></tbody></table>
     ${T.players.length ? '' : '<div class="empty">No signups yet.</div>'}</div>`;
