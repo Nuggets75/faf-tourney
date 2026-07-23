@@ -452,7 +452,7 @@ function drawOpenTeams(el) {
     const openSlots = size - tm.playerIds.length;
     return `<div class="teamcard ${full ? 'full' : 'open'}">
       <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-counts">${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${full ? 'ok' : ''}" title="Players / team size">${tm.playerIds.length}/${size}</span></span></div>
-      <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
+      <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
       ${canJoin && !full ? ((tm.joinRequests || []).some(r => r.playerId === myPlayer.id)
         ? `<div class="tc-pending"><span class="muted small">Request pending</span> <button class="btn ghost small" data-cancel-join="${tm.id}">Cancel</button></div>`
@@ -484,7 +484,6 @@ function drawOpenTeams(el) {
   const unteamed = T.players.filter(p => !p.teamId);
   // the viewer can invite if they captain a team that still has room (or is an organizer)
   const myCapTeam = (myTeam && myPlayer && myTeam.captainId === myPlayer.id && myTeam.playerIds.length < size) ? myTeam : null;
-  const canInvite = !!myCapTeam || admin;
   if (unteamed.length) {
     html += `<div class="panel section"><h2>Not on a team yet <span class="h2-strong">(${unteamed.length})</span></h2>
       <div class="unteamed">${unteamed.slice().sort((a, b) => {
@@ -495,13 +494,16 @@ function drawOpenTeams(el) {
         let b = '';
         if (p.fafId) b = ' <span class="idbadge verified">\u2713</span>';
         const invitedByMine = myCapTeam && (myCapTeam.invites || []).some(iv => iv.playerId === p.id);
-        const inviteBtn = (canInvite && !admin) ? (invitedByMine
+        // Anyone captaining a team with room can invite (including an organizer who also captains).
+        const inviteBtn = myCapTeam ? (invitedByMine
             ? ' <button class="btn ghost small" data-cancel-invite="' + p.id + '">Cancel invite</button>'
-            : ' <button class="btn amber small" data-invite="' + p.id + '">Invite</button>')
+            : ' <button class="btn amber small" data-invite="' + p.id + '">Invite to my team</button>')
           : '';
-        return `<span class="unteamed-chip" ${admin ? 'data-assign="' + p.id + '"' : ''}>${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${admin ? ' <span class="assign-hint">assign\u2192</span>' : inviteBtn}</span>`;
+        // Organizers get a direct "assign" affordance (put anyone on any team, no acceptance).
+        const assignBtn = admin ? ' <a href="#" class="assign-hint" data-assign="' + p.id + '">assign\u2192</a>' : '';
+        return `<span class="unteamed-chip">${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${inviteBtn}${assignBtn}</span>`;
       }).join('')}</div>
-      ${admin ? '<p class="muted small" style="margin-top:8px">Click a player to assign them to a team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : (myCapTeam ? '<p class="muted small" style="margin-top:8px">You\u2019re captain of a team with room \u2014 invite players above, or they can request to join.</p>' : '')}</div>`;
+      ${admin ? '<p class="muted small" style="margin-top:8px">\u201cAssign\u201d puts a player straight onto a team. \u201cInvite\u201d asks them to join your own team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : (myCapTeam ? '<p class="muted small" style="margin-top:8px">You\u2019re captain of a team with room \u2014 invite players above, or they can request to join.</p>' : '')}</div>`;
   }
 
   // ---- organizer: form teams / divisions ----
