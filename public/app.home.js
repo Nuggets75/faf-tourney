@@ -438,7 +438,7 @@ async function renderHost() {
     setv('cDesc', t.description || ''); setv('cLobby', t.lobbyOptions || ''); setv('cMods', t.mods || '');
     setv('cRewards', t.rewards || ''); setv('cSponsors', t.sponsors || '');
     if (document.getElementById('cCategory')) setv('cCategory', t.category || '');
-    setv('cRatingType', t.ratingType || 'none'); setv('cRatingDate', t.ratingDate || '');
+    setv('cRatingType', t.ratingType || 'none'); setv('cRatingDate', t.ratingDate ? new Date(t.ratingDate).toISOString().slice(0, 10) : '');
     setv('cSignupMode', t.signupMode || 'open'); setc('cPlayerReporting', t.playerReporting !== 0);
     setv('cMinRating', t.minRating != null ? t.minRating : ''); setv('cMaxRating', t.maxRating != null ? t.maxRating : '');
     setv('cMaxTeamRating', t.maxTeamRating != null ? t.maxTeamRating : ''); setv('cRatingCap', t.ratingCap != null ? t.ratingCap : '');

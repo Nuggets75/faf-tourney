@@ -560,6 +560,14 @@ async function drawAdmin(el) {
       <div style="flex:1;min-width:140px"><label>Rating cap (clamp)</label><input type="number" id="aiCapR" min="0" max="4000" value="${T.ratingCap != null ? T.ratingCap : ''}" placeholder="off"></div>
     </div>
     <div style="margin-top:12px"><button class="btn" id="aiRatSave">Save rating limits</button></div>
+    ${T.ratingType && T.ratingType !== 'none' ? `<div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
+      <label>Rating source date <span class="muted small">(FAF ratings are pulled as of this day; blank = whenever the player signs up)</span></label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="date" id="aiRatingDate" value="${T.ratingDate ? new Date(T.ratingDate).toISOString().slice(0, 10) : ''}" style="flex:1;min-width:180px">
+        <button class="btn" id="aiRatingDateSave">Save rating date</button>
+      </div>
+      <p class="muted small" style="margin-top:6px">Currently: <strong>${T.ratingDate ? new Date(T.ratingDate).toLocaleDateString() : 'taken at signup time'}</strong>. Changing this affects ratings pulled from now on; it doesn't retroactively re-pull players already signed up.</p>
+    </div>` : ''}
   </div>`;
 
   if (T.status !== 'finished' && T.competition === 'team') {
@@ -778,6 +786,14 @@ async function drawAdmin(el) {
       if (tr) body.maxTeamRating = tr.value;
       await api('/api/t/' + T.id + '/edit_info', body);
       toast('Rating limits saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const ratingDateSave = document.getElementById('aiRatingDateSave');
+  if (ratingDateSave) ratingDateSave.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/edit_info', { ratingDate: document.getElementById('aiRatingDate').value || null, admin: adminToken() });
+      toast('Rating date saved');
       await refresh();
     } catch (e) { toast(e.message, true); }
   };

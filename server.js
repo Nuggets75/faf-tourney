@@ -2959,6 +2959,7 @@ async function handleAPI(req, res, url) {
       if (b.maxRating !== undefined) t.maxRating = (parseInt(b.maxRating, 10) > 0) ? parseInt(b.maxRating, 10) : null;
       if (b.maxTeamRating !== undefined) t.maxTeamRating = (parseInt(b.maxTeamRating, 10) > 0) ? parseInt(b.maxTeamRating, 10) : null;
       if (b.ratingCap !== undefined) { t.ratingCap = (parseInt(b.ratingCap, 10) > 0) ? parseInt(b.ratingCap, 10) : null; recomputeAllRatings(t); }
+      if (b.ratingDate !== undefined) t.ratingDate = b.ratingDate ? (new Date(b.ratingDate).getTime() || null) : null;
       if (b.lobbyOptions !== undefined) t.lobbyOptions = cleanName(b.lobbyOptions, 20000);
       if (b.mods !== undefined) t.mods = cleanName(b.mods, 500);
       if (b.signupMode !== undefined && ['open', 'invite', 'request'].indexOf(b.signupMode) >= 0) t.signupMode = b.signupMode;
