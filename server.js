@@ -2762,10 +2762,26 @@ async function handleAPI(req, res, url) {
         teamSize = b.teamSize !== undefined ? intIn(b.teamSize, 1, 3, Math.min(t.teamSize, 3)) : Math.min(t.teamSize, 3);
         formation = (teamSize === 1) ? 'solo' : 'premade';
       }
-      if (formation === 'premade' && teamSize > 1 &&
-          (t.formation !== 'premade' || t.teamSize !== teamSize || t.competition !== competition) &&
-          t.players.length > 0) {
-        return bad(res, 'Remove the current signups first \u2014 premade tournaments register whole teams of the new size');
+      // Switching the team formation (premade <-> draft/captain-pick) is safe as long as no
+      // teams have actually formed yet: no teams built, no captains chosen, no draft under way,
+      // and nobody assigned to a team. In that state the signups are just loose individuals,
+      // which is what BOTH formats look like before teams exist, so we keep the players. Only
+      // block it once real team structure exists (then removing signups really is required).
+      const formationChanging = (t.formation !== formation) || (t.teamSize !== teamSize) || (t.competition !== competition);
+      const teamStructureExists =
+        (t.teams || []).length > 0 ||
+        (t.pendingCaptains || []).length > 0 ||
+        !!t.draft ||
+        (t.players || []).some(p => p.teamId);
+      if (formation === 'premade' && teamSize > 1 && formationChanging && teamStructureExists && t.players.length > 0) {
+        return bad(res, 'Teams have already started forming \u2014 remove the current signups first, or clear the teams, before switching to premade.');
+      }
+      // when we do switch formats with players kept, drop any empty leftover team scaffolding
+      if (formationChanging && !teamStructureExists) {
+        t.teams = [];
+        t.pendingCaptains = [];
+        t.draft = null;
+        (t.players || []).forEach(p => { delete p.teamName; });
       }
 
       t.competition = competition;
