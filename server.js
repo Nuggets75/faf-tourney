@@ -113,6 +113,13 @@ function loadDB() {
     if (!t.lateToken) t.lateToken = uid(12);
     if (!Array.isArray(t.organizerFafIds)) t.organizerFafIds = [];
     if (!Array.isArray(t.pendingCaptains)) t.pendingCaptains = [];
+    // "Premade teams" now uses the create-team / request-to-join / invite system (the 'open'
+    // formation). Migrate any legacy premade tournament to 'open'; while still in signup, drop
+    // the free-text team names players typed, since teams now form through the UI.
+    if (t.formation === 'premade') {
+      t.formation = 'open';
+      if (t.status === 'signup') { for (const p of (t.players || [])) { if (p.teamName) delete p.teamName; } }
+    }
     if (t.divisions === undefined) t.divisions = 0;
     for (const tm of (t.teams || [])) { if (tm.division === undefined) tm.division = 0; }
     for (const m of (t.matches || [])) {
@@ -529,6 +536,7 @@ function publicView(t) {
       checkedIn: x.checkedIn ? 1 : 0, createdAt: x.createdAt || 0,
       captainRenamed: x.captainRenamed ? 1 : 0,
       joinRequests: (x.joinRequests || []).map(r => ({ playerId: r.playerId, name: r.name, at: r.at || 0 })),
+      invites: (x.invites || []).map(iv => ({ playerId: iv.playerId, name: iv.name, at: iv.at || 0 })),
       eliminated: x.eliminated || false,
       out: x.out || null,
       finalRank: x.finalRank || null
@@ -1026,9 +1034,10 @@ async function handleAPI(req, res, url) {
     const bo = (v, d) => BO_OK.indexOf(parseInt(v, 10)) >= 0 ? parseInt(v, 10) : d;
     if (competition === 'team') {
       teamSize = intIn(b.teamSize, 1, 6, 2);
+      // "Premade teams" in the UI now uses the create-team / request-to-join / invite system,
+      // which is the 'open' formation internally. Only 'draft' and 'open' remain as real modes.
       formation = (teamSize === 1) ? 'solo'
-        : (b.formation === 'premade' ? 'premade'
-        : (b.formation === 'open' ? 'open' : 'draft'));
+        : (b.formation === 'draft' ? 'draft' : 'open');
       bracketType = ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0 ? b.bracketType : 'single';
       draftOrder = b.draftOrder === 'snake' ? 'snake' : 'linear';
       if (bracketType === 'single') {
@@ -1040,7 +1049,7 @@ async function handleAPI(req, res, url) {
       }
     } else {
       teamSize = intIn(b.teamSize, 1, 3, 1);
-      formation = (teamSize === 1) ? 'solo' : (b.formation === 'premade' ? 'premade' : 'open');
+      formation = (teamSize === 1) ? 'solo' : 'open';
       const mode = b.mode === 'points' ? 'points' : 'elim';
       ffaCfg = {
         perMatch: intIn(b.perMatch, 2, 16, Math.min(6, Math.floor(16 / teamSize))),
@@ -2182,7 +2191,7 @@ async function handleAPI(req, res, url) {
     // rename the dropped player to the sub's FAF name and fix the rating
     // ===== open-team management (formation === 'open') =====
     // helper checks live here so they can reference the request session
-    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'checkin_team', 'org_create_team', 'request_join', 'respond_join', 'cancel_join'].indexOf(sub) >= 0) {
+    if (['create_team', 'join_team', 'leave_team', 'disband_team', 'move_player', 'set_captain', 'checkin_team', 'org_create_team', 'request_join', 'respond_join', 'cancel_join', 'invite_to_team', 'cancel_invite', 'respond_invite'].indexOf(sub) >= 0) {
       if (t.formation !== 'open') return bad(res, 'This tournament does not use open team signups');
       if (t.status !== 'signup') return bad(res, 'Teams are locked once the tournament starts');
     }
@@ -2202,7 +2211,7 @@ async function handleAPI(req, res, url) {
 
     // drop a player's pending join requests everywhere (they got a team, withdrew, or were removed)
     function clearJoinRequests(playerId) {
-      (t.teams || []).forEach(tm => { if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== playerId); });
+      (t.teams || []).forEach(tm => { if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== playerId); if (tm.invites) tm.invites = tm.invites.filter(iv => iv.playerId !== playerId); });
     }
 
     if (sub === 'create_team') {
@@ -2330,6 +2339,66 @@ async function handleAPI(req, res, url) {
       } else {
         const pd = playerById(t, jr.playerId);
         tlog(t, req, b.admin, 'declined join request of ' + (pd ? pd.name : '?') + ' for team "' + team.name + '"');
+      }
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    // ---- captain-initiated invites (mirror of join requests, other direction) ----
+    if (sub === 'invite_to_team') {
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      const me = actingPlayer(b);
+      const isCap = !!(me && team.captainId === me.id);
+      if (!isCap && !canOrganize(t, req, b)) return json(res, 403, { error: 'Only the team captain or an organizer can invite players' });
+      const target = playerById(t, b.playerId);
+      if (!target) return bad(res, 'Player not found');
+      if (target.teamId) return bad(res, 'That player is already on a team');
+      if (team.playerIds.length >= t.teamSize) return bad(res, 'Your team is already full');
+      team.invites = team.invites || [];
+      if (team.invites.some(iv => iv.playerId === target.id)) return json(res, 200, { ok: true, already: 1 });
+      team.invites.push({ playerId: target.id, name: target.name, at: now() });
+      tlog(t, req, b.admin, 'invited ' + target.name + ' to team "' + team.name + '"');
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'cancel_invite') {
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      const me = actingPlayer(b);
+      const isCap = !!(me && team.captainId === me.id);
+      if (!isCap && !canOrganize(t, req, b)) return json(res, 403, { error: 'Only the captain or an organizer can cancel an invite' });
+      team.invites = (team.invites || []).filter(iv => iv.playerId !== b.playerId);
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
+    if (sub === 'respond_invite') {
+      // the invited player accepts or declines
+      const me = actingPlayer(b);
+      if (!me) return json(res, 401, { error: 'Sign up first' });
+      const team = teamById(t, b.teamId);
+      if (!team) return bad(res, 'Team not found');
+      team.invites = team.invites || [];
+      const idx = team.invites.findIndex(iv => iv.playerId === me.id);
+      if (idx < 0) return bad(res, 'That invite is no longer available');
+      team.invites.splice(idx, 1);
+      if (b.accept) {
+        if (me.teamId) return bad(res, 'Leave your current team first');
+        if (team.playerIds.length >= t.teamSize) return bad(res, 'That team is now full');
+        const cap = teamCapViolation(team, me);
+        if (cap) return bad(res, 'You can\u2019t join: the team\u2019s combined rating would become ' + cap.would + ', over the maximum of ' + cap.cap + '.');
+        team.playerIds.push(me.id);
+        me.teamId = team.id;
+        // clear this player's other pending requests and invites
+        t.teams.forEach(tm => {
+          if (tm.joinRequests) tm.joinRequests = tm.joinRequests.filter(r => r.playerId !== me.id);
+          if (tm.invites) tm.invites = tm.invites.filter(iv => iv.playerId !== me.id);
+        });
+        tlog(t, req, b.admin, me.name + ' joined team "' + team.name + '" (invite accepted)');
+      } else {
+        tlog(t, req, b.admin, me.name + ' declined the invite to team "' + team.name + '"');
       }
       saveDB();
       return json(res, 200, { ok: true });
@@ -2756,8 +2825,8 @@ async function handleAPI(req, res, url) {
       let teamSize = t.teamSize, formation = t.formation;
       if (competition === 'team') {
         teamSize = b.teamSize !== undefined ? intIn(b.teamSize, 1, 6, t.teamSize) : (t.competition === 'team' ? t.teamSize : 1);
-        const wantForm = b.formation !== undefined ? b.formation : (t.formation === 'premade' ? 'premade' : 'draft');
-        formation = (teamSize === 1) ? 'solo' : (wantForm === 'premade' ? 'premade' : 'draft');
+        const wantForm = b.formation !== undefined ? b.formation : t.formation;
+        formation = (teamSize === 1) ? 'solo' : (wantForm === 'draft' ? 'draft' : 'open');
       } else {
         teamSize = b.teamSize !== undefined ? intIn(b.teamSize, 1, 3, Math.min(t.teamSize, 3)) : Math.min(t.teamSize, 3);
         formation = (teamSize === 1) ? 'solo' : 'premade';

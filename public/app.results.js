@@ -387,7 +387,7 @@ async function drawAdmin(el) {
         <select id="af_size"${dis}>${[1,2,3,4,5,6].map(n => '<option value="' + n + '"' + (n === T.teamSize && T.competition === 'team' ? ' selected' : '') + '>' + n + 'v' + n + '</option>').join('')}</select>
         <div id="af_formWrap">
           <label>Team formation</label>
-          <select id="af_form"${dis}><option value="draft"${T.formation !== 'premade' ? ' selected' : ''}>Captains draft</option><option value="premade"${T.formation === 'premade' ? ' selected' : ''}>Premade teams</option></select>
+          <select id="af_form"${dis}><option value="draft"${T.formation === 'draft' ? ' selected' : ''}>Captains draft</option><option value="open"${T.formation !== 'draft' ? ' selected' : ''}>Premade teams</option></select>
           <div id="af_orderWrap">
             <label>Draft pick order</label>
             <select id="af_order"${dis}><option value="linear"${T.draftOrder !== 'snake' ? ' selected' : ''}>Bottom to top, every round</option><option value="snake"${T.draftOrder === 'snake' ? ' selected' : ''}>Snake (1\u2192N, N\u21921, ...)</option></select>

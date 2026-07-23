@@ -391,15 +391,26 @@ function drawOpenTeams(el) {
         <button class="btn ghost small" id="otLeave">Leave team</button>
         ${isCap && !myTeam.captainRenamed ? '<button class="btn ghost small" id="otRename" style="margin-left:6px">Rename</button>' : ''}
         ${isCap ? '<button class="btn danger small" id="otDisband" style="margin-left:6px">Disband team</button>' : ''}
-      </div></div>`;
+      </div>
+      ${isCap && !full && (myTeam.invites || []).length ? `<div style="margin-top:12px"><div class="ic-label">Invites sent (${myTeam.invites.length})</div><div class="tc-requests">${myTeam.invites.map(iv => `<div class="tc-req"><span>${esc(iv.name)} <span class="muted small">\u2014 waiting for a reply</span></span><span class="tc-req-btns"><button class="btn ghost small" data-cancel-invite="${iv.playerId}">Cancel</button></span></div>`).join('')}</div></div>` : ''}
+      </div>`;
   } else {
-    // signed up, no team: create or join
+    // signed up, no team: show any invites received, then create-or-join
+    const myInvites = T.teams.filter(tm => (tm.invites || []).some(iv => iv.playerId === myPlayer.id) && tm.playerIds.length < size);
+    if (myInvites.length) {
+      html += `<div class="panel section" style="border-left:3px solid var(--amber)"><h2>Invites to join a team <span class="h2-strong">(${myInvites.length})</span></h2>
+        <div class="tc-requests">${myInvites.map(tm => {
+          const sum = (tm.playerIds.map(pid => T.players.find(p => p.id === pid)).filter(Boolean)).reduce((a, m) => a + (m.rating || 0), 0);
+          return `<div class="tc-req"><span><strong>${esc(tm.name)}</strong> <span class="muted small">${tm.playerIds.length}/${size}${T.maxTeamRating != null ? ' · rating ' + sum + '/' + T.maxTeamRating : ''}</span> invited you</span>
+            <span class="tc-req-btns"><button class="btn primary small" data-accept-invite="${tm.id}">Accept</button> <button class="btn ghost small" data-decline-invite="${tm.id}">Decline</button></span></div>`;
+        }).join('')}</div></div>`;
+    }
     html += `<div class="panel section"><h2>Create a team</h2>
       <div class="row" style="gap:8px;max-width:420px">
         <input type="text" id="otNewName" maxlength="30" placeholder="Team name" autocomplete="off" style="flex:1">
         <button class="btn primary" id="otCreate">Create</button>
       </div>
-      <p class="muted small" style="margin-top:8px">You'll be captain. Teams need ${size} players to enter the bracket.</p></div>`;
+      <p class="muted small" style="margin-top:8px">You'll be captain. Teams need ${size} players to enter the bracket. Once you have a team, invite players from the pool or approve requests to join.</p></div>`;
   }
 
   // ---- check-in deadline ----
@@ -440,7 +451,7 @@ function drawOpenTeams(el) {
     const full = tm.playerIds.length >= size;
     const openSlots = size - tm.playerIds.length;
     return `<div class="teamcard ${full ? 'full' : 'open'}">
-      <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span>${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${full ? 'ok' : ''}">${tm.playerIds.length}/${size}</span></div>
+      <div class="tc-head"><span class="tc-name">${esc(tm.name)}</span><span class="tc-counts">${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${full ? 'ok' : ''}" title="Players / team size">${tm.playerIds.length}/${size}</span></span></div>
       <div class="tc-members">${mems.map(m => `<div>${esc(m.name)}${m.id === tm.captainId ? ' <span class="cap-tag">C</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}</div>`).join('')}</div>
       ${full ? `<div class="tc-checkin">${tm.checkedIn ? '<span class="idbadge verified">checked in</span>' : '<span class="idbadge late">not checked in</span>'}</div>` : ''}
       ${canJoin && !full ? ((tm.joinRequests || []).some(r => r.playerId === myPlayer.id)
@@ -471,14 +482,26 @@ function drawOpenTeams(el) {
 
   // ---- unteamed players ----
   const unteamed = T.players.filter(p => !p.teamId);
+  // the viewer can invite if they captain a team that still has room (or is an organizer)
+  const myCapTeam = (myTeam && myPlayer && myTeam.captainId === myPlayer.id && myTeam.playerIds.length < size) ? myTeam : null;
+  const canInvite = !!myCapTeam || admin;
   if (unteamed.length) {
     html += `<div class="panel section"><h2>Not on a team yet <span class="h2-strong">(${unteamed.length})</span></h2>
-      <div class="unteamed">${unteamed.map(p => {
+      <div class="unteamed">${unteamed.slice().sort((a, b) => {
+        const ar = a.rating, br = b.rating;
+        if (ar == null && br == null) return 0;
+        if (ar == null) return 1; if (br == null) return -1; return br - ar;
+      }).map(p => {
         let b = '';
         if (p.fafId) b = ' <span class="idbadge verified">\u2713</span>';
-        return `<span class="unteamed-chip" ${admin ? 'data-assign="' + p.id + '"' : ''}>${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${admin ? ' <span class="assign-hint">assign\u2192</span>' : ''}</span>`;
+        const invitedByMine = myCapTeam && (myCapTeam.invites || []).some(iv => iv.playerId === p.id);
+        const inviteBtn = (canInvite && !admin) ? (invitedByMine
+            ? ' <button class="btn ghost small" data-cancel-invite="' + p.id + '">Cancel invite</button>'
+            : ' <button class="btn amber small" data-invite="' + p.id + '">Invite</button>')
+          : '';
+        return `<span class="unteamed-chip" ${admin ? 'data-assign="' + p.id + '"' : ''}>${esc(p.name)}${p.rating != null ? ' <span class="mono muted">' + p.rating + '</span>' : ''}${b}${admin ? ' <span class="assign-hint">assign\u2192</span>' : inviteBtn}</span>`;
       }).join('')}</div>
-      ${admin ? '<p class="muted small" style="margin-top:8px">Click a player to assign them to a team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : ''}</div>`;
+      ${admin ? '<p class="muted small" style="margin-top:8px">Click a player to assign them to a team.</p><button class="btn ghost small" id="otOrgCreate">+ New team from a free agent</button>' : (myCapTeam ? '<p class="muted small" style="margin-top:8px">You\u2019re captain of a team with room \u2014 invite players above, or they can request to join.</p>' : '')}</div>`;
   }
 
   // ---- organizer: form teams / divisions ----
@@ -518,6 +541,10 @@ function drawOpenTeams(el) {
   };
   el.querySelectorAll('[data-request-join]').forEach(b => b.onclick = () => call('/request_join', { teamId: b.dataset.requestJoin }, 'Request sent — the captain will approve it'));
   el.querySelectorAll('[data-cancel-join]').forEach(b => b.onclick = () => call('/cancel_join', { teamId: b.dataset.cancelJoin }, 'Request withdrawn'));
+  el.querySelectorAll('[data-invite]').forEach(b => b.onclick = () => call('/invite_to_team', { teamId: myCapTeam.id, playerId: b.dataset.invite }, 'Invite sent'));
+  el.querySelectorAll('[data-cancel-invite]').forEach(b => b.onclick = () => call('/cancel_invite', { teamId: myCapTeam.id, playerId: b.dataset.cancelInvite }, 'Invite cancelled'));
+  el.querySelectorAll('[data-accept-invite]').forEach(b => b.onclick = () => call('/respond_invite', { teamId: b.dataset.acceptInvite, accept: 1 }, 'Joined the team'));
+  el.querySelectorAll('[data-decline-invite]').forEach(b => b.onclick = () => call('/respond_invite', { teamId: b.dataset.declineInvite, accept: 0 }, 'Invite declined'));
   el.querySelectorAll('[data-approve]').forEach(b => b.onclick = () => { const [teamId, playerId] = b.dataset.approve.split(':'); call('/respond_join', { teamId, playerId, accept: 1 }, 'Added to your team'); });
   el.querySelectorAll('[data-decline]').forEach(b => b.onclick = () => { const [teamId, playerId] = b.dataset.decline.split(':'); call('/respond_join', { teamId, playerId, accept: 0 }, 'Declined'); });
   el.querySelectorAll('[data-adisband]').forEach(b => b.onclick = () => { if (confirm('Disband this team?')) call('/disband_team', { teamId: b.dataset.adisband }, 'Team disbanded'); });
@@ -648,7 +675,7 @@ function drawTeams(el) {
           const cls = n === sz ? 'full' : 'open';
           const over = n > sz;
           html += `<div class="teamcard ${cls}">
-            <div class="tc-head"><span class="tc-name">${esc(dispName)}</span>${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${n === sz ? 'ok' : ''}">${n}/${sz}${over ? ' \u26A0' : ''}</span></div>
+            <div class="tc-head"><span class="tc-name">${esc(dispName)}</span><span class="tc-counts">${T.maxTeamRating != null ? (() => { const sum = mems.reduce((a, m) => a + (m.rating || 0), 0); return '<span class="tc-count' + (sum > T.maxTeamRating ? ' over' : '') + '" title="Combined rating / maximum">' + sum + '/' + T.maxTeamRating + '</span>'; })() : ''}<span class="tc-count ${n === sz ? 'ok' : ''}" title="Players / team size">${n}/${sz}${over ? ' \u26A0' : ''}</span></span></div>
             <div class="tc-members">${mems.map(m => `<div><span class="tc-mem-name">${esc(m.name)}</span>${m.rating != null ? ' <span class="muted mono">' + m.rating + '</span>' : ''}${m.discord ? ' <span class="dctag" title="Discord">\uD83D\uDCAC ' + esc(m.discord) + '</span>' : ''}${admin ? ' <a href="#" class="muted small" data-pmedit="' + m.id + '">edit</a>' : ''}</div>`).join('')}</div>
             ${over ? '<div class="warn small" style="margin-top:6px">Too many players \u2014 only the first ' + sz + ' by signup order enter; the rest become substitutes.</div>' : ''}
           </div>`;

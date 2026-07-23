@@ -171,7 +171,7 @@ async function renderHost() {
           <div id="formationWrap">
             <label>Team formation</label>
             <select id="cFormation">
-              <option value="open">Open teams — players sign up, then form teams themselves</option>
+              <option value="open">Premade teams — players sign up, then create teams and invite / request to join</option>
               <option value="draft">Captains draft — organizer picks captains, they draft the pool</option>
             </select>
             <div id="draftOrderWrap">
