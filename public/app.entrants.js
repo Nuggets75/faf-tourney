@@ -110,7 +110,16 @@ function drawPlayers(el) {
   el.innerHTML = html;
 
   const rows = document.getElementById('pRows');
-  T.players.forEach((p, i) => {
+  // Always show the player list ranked by rating (highest first); unrated players sit at the
+  // bottom. The "#" column is just the row position in this ranking.
+  const orderedPlayers = T.players.slice().sort((a, b) => {
+    const ar = a.rating, br = b.rating;
+    if (ar == null && br == null) return 0;
+    if (ar == null) return 1;
+    if (br == null) return -1;
+    return br - ar;
+  });
+  orderedPlayers.forEach((p, i) => {
     const tr = document.createElement('tr');
     const inTeam = p.teamId ? teamName(p.teamId) : (p.teamName || (T.subs && T.subs.includes(p.id) ? 'Substitute' : '—'));
     // identity badges
