@@ -348,6 +348,30 @@ function planSummary(t) {
   }
   const p = t.plan;
   if (!p) return '';
+  // Compact per-round rendering: "R1–2 Bo3 · R3 Bo5" — collapses consecutive equal Bo's.
+  const compactRounds = (list, prefix) => {
+    if (!Array.isArray(list) || !list.length) return '';
+    const parts = [];
+    let start = 0;
+    for (let i = 1; i <= list.length; i++) {
+      if (i === list.length || list[i] !== list[start]) {
+        const label = (i - 1 === start) ? (prefix + (start + 1)) : (prefix + (start + 1) + '\u2013' + i);
+        parts.push(label + ' Bo' + list[start]);
+        start = i;
+      }
+    }
+    return parts.join(' · ');
+  };
+  if (t.perRoundBo) {
+    if (t.bracketType === 'single' && Array.isArray(p.roundsList) && p.roundsList.length) {
+      return compactRounds(p.roundsList, 'R');
+    }
+    if (t.bracketType === 'double' && (Array.isArray(p.wbList) || Array.isArray(p.lbList))) {
+      const wb = compactRounds(p.wbList || [], 'WB R');
+      const lb = compactRounds(p.lbList || [], 'LB R');
+      return [wb, lb].filter(Boolean).join(' · ') + ' · GF Bo' + (p.gf || 5) + (p.lbHandicap ? ' (upper finalist starts 1-0 up)' : '');
+    }
+  }
   if (t.bracketType === 'single') return 'Bo' + p.early + ' rounds · Bo' + p.semi + ' semifinal · Bo' + p.final + ' final';
   if (t.bracketType === 'double') return 'Winners bracket Bo' + p.wb + ' (final Bo' + p.wbFinal + ') · losers bracket Bo' + p.lb + ' (final Bo' + p.lbFinal + ') · grand final Bo' + p.gf + (p.lbHandicap ? ' (upper finalist starts 1-0 up)' : '');
   return 'Bo' + p.bo + ' matches' + (p.final ? ' · Bo' + p.finalBo + ' final between the top 2' : ' · highest standing wins') + (p.fast ? ' · fast pairing' : '');

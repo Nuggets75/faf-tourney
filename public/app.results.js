@@ -327,7 +327,6 @@ async function drawAdmin(el) {
 
   let html = `<div class="panel section"><h2>Share links</h2>
     ${copyRow('Public link — share with everyone', base)}
-    ${copyRow('Organizer link — makes whoever opens it an organizer (they must log in). KEEP PRIVATE.', base + '?admin=' + secrets.adminToken)}
     ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
     ${secrets.streamerToken ? copyRow('Streamer/caster link — read access to EVERYTHING (all chats, hidden maps & pools) and can post in every chat, but zero organizer powers: no Admin tab, no Log, no player changes. For casters & production.', base + '?streamer=' + secrets.streamerToken) : ''}
   </div>`;
@@ -359,16 +358,16 @@ async function drawAdmin(el) {
     const orgs = T.organizers || [];
     html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${orgs.length})</span></h2>
       <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
-      <p class="muted small">Anyone who opens the organizer link is added here automatically, and only a site admin can remove an organizer. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
-      ${orgs.length ? '' : '<div class="empty" style="margin:10px 0">No FAF account holds organizer rights here yet \u2014 this tournament predates identity tracking or was created without being logged in. Rights so far come only from the organizer link' + (sa ? ' or the site admin password' : '') + '. Use the buttons below to fix that.</div>'}
+      <p class="muted small">Add an organizer below by FAF name or id. Only a site admin can remove one. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
+      ${orgs.length ? '' : '<div class="empty" style="margin:10px 0">No FAF account holds organizer rights here yet. Add one below by FAF name or id.</div>'}
       <div class="pick-rows" style="margin-top:10px">${orgs.map(o => `<div class="pick-row on" style="cursor:default">
         <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
         <button class="btn ghost small" data-orgvis="${esc(o.fafId)}" data-hidden="${o.hidden ? 1 : 0}">${o.hidden ? 'Show to players' : 'Hide from players'}</button>
         ${sa ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '">Remove</button>' : ''}
       </div>`).join('')}</div>
-      <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
-        ${fafAuth.user && (sa || (fafAuth.user.director && T.category === 'official')) && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
-        ${sa ? '<button class="btn ghost small" id="orgAddId">+ Add by FAF id</button>' : ''}
+      <div style="margin-top:10px">
+        ${fafAuth.user && (sa || (fafAuth.user.director && T.category === 'official')) && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf" style="margin-bottom:10px">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
+        ${sa ? '<div id="orgAdd"></div>' : ''}
       </div></div>`;
   }
 
@@ -395,6 +394,10 @@ async function drawAdmin(el) {
         </div>
         <label>Bracket</label>
         <select id="af_bt"><option value="single"${T.bracketType === 'single' ? ' selected' : ''}>Single elimination</option><option value="double"${T.bracketType === 'double' ? ' selected' : ''}>Double elimination</option><option value="swiss"${T.bracketType === 'swiss' ? ' selected' : ''}>Swiss</option></select>
+        <label id="af_perRoundWrap" style="display:${T.bracketType === 'swiss' ? 'none' : 'flex'};align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+          <input type="checkbox" id="af_perRound"${T.perRoundBo ? ' checked' : ''}> Set a different Bo for every round individually (on the Bracket tab)
+        </label>
+        <div id="af_perRoundNote" class="muted small" style="display:${T.perRoundBo ? 'block' : 'none'};margin:4px 0 4px">Per-round Bo is managed on the <strong>Bracket</strong> tab \u2014 set each round there (works before and after the bracket is generated). The preset lengths below are hidden while this is on.</div>
         <div id="af_pSingle">
           <label>Match lengths</label>
           <div class="row" style="gap:10px">
@@ -671,23 +674,16 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
-  const orgAdd = document.getElementById('orgAddId');
-  if (orgAdd) orgAdd.onclick = () => {
-    modal(`<h3>Add an organizer by FAF id</h3>
-      <label>FAF id</label><input type="text" id="oaId" autocomplete="off">
-      <label>Name <span class="muted small">(optional, for the list)</span></label><input type="text" id="oaName" maxlength="60" autocomplete="off">
-      <div class="actions"><button class="btn ghost" id="oaCancel">Cancel</button><button class="btn primary" id="oaGo">Add</button></div>`, root => {
-      root.querySelector('#oaCancel').onclick = closeModal;
-      root.querySelector('#oaGo').onclick = async () => {
-        const fafId = root.querySelector('#oaId').value.trim();
-        if (!fafId) return toast('FAF id required', true);
-        try {
-          await api('/api/t/' + T.id + '/add_organizer', { fafId, name: root.querySelector('#oaName').value.trim(), admin: siteAdmin() });
-          closeModal(); toast('Added'); await refresh();
-        } catch (e) { toast(e.message, true); }
-      };
-    });
-  };
+  const orgAddBox = document.getElementById('orgAdd');
+  if (orgAddBox) adminLookupBox(orgAddBox, (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="orgAddGo">Make organizer</button>`;
+    result.querySelector('#orgAddGo').onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/add_organizer', { fafId: found.fafId, name: found.name, admin: siteAdmin() });
+        toast('Organizer added'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  });
   el.querySelectorAll('[data-orgvis]').forEach(b => b.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/organizer_visibility', { fafId: b.dataset.orgvis, hidden: b.dataset.hidden === '1' ? 0 : 1, admin: adminToken() });
@@ -697,7 +693,7 @@ async function drawAdmin(el) {
   });
   el.querySelectorAll('[data-orgdel]').forEach(b => b.onclick = async () => {
     const last = (T.organizers || []).length <= 1;
-    if (!confirm('Remove organizer rights from this account?' + (last ? '\n\nThis is the LAST organizer — afterwards only the organizer link and site admins can manage this tournament.' : ''))) return;
+    if (!confirm('Remove organizer rights from this account?' + (last ? '\n\nThis is the LAST organizer — afterwards only site admins can manage this tournament.' : ''))) return;
     try {
       await api('/api/t/' + T.id + '/remove_organizer', { fafId: b.dataset.orgdel, admin: siteAdmin() });
       toast('Organizer removed');
@@ -932,16 +928,21 @@ async function drawAdmin(el) {
       g('af_ffa').style.display = isFfa ? '' : 'none';
       g('af_formWrap').style.display = g('af_size').value === '1' ? 'none' : '';
       g('af_orderWrap').style.display = (g('af_form').value === 'draft' && g('af_size').value !== '1') ? '' : 'none';
-      g('af_pSingle').style.display = g('af_bt').value === 'single' ? '' : 'none';
-      g('af_pDouble').style.display = g('af_bt').value === 'double' ? '' : 'none';
-      g('af_pSwiss').style.display = g('af_bt').value === 'swiss' ? '' : 'none';
+      const bt = g('af_bt').value;
+      const perRound = g('af_perRound') && g('af_perRound').checked;
+      // the per-round toggle only applies to single/double elim
+      if (g('af_perRoundWrap')) g('af_perRoundWrap').style.display = (isFfa || bt === 'swiss') ? 'none' : 'flex';
+      if (g('af_perRoundNote')) g('af_perRoundNote').style.display = (!isFfa && bt !== 'swiss' && perRound) ? 'block' : 'none';
+      g('af_pSingle').style.display = (bt === 'single' && !perRound) ? '' : 'none';
+      g('af_pDouble').style.display = (bt === 'double' && !perRound) ? '' : 'none';
+      g('af_pSwiss').style.display = bt === 'swiss' ? '' : 'none';
       g('af_fpoints').style.display = g('af_fmode').value === 'points' ? '' : 'none';
       g('af_felim').style.display = g('af_fmode').value === 'elim' ? '' : 'none';
       g('af_fcutto').style.display = g('af_fcutmode').value === '1' ? '' : 'none';
       g('af_ffinalsize').style.display = g('af_ffinalmode').value === '1' ? '' : 'none';
       syncPm();
     };
-    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode']) g(id).onchange = sync;
+    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound']) { const e = g(id); if (e) e.onchange = sync; }
     sync();
 
     g('af_save').onclick = async () => {
@@ -957,6 +958,7 @@ async function drawAdmin(el) {
       }
       if (!isFfa) {
         body.bracketType = g('af_bt').value;
+        body.perRoundBo = (g('af_perRound') && g('af_perRound').checked) ? 1 : 0;
         if (g('af_bt').value === 'single') body.plan = { early: g('af_early').value, semi: g('af_semi').value, final: g('af_final').value };
         else if (g('af_bt').value === 'double') body.plan = { wb: g('af_wb').value, wbFinal: g('af_wbf').value, lb: g('af_lb').value, lbFinal: g('af_lbf').value, gf: g('af_gf').value, lbHandicap: g('af_hcap').checked };
         else body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };

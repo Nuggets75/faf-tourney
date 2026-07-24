@@ -1035,6 +1035,31 @@ function bracketColumns(el, bracket, title, gfMatch, division) {
     head.className = 'bcol-title';
     head.textContent = colLabel(bracket, r, rounds);
     col.appendChild(head);
+    // Per-round Bo control (organizers only), when at least one match in the round hasn't started
+    if (viewToken()) {
+      const roundMs = ms.filter(x => x.round === r);
+      const editable = roundMs.filter(m => m.status !== 'live' && m.status !== 'done' && !(Array.isArray(m.games) && m.games.length));
+      const curBo = roundMs.length ? roundMs[0].bo : 3;
+      if (editable.length) {
+        const boWrap = document.createElement('div');
+        boWrap.className = 'bcol-bo';
+        boWrap.innerHTML = 'Bo <select class="bcol-bo-sel">' + [1, 3, 5, 7].map(v => '<option value="' + v + '"' + (v === curBo ? ' selected' : '') + '>Bo' + v + '</option>').join('') + '</select>';
+        const sel = boWrap.querySelector('select');
+        sel.onchange = async () => {
+          try {
+            await api('/api/t/' + T.id + '/set_round_bo', { bracket, round: r, bo: parseInt(sel.value, 10), division: division || null, admin: adminToken() });
+            toast(colLabel(bracket, r, rounds) + ' set to Bo' + sel.value);
+            await refresh();
+          } catch (e) { toast(e.message, true); sel.value = curBo; }
+        };
+        col.appendChild(boWrap);
+      } else if (roundMs.length) {
+        const boWrap = document.createElement('div');
+        boWrap.className = 'bcol-bo muted';
+        boWrap.textContent = 'Bo' + curBo;
+        col.appendChild(boWrap);
+      }
+    }
     mapsLine(bracket, r, col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
@@ -1051,6 +1076,20 @@ function bracketColumns(el, bracket, title, gfMatch, division) {
     head.className = 'bcol-title';
     head.textContent = 'GRAND FINAL';
     col.appendChild(head);
+    if (viewToken() && gfMatch.status !== 'live' && gfMatch.status !== 'done' && !(Array.isArray(gfMatch.games) && gfMatch.games.length)) {
+      const boWrap = document.createElement('div');
+      boWrap.className = 'bcol-bo';
+      boWrap.innerHTML = 'Bo <select class="bcol-bo-sel">' + [1, 3, 5, 7].map(v => '<option value="' + v + '"' + (v === gfMatch.bo ? ' selected' : '') + '>Bo' + v + '</option>').join('') + '</select>';
+      const sel = boWrap.querySelector('select');
+      sel.onchange = async () => {
+        try {
+          await api('/api/t/' + T.id + '/set_round_bo', { bracket: 'gf', round: 1, bo: parseInt(sel.value, 10), division: division || null, admin: adminToken() });
+          toast('Grand Final set to Bo' + sel.value);
+          await refresh();
+        } catch (e) { toast(e.message, true); sel.value = gfMatch.bo; }
+      };
+      col.appendChild(boWrap);
+    }
     mapsLine('gf', 1, col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';

@@ -412,6 +412,30 @@ function playerTeamOfSession(t, req) {
   return teamById(t, mine.teamId);
 }
 
+// Rebuild the stored per-round Bo arrays from the actual matches, so the format summary and
+// later reads reflect per-round edits. Rounds are per-round uniform by design, so the first
+// match in each round represents that round's Bo.
+function syncPlanFromMatches(t) {
+  if (!Array.isArray(t.matches) || !t.matches.length) return;
+  const firstBo = (bracket, round) => {
+    const any = t.matches.find(x => x.bracket === bracket && x.round === round);
+    return any ? any.bo : null;
+  };
+  const roundsOf = (bracket) => {
+    const rs = [...new Set(t.matches.filter(x => x.bracket === bracket).map(x => x.round))].sort((a, b) => a - b);
+    return rs.map(r => firstBo(bracket, r)).filter(v => v != null);
+  };
+  t.plan = t.plan || {};
+  if (t.bracketType === 'single') {
+    t.plan.roundsList = roundsOf('wb');
+  } else if (t.bracketType === 'double') {
+    t.plan.wbList = roundsOf('wb');
+    t.plan.lbList = roundsOf('lb');
+    const gf = t.matches.find(x => x.bracket === 'gf');
+    if (gf) t.plan.gf = gf.bo;
+  }
+}
+
 function matchLabel(t, m) {
   if (!m) return '';
   if (m.bracket === 'gf') return t.bracketType === 'swiss' ? 'Final' : 'Grand Final';
@@ -515,7 +539,7 @@ function publicView(t) {
     competition: t.competition, formation: t.formation,
     teamSize: t.teamSize, draftOrder: t.draftOrder,
     bracketType: t.bracketType, ffaCfg: t.ffaCfg || null,
-    plan: t.plan || null, maxTeams: t.maxTeams || 0,
+    plan: t.plan || null, maxTeams: t.maxTeams || 0, perRoundBo: t.perRoundBo ? 1 : 0,
     cfg: t.cfg || null, seeding: t.seeding, ratingType: t.ratingType || 'global', ratingDate: t.ratingDate || null,
     signupMode: t.signupMode || 'open',
     playerReporting: t.playerReporting === undefined ? 1 : (t.playerReporting ? 1 : 0),
@@ -2862,6 +2886,8 @@ async function handleAPI(req, res, url) {
 
       if (competition === 'team') {
         if (b.bracketType !== undefined && ['single', 'double', 'swiss'].indexOf(b.bracketType) >= 0) t.bracketType = b.bracketType;
+        // per-round Bo is only meaningful for elimination brackets, never swiss/ffa
+        if (b.perRoundBo !== undefined) t.perRoundBo = (b.perRoundBo && t.bracketType !== 'swiss') ? 1 : 0;
         const pb = b.plan || {};
         const op = (t.plan && typeof t.plan === 'object') ? t.plan : {};
         if (t.bracketType === 'single') {
@@ -3456,11 +3482,38 @@ async function handleAPI(req, res, url) {
           swissPairRound(t, 1);
           t.status = 'running';
         }
+        // reflect the per-round Bos actually generated in the stored plan lists (for the summary)
+        if (t.bracketType === 'single' || t.bracketType === 'double') syncPlanFromMatches(t);
         saveDB();
         return json(res, 200, { ok: true });
       }
 
       return bad(res, 'Unknown action');
+    }
+
+    // Set the Bo for every match in one bracket+round (post-generation, per-round editing).
+    // Only matches that haven't started yet are changed, so a live/finished match keeps its Bo.
+    if (sub === 'set_round_bo') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      const boVal = parseInt(b.bo, 10);
+      if (BO_OK.indexOf(boVal) < 0) return bad(res, 'Bo must be 1, 3, 5, or 7');
+      const bracket = String(b.bracket || '');
+      const round = parseInt(b.round, 10);
+      const division = b.division != null ? parseInt(b.division, 10) : null;
+      let changed = 0, skipped = 0;
+      for (const m of (t.matches || [])) {
+        if (m.bracket !== bracket || m.round !== round) continue;
+        if (division != null && (m.division || 0) !== division) continue;
+        // don't disturb a match already under way or done
+        if (m.status === 'live' || m.status === 'done' || (Array.isArray(m.games) && m.games.length)) { skipped++; continue; }
+        if (m.bo !== boVal) { m.bo = boVal; changed++; }
+      }
+      // keep the stored plan arrays in sync so the format summary reflects the change too
+      t.perRoundBo = 1;
+      syncPlanFromMatches(t);
+      tlog(t, req, b.admin, 'set ' + bracket.toUpperCase() + ' round ' + round + ' to Bo' + boVal + (skipped ? ' (' + skipped + ' in-progress match(es) left as-is)' : ''));
+      saveDB();
+      return json(res, 200, { ok: true, changed, skipped });
     }
 
     if (sub === 'pick') {
