@@ -3491,6 +3491,31 @@ async function handleAPI(req, res, url) {
       return bad(res, 'Unknown action');
     }
 
+    // Pre-generation per-round Bo: before the bracket exists there are no matches, so the
+    // per-round choices made on the preview are stored in draft arrays on the plan
+    // (wbList / lbList / roundsList, plus gf). start_bracket's config is defaulted from these.
+    if (sub === 'set_plan_round_bo') {
+      if (!canOrganize(t, req, b)) return json(res, 403, { error: 'Organizer rights required' });
+      if (Array.isArray(t.matches) && t.matches.length) return bad(res, 'The bracket already exists \u2014 edit rounds on the bracket instead');
+      const boVal = parseInt(b.bo, 10);
+      if (BO_OK.indexOf(boVal) < 0) return bad(res, 'Bo must be 1, 3, 5, or 7');
+      const which = String(b.list || '');   // 'wb' | 'lb' | 'rounds' | 'gf'
+      t.plan = (t.plan && typeof t.plan === 'object') ? t.plan : {};
+      if (which === 'gf') {
+        t.plan.gf = boVal;
+      } else {
+        const key = which === 'wb' ? 'wbList' : which === 'lb' ? 'lbList' : which === 'rounds' ? 'roundsList' : null;
+        if (!key) return bad(res, 'Bad list');
+        const idx = parseInt(b.index, 10);
+        if (!(idx >= 0)) return bad(res, 'Bad round index');
+        if (!Array.isArray(t.plan[key])) t.plan[key] = [];
+        t.plan[key][idx] = boVal;
+      }
+      t.perRoundBo = 1;
+      saveDB();
+      return json(res, 200, { ok: true });
+    }
+
     // Set the Bo for every match in one bracket+round (post-generation, per-round editing).
     // Only matches that haven't started yet are changed, so a live/finished match keeps its Bo.
     if (sub === 'set_round_bo') {

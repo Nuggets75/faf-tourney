@@ -1301,9 +1301,30 @@ function drawBracketPreview(el) {
   };
 
   const plan = T.plan || {};
+  const perRound = !!T.perRoundBo;
+  const listBo = (list, i, fallback) => (perRound && Array.isArray(list) && list[i] != null) ? list[i] : fallback;
   const boForRound = r => {
-    if (T.bracketType === 'double') return r === R ? (plan.wbFinal || 3) : (plan.wb || 3);
-    return r === R ? (plan.final || 5) : r === R - 1 ? (plan.semi || 3) : (plan.early || 3);
+    if (T.bracketType === 'double') {
+      const fb = r === R ? (plan.wbFinal || 3) : (plan.wb || 3);
+      return listBo(plan.wbList, r - 1, fb);
+    }
+    const fb = r === R ? (plan.final || 5) : r === R - 1 ? (plan.semi || 3) : (plan.early || 3);
+    return listBo(plan.roundsList, r - 1, fb);
+  };
+  const canEditBo = viewerIsOrganizer() && perRound;
+  // a Bo <select> for a preview column that persists to the plan draft arrays
+  const previewBoSelect = (listName, index, current) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'bcol-bo';
+    wrap.innerHTML = 'Bo <select class="bcol-bo-sel">' + [1, 3, 5, 7].map(v => '<option value="' + v + '"' + (v === current ? ' selected' : '') + '>Bo' + v + '</option>').join('') + '</select>';
+    const sel = wrap.querySelector('select');
+    sel.onchange = async () => {
+      try {
+        await api('/api/t/' + T.id + '/set_plan_round_bo', { list: listName, index, bo: parseInt(sel.value, 10), admin: adminToken() });
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    return wrap;
   };
 
   const buildPreviewSection = (title, cls) => {
@@ -1339,6 +1360,7 @@ function drawBracketPreview(el) {
     h.className = 'bcol-title';
     h.textContent = colLabel('wb', r, R);
     col.appendChild(h);
+    if (canEditBo) col.appendChild(previewBoSelect(T.bracketType === 'double' ? 'wb' : 'rounds', r - 1, boForRound(r)));
     mapsLine('wb', r, col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
@@ -1368,6 +1390,7 @@ function drawBracketPreview(el) {
     h.className = 'bcol-title';
     h.textContent = 'GRAND FINAL';
     col.appendChild(h);
+    if (canEditBo) col.appendChild(previewBoSelect('gf', 0, plan.gf || 5));
     mapsLine('gf', 1, col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
@@ -1402,6 +1425,9 @@ function drawBracketPreview(el) {
         h.className = 'bcol-title';
         h.textContent = colLabel('lb', q, lbRounds);
         col.appendChild(h);
+        const lbFb = q === lbRounds ? (plan.lbFinal || 3) : (plan.lb || 3);
+        const lbBo = listBo(plan.lbList, q - 1, lbFb);
+        if (canEditBo) col.appendChild(previewBoSelect('lb', q - 1, lbBo));
         mapsLine('lb', q, col);
         const mc = document.createElement('div');
         mc.className = 'bcol-matches';
@@ -1410,7 +1436,7 @@ function drawBracketPreview(el) {
         for (let i = 0; i < count; i++) {
           const destId = 'lb:' + q + ':' + i;
           const box = previewBox(feederText(destId, 1), feederText(destId, 2),
-                                 (q === lbRounds ? (plan.lbFinal || 3) : (plan.lb || 3)), lbTag(q, i));
+                                 lbBo, lbTag(q, i));
           box.dataset.pid = 'pl_' + q + '_' + i;
           mc.appendChild(box);
         }

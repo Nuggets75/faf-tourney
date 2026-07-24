@@ -1010,7 +1010,9 @@ function openStartConfig() {
     for (let r = 1; r <= R; r++) {
       const lbl = r === R ? 'Final' : r === R - 1 ? 'Semifinals' : r === R - 2 ? 'Quarterfinals' : 'Round ' + r;
       const p = T.plan || {};
-      const dflt = r === R ? (p.final || 5) : r === R - 1 ? (p.semi || 3) : (p.early || 3);
+      const dflt = (T.perRoundBo && Array.isArray(p.roundsList) && p.roundsList[r - 1] != null)
+        ? p.roundsList[r - 1]
+        : (r === R ? (p.final || 5) : r === R - 1 ? (p.semi || 3) : (p.early || 3));
       rows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_r' + r, dflt)}</div></div>`);
     }
     return modal(`
@@ -1033,13 +1035,16 @@ function openStartConfig() {
     const lbR = 2 * R - 2;
     const wbRows = [], lbRows = [];
     const p = T.plan || {};
+    const pr = !!T.perRoundBo;
+    const wbDflt = r => (pr && Array.isArray(p.wbList) && p.wbList[r - 1] != null) ? p.wbList[r - 1] : (r === R ? (p.wbFinal || 3) : (p.wb || 3));
+    const lbDflt = q => (pr && Array.isArray(p.lbList) && p.lbList[q - 1] != null) ? p.lbList[q - 1] : (q === lbR ? (p.lbFinal || 3) : (p.lb || 3));
     for (let r = 1; r <= R; r++) {
       const lbl = r === R ? 'Final' : r === R - 1 ? 'Semis' : 'Round ' + r;
-      wbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_wb' + r, r === R ? (p.wbFinal || 3) : (p.wb || 3))}</div></div>`);
+      wbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_wb' + r, wbDflt(r))}</div></div>`);
     }
     for (let q = 1; q <= lbR; q++) {
       const lbl = q === lbR ? 'Final' : 'Round ' + q;
-      lbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_lb' + q, q === lbR ? (p.lbFinal || 3) : (p.lb || 3))}</div></div>`);
+      lbRows.push(`<div class="row" style="align-items:center;margin:6px 0"><div style="flex:1">${lbl}</div><div style="width:110px">${boSelect('bo_lb' + q, lbDflt(q))}</div></div>`);
     }
     return modal(`
       <h3>Bracket setup — double elimination</h3>
