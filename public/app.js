@@ -1091,10 +1091,9 @@ function drawSaRequests(el) {
   html += '</div>';
 
   html += `<div class="panel section">
-    <div class="row" style="justify-content:space-between;align-items:center">
-      <h2 style="margin:0">Allowed to host (${allowed.length})</h2>
-      <button class="btn ghost small" id="saGrant">+ Add by FAF id</button>
-    </div>`;
+    <h2 style="margin:0 0 8px">Allowed to host (${allowed.length})</h2>
+    <p class="muted small" style="margin:0 0 8px">Add by FAF name or id:</p>
+    <div id="saHostAdd" style="margin-bottom:10px"></div>`;
   if (!allowed.length) html += '<div class="empty" style="margin-top:10px">Nobody yet.</div>';
   else html += '<div class="pick-rows" style="margin-top:10px">' + allowed.map(a => `<div class="pick-row on" style="cursor:default">
       <span class="pr-name">${esc(a.name)} <span class="muted small">FAF id ${esc(a.fafId)}</span></span>
@@ -1253,23 +1252,14 @@ function drawSaRequests(el) {
       catch (e) { toast(e.message, true); }
     };
   });
-  const g = document.getElementById('saGrant');
-  if (g) g.onclick = () => {
-    modal(`<h3>Allow an account to host</h3>
-      <label>FAF id</label><input type="text" id="sgId" autocomplete="off">
-      <label style="margin-top:10px">Name <span class="muted" style="font-weight:400">(optional)</span></label><input type="text" id="sgName" autocomplete="off">
-      <div class="actions"><button class="btn ghost" id="sgCancel">Cancel</button><button class="btn primary" id="sgGo">Allow</button></div>`, root => {
-      root.querySelector('#sgCancel').onclick = closeModal;
-      root.querySelector('#sgGo').onclick = async () => {
-        const fafId = root.querySelector('#sgId').value.trim();
-        if (!fafId) return toast('FAF id required', true);
-        try {
-          await saPost('grant', { fafId, name: root.querySelector('#sgName').value.trim() });
-          closeModal(); toast('Allowed'); renderSiteAdmin();
-        } catch (e) { toast(e.message, true); }
-      };
-    });
-  };
+  const hostAdd = document.getElementById('saHostAdd');
+  if (hostAdd) adminLookupBox(hostAdd, (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="hostGrantGo">Allow to host</button>`;
+    result.querySelector('#hostGrantGo').onclick = async () => {
+      try { await saPost('grant', { fafId: found.fafId, name: found.name }); toast('Allowed to host'); renderSiteAdmin(); }
+      catch (e) { toast(e.message, true); }
+    };
+  });
 }
 
 const SA_ACTION_LABEL = {

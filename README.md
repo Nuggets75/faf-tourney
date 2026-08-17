@@ -157,6 +157,19 @@ Access is by FAF identity when FAF login is on. The roles:
 - **Bans** - site admins and directors can ban FAF accounts from participating.
 - **Everyone else** - the public view is read-only plus signup.
 
+### API access for the desktop client
+The FAF desktop client can't receive the site's httpOnly cookie, so requests may instead carry
+`Authorization: Bearer <FAF access token>`. The token is validated against FAF itself, cached in
+memory for 60 seconds per token, and turned into the same session object a cookie login produces -
+so every permission check (site admin, director, organizer, captain) behaves identically and
+nothing extra is written to `db.json`. The client sends a current token on every request, so the
+rating lookups at signup and organizer add work as they do on the site.
+
+The one limitation: a Bearer session exists only for the duration of a request, so the server
+cannot act for that player while they are offline. Every current token use is inside a request
+handler, so nothing is affected today; a future background job (e.g. a scheduled rating refresh)
+would need its own solution.
+
 ---
 
 ## Architecture

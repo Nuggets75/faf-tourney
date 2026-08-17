@@ -1132,7 +1132,68 @@ function appendHeader(res, name, value) {
   else if (Array.isArray(existing)) res.setHeader(name, existing.concat(value));
   else res.setHeader(name, [existing, value]);
 }
+// ---------- Bearer token sessions (desktop client) ----------
+// The desktop client is a public OAuth client: it holds a FAF access token but can never receive
+// our httpOnly cookie, so it authenticates with `Authorization: Bearer <faf access token>`.
+// The token is validated against FAF itself, and the resulting session object has the same shape
+// as a cookie session, so every downstream check (isSiteAdmin, canHost, canOrganize, fafValidToken)
+// works unchanged. Nothing is written to db.json - these sessions live only for the request.
+//
+// Difference worth knowing: a Bearer session exists only while the client is making a request, so
+// the server cannot act on that player's behalf while they are offline. Every current use of a
+// token is inside a request handler, so this costs nothing today.
+const BEARER_TTL_MS = 60 * 1000;      // re-validate a token with FAF at most once a minute
+const bearerCache = new Map();        // token -> { sess, exp }
+
+function bearerTokenOf(req) {
+  const h = (req && req.headers && req.headers.authorization) || '';
+  const m = /^Bearer\s+(.+)$/i.exec(String(h).trim());
+  return m ? m[1].trim() : null;
+}
+
+async function resolveBearerSession(req) {
+  const token = bearerTokenOf(req);
+  if (!token) return null;
+  const now = Date.now();
+  const hit = bearerCache.get(token);
+  if (hit && hit.exp > now) return hit.sess;
+  // Cheap guard against an unbounded map if a client ever churns tokens.
+  if (bearerCache.size > 500) {
+    for (const [k, v] of bearerCache) if (v.exp <= now) bearerCache.delete(k);
+    if (bearerCache.size > 500) bearerCache.clear();
+  }
+  let ident = null;
+  try { ident = await fafFetchIdentity(token); } catch (e) { ident = null; }
+  if (!ident || !ident.fafId) {
+    // Cache the rejection briefly too, so a bad or expired token can't hammer FAF on every request.
+    bearerCache.set(token, { sess: null, exp: now + 10000 });
+    return null;
+  }
+  const sess = {
+    fafId: String(ident.fafId),
+    fafName: ident.fafName || ('FAF ' + ident.fafId),
+    exp: now + BEARER_TTL_MS,
+    bearer: 1,
+    // fafValidToken reads this. The client always sends a current token, so there is nothing to
+    // refresh: hand back the token it arrived with.
+    faf: { access: token, refresh: null, exp: now + BEARER_TTL_MS }
+  };
+  bearerCache.set(token, { sess, exp: now + BEARER_TTL_MS });
+  return sess;
+}
+
+// Resolved once per request by the server entry point and cached on `req`, which keeps
+// currentSession() synchronous and leaves all 55 of its call sites untouched.
+async function attachSession(req) {
+  if (req._sessionResolved) return req._session || null;
+  req._sessionResolved = 1;
+  req._session = bearerTokenOf(req) ? await resolveBearerSession(req) : null;
+  return req._session;
+}
+
 function currentSession(req) {
+  // A Bearer session resolved by attachSession wins; otherwise fall back to the cookie.
+  if (req && req._session) return req._session;
   const c = parseCookies(req);
   const tok = c[SESSION_COOKIE];
   if (!tok) return null;
@@ -4807,6 +4868,9 @@ loadDB();
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
+    // Resolve an Authorization: Bearer session once, before anything reads currentSession().
+    // Only costs a FAF round trip when a token is present and uncached.
+    if (req.headers.authorization) await attachSession(req);
     if (url.pathname.startsWith('/api/')) return await handleAPI(req, res, url);
     if (url.pathname.startsWith('/auth/')) return await handleAuth(req, res, url);
     if (url.pathname.startsWith('/map-images/')) return serveMapImage(req, res, url);
