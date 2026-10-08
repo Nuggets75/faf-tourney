@@ -153,10 +153,22 @@ function openPlayerSubmit(m, mine) {
     const drawCb = root.querySelector('#psDraw');
     drawCb.onchange = () => { root.querySelector('#psDrawWrap').style.display = drawCb.checked ? '' : 'none'; };
     const wrap = root.querySelector('#psReplays');
+    // `max` on a number input only constrains the spinner - typing 1000 sails straight past it,
+    // and the old code then built 1000 replay fields and hung the browser. Clamp the values
+    // themselves, and bound the field count by what the series can actually contain: draws are
+    // recorded separately and score nothing, so wins per side can never exceed ceil(bo/2) and the
+    // two together can never exceed bo.
+    const clampInput = (el, lo, hi) => {
+      const raw = parseInt(el.value, 10);
+      if (!isFinite(raw)) return lo;
+      const v = Math.max(lo, Math.min(hi, raw));
+      if (String(v) !== el.value) el.value = String(v);
+      return v;
+    };
     const redraw = () => {
-      const s1 = parseInt(root.querySelector('#ps1').value, 10) || 0;
-      const s2 = parseInt(root.querySelector('#ps2').value, 10) || 0;
-      const n = Math.max(0, (s1 + s2) - (cur1 + cur2));
+      const s1 = clampInput(root.querySelector('#ps1'), m.hcap ? 1 : 0, maxW);
+      const s2 = clampInput(root.querySelector('#ps2'), 0, maxW);
+      const n = Math.max(0, Math.min(m.bo, (s1 + s2) - (cur1 + cur2)));
       wrap.innerHTML = n ? '<label>Replay ID' + (n === 1 ? '' : 's') + ' <span class="muted small">(one per new game, from the FAF client or replay vault)</span></label>' +
         Array.from({ length: n }, (_, i) => '<input type="text" class="psRid" maxlength="24" placeholder="Replay ID for game ' + (cur1 + cur2 + i + 1) + '" autocomplete="off" style="margin-bottom:6px">').join('')
         : '<p class="muted small">Raise a score to report new games.</p>';
@@ -295,25 +307,40 @@ function drawStandings(el) {
   }
 
   if (T.bracketType === 'swiss' && T.competition === 'team') {
-    // recompute swiss table client-side
-    const S = {};
-    for (const team of T.teams) S[team.id] = { id: team.id, w: 0, l: 0, gd: 0 };
-    for (const m of T.matches) {
-      if (m.bracket !== 'sw') continue;
-      if (m.status === 'bye') { const id = m.team1 !== 'BYE' ? m.team1 : m.team2; if (S[id]) { S[id].w++; S[id].gd += 1; } }
-      else if (m.status === 'done') {
-        const ws = m.winner === m.team1 ? m.score1 : m.score2;
-        const ls = m.winner === m.team1 ? m.score2 : m.score1;
-        if (S[m.winner]) { S[m.winner].w++; S[m.winner].gd += ws - ls; }
-        if (S[m.loser]) { S[m.loser].l++; S[m.loser].gd -= ws - ls; }
-      }
-    }
-    const rows = Object.values(S).sort((a, b) => b.w - a.w || b.gd - a.gd || teamSeed(a.id) - teamSeed(b.id));
-    el.innerHTML = `<div class="panel section"><h2>Swiss <span class="h2-strong">Standings</span></h2>
-      <table><thead><tr><th>#</th><th>Team</th><th>W</th><th>L</th><th>Game diff</th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr class="${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
+    const rows = swissTable(T);
+    const cuts = swissCutCfg(T);
+    const s2 = stageTwoCfgOf(T);
+    // With record cuts the table has to say what a row's record MEANS, not just show it:
+    // "2-1" is only readable if you also know that 3 wins is the finish line.
+    const stateCell = r => {
+      if (!cuts.on) return '';
+      if (r.state === 'advanced') return '<td><span class="pill live">Qualified</span></td>';
+      if (r.state === 'eliminated') return '<td><span class="pill">Eliminated</span></td>';
+      const need = [];
+      if (cuts.win) need.push((cuts.win - r.w) + ' more win' + (cuts.win - r.w === 1 ? '' : 's'));
+      if (cuts.loss) need.push((cuts.loss - r.l) + ' loss' + (cuts.loss - r.l === 1 ? '' : 'es') + ' left');
+      return '<td class="muted small">' + esc(need.join(' \u00b7 ')) + '</td>';
+    };
+    const head = cuts.on ? '<th>Status</th>' : '';
+    const note = [];
+    if (cuts.on) note.push(swissCutLabel(T));
+    if (s2) note.push('top ' + s2.cutTo + ' go through to the playoff bracket');
+    // The 'beaten' tiebreak is invisible unless its numbers are on the table.
+    const byBeaten = T.tiebreak === 'beaten';
+    const sbOf = id => (T.swissSB && T.swissSB[id] != null) ? T.swissSB[id] : 0;
+    // Two stages: the playoffs decide the places, so they come first - champion, final, 3rd
+    // place match and on down. The Swiss table below is how everyone got there.
+    const field = (stageTwoLive() && Array.isArray(T.stage2.field)) ? T.stage2.field : [];
+    const inField = T.teams.filter(x => field.indexOf(x.id) >= 0);
+    const playoffHTML = inField.length
+      ? `<div class="panel section"><h2>Playoff <span class="h2-strong">Standings</span></h2>${eliminationPlacingsTable(inField)}</div>` : '';
+    el.innerHTML = playoffHTML + `<div class="panel section"><h2>Swiss <span class="h2-strong">Standings</span></h2>
+      ${note.length ? `<p class="muted small" style="margin:-4px 0 10px">${esc(note.join(' \u00b7 '))}</p>` : ''}
+      ${byBeaten ? `<p class="muted small" style="margin:-4px 0 10px">${esc(swissTiebreakText('beaten'))}</p>` : ''}
+      <table><thead><tr><th>#</th><th>Team</th><th>W</th><th>L</th>${byBeaten ? '<th title="Sum of the Swiss scores (wins) of the opponents this player beat">Beaten opp.</th>' : ''}<th>Game diff</th>${head}</tr></thead><tbody>
+      ${rows.map((r, i) => `<tr class="${r.state === 'eliminated' ? 'row-out' : ''} ${i === 0 ? 'rank1' : i === 1 ? 'rank2' : i === 2 ? 'rank3' : ''}">
         <td class="mono">${i + 1}</td><td>${esc(teamName(r.id))}${T.championTeamId === r.id ? ' 🏆' : ''}</td>
-        <td class="mono">${r.w}</td><td class="mono">${r.l}</td><td class="mono">${r.gd > 0 ? '+' : ''}${r.gd}</td></tr>`).join('')}
+        <td class="mono">${r.w}</td><td class="mono">${r.l}</td>${byBeaten ? `<td class="mono">${sbOf(r.id)}</td>` : ''}<td class="mono">${r.gd > 0 ? '+' : ''}${r.gd}</td>${stateCell(r)}</tr>`).join('')}
       </tbody></table></div>`;
     return;
   }
@@ -351,33 +378,116 @@ function drawStandings(el) {
     return;
   }
 
-  // elimination formats: rank by how far each team got
+  // elimination formats: rank by how far each team got. With divisions, one table per division,
+  // each with its own champion and places - the King bracket first.
+  if (divisionsOnT()) {
+    let html = '';
+    for (let d = 1; d <= T.divisions; d++) {
+      html += `<div class="panel section"><h2>${esc(divisionNameOf(d))} <span class="h2-strong">Standings</span></h2>${eliminationPlacingsTable(divisionTeamsOf(d), divisionChampionOf(d), d)}</div>`;
+    }
+    el.innerHTML = html;
+    return;
+  }
+  el.innerHTML = `<div class="panel section"><h2>Standings</h2>${eliminationPlacingsTable(T.teams)}</div>`;
+}
+
+// Place, name and result of everyone in an elimination bracket, best first: by how far each got.
+// A 3rd place match splits the two beaten semi-finalists (3rd and 4th); while it is still to be
+// played they sit behind the beaten finalist, as "plays for 3rd place".
+function eliminationPlacingsTable(teams, champ, division) {
+  // `champ`/`division`: one division's table, with that division's champion and round names
+  const champion = champ !== undefined ? champ : T.championTeamId;
+  const m3 = division ? null : thirdPlaceMatchOf(T);
+  const for3rd = id => !!(m3 && m3.status !== 'done' && m3.status !== 'bye' && (m3.team1 === id || m3.team2 === id));
   const stage = team => {
-    if (T.championTeamId === team.id) return 1e9;
-    if (!team.out) return 1e8; // still alive
+    if (champion === team.id) return 1e9;
+    if (team.out && team.out.bracket === '3p') return (team.out.round - 1) + (team.out.place === 3 ? 0.6 : 0.5);
+    if (!team.out) return for3rd(team.id) ? (m3.round - 1) + 0.55 : 1e8; // still alive
     if (team.out.bracket === 'gf') return 1e6;
     if (team.out.bracket === 'lb') return 1000 + team.out.round;
     return team.out.round; // wb (single elim) or ffa round
   };
-  const rows = T.teams.slice().sort((a, b) => stage(b) - stage(a) || a.seed - b.seed);
+  const rows = teams.slice().sort((a, b) => stage(b) - stage(a) || a.seed - b.seed);
   let rank = 0, prevStage = null, shown = 0;
   const html = rows.map(team => {
     shown++;
     const st = stage(team);
     if (st !== prevStage) { rank = shown; prevStage = st; }
-    const label = T.championTeamId === team.id ? '1' : (!team.out ? '—' : String(rank));
-    const note = T.championTeamId === team.id ? '🏆 Champion' : (!team.out ? 'Still in' :
-      team.out.bracket === 'gf' ? 'Lost the final' :
-      'Out in ' + roundKeyLabel(team.out.bracket, team.out.round).toLowerCase());
+    const label = champion === team.id ? '1' : (!team.out ? '—' : String(rank));
+    const note = champion === team.id ? '🏆 Champion' : (!team.out ? (for3rd(team.id) ? 'Plays for 3rd place' : 'Still in') :
+      team.out.bracket === '3p' ? (team.out.place === 3 ? 'Won the 3rd place match' : 'Lost the 3rd place match') :
+      team.out.bracket === 'gf' || roundKeyLabel(team.out.bracket, team.out.round, division) === 'Final' ? 'Lost the final' :
+      'Out in ' + roundKeyLabel(team.out.bracket, team.out.round, division).toLowerCase());
     return `<tr class="${label === '1' ? 'rank1' : label === '2' ? 'rank2' : (label === '3' ? 'rank3' : '')}">
       <td class="mono">${label}</td><td>${esc(team.name)}</td><td class="small muted">${esc(note)}</td></tr>`;
   }).join('');
-  el.innerHTML = `<div class="panel section"><h2>Standings</h2>
-    <table><thead><tr><th>Place</th><th>${T.teamSize === 1 ? 'Player' : 'Team'}</th><th>Result</th></tr></thead>
-    <tbody>${html}</tbody></table></div>`;
+  return `<table><thead><tr><th>Place</th><th>${T.teamSize === 1 ? 'Player' : 'Team'}</th><th>Result</th></tr></thead>
+    <tbody>${html}</tbody></table>`;
 }
 
 // ----- admin -----
+
+// Render the result of a rename check, and wire the picker it puts on screen. Split out of
+// drawAdmin so it can redraw itself after an update without re-rendering the whole tab (which
+// would scroll the organizer back to the top mid-task).
+function drawRenameCheck(out, r) {
+  // Say plainly what was NOT covered. "Every name is current" has to mean it, or the next
+  // organizer to read it trusts a check that quietly skipped half the field.
+  const notes = [];
+  if (r.failed) notes.push(r.failed + ' could not be checked \u2014 FAF did not answer for them');
+  if (r.manual) notes.push(r.manual + ' added by hand, with no FAF account to check');
+  const note = notes.length ? '<p class="muted small" style="margin-top:10px">' + esc(notes.join('. ')) + '.</p>' : '';
+
+  if (!r.changed || !r.changed.length) {
+    out.innerHTML = '<p class="muted small">Checked ' + r.checked + ' player' + (r.checked === 1 ? '' : 's')
+      + (r.checked ? ' \u2014 every name is current.' : '.') + '</p>' + note;
+    return;
+  }
+
+  out.innerHTML = `<div class="ic-label" style="margin-top:4px">Renamed since signup (${r.changed.length} of ${r.checked})</div>
+    <label class="muted small" style="display:block;margin:8px 0"><input type="checkbox" id="rnAll" checked> Select all</label>
+    ${r.changed.map(c => `<div class="sa-req"><div class="sa-req-main">
+      <label style="display:flex;gap:8px;align-items:baseline;cursor:pointer;margin:0">
+        <input type="checkbox" class="rnPick" data-pid="${esc(c.playerId)}" checked>
+        <span class="sa-req-name"><span class="muted">${esc(c.from)}</span> \u2192 <strong>${esc(c.to)}</strong></span>
+      </label>
+      ${c.team ? '<div class="muted small" style="margin-left:26px">also renames the entry \u201c' + esc(c.team) + '\u201d in the bracket</div>' : ''}
+    </div></div>`).join('')}
+    <div style="margin-top:12px"><button class="btn amber" id="rnApply">Update selected</button></div>${note}`;
+
+  const picks = () => [...out.querySelectorAll('.rnPick')];
+  const sync = () => {
+    const on = picks().filter(x => x.checked).length;
+    const b = out.querySelector('#rnApply');
+    if (b) { b.disabled = !on; b.textContent = on ? 'Update selected (' + on + ')' : 'Update selected'; }
+    const all = out.querySelector('#rnAll');
+    if (all) all.checked = on === picks().length;
+  };
+  const all = out.querySelector('#rnAll');
+  if (all) all.onchange = () => { picks().forEach(x => { x.checked = all.checked; }); sync(); };
+  picks().forEach(x => { x.onchange = sync; });
+  sync();
+
+  const apply = out.querySelector('#rnApply');
+  if (apply) apply.onclick = async () => {
+    const ids = picks().filter(x => x.checked).map(x => x.dataset.pid);
+    if (!ids.length) return;
+    apply.disabled = true; apply.textContent = 'Updating\u2026';
+    try {
+      const res = await api('/api/t/' + T.id + '/apply_renames', { playerIds: ids, admin: adminToken() });
+      const n = (res.updated || []).length;
+      toast(n ? 'Updated ' + n + ' name' + (n === 1 ? '' : 's') : 'Nothing to update');
+      await refresh();
+      // refresh() redraws the tab, so re-run the check to leave the panel showing the truth
+      // rather than a list of renames that have already been applied.
+      const fresh = document.getElementById('rnOut');
+      if (fresh) drawRenameCheck(fresh, await api('/api/t/' + T.id + '/check_renames', { admin: adminToken() }));
+    } catch (e) {
+      toast(e.message, true);
+      apply.disabled = false; apply.textContent = 'Update selected';
+    }
+  };
+}
 
 async function drawAdmin(el) {
   el.innerHTML = '<div class="panel"><div class="empty">Loading…</div></div>';
@@ -396,7 +506,7 @@ async function drawAdmin(el) {
   let html = `<div class="panel section"><h2>Share links</h2>
     ${copyRow('Public link — share with everyone', base)}
     ${copyRow('Late-signup link — lets someone sign up after signups close (they must log in)', base + '?late=' + secrets.lateToken)}
-    ${secrets.streamerToken ? copyRow('Streamer/caster link — read access to EVERYTHING (all chats, hidden maps & pools) and can post in every chat, but zero organizer powers: no Admin tab, no Log, no player changes. For casters & production.', base + '?streamer=' + secrets.streamerToken) : ''}
+
   </div>`;
 
   { // Tournament details — name, dates, team counts — editable any time
@@ -409,8 +519,9 @@ async function drawAdmin(el) {
       <p class="muted small">Times are in <strong>UTC</strong> and display in each viewer's own time zone. All editable at any time.</p>
       <label>Tournament name</label>
       <input type="text" id="td_name" maxlength="60" value="${esc(T.name || '')}">
-      ${T.imported ? '' : `<label style="margin-top:12px">Event date &amp; time</label>
+      ${T.imported ? '' : `<label style="margin-top:12px">Event date &amp; time <span class="muted small">(pick more than one day below for an event that spans a weekend, or two)</span></label>
       <div style="display:flex;gap:8px"><input type="date" id="td_date" value="${esc(dv.date)}" style="flex:1"><input type="time" id="td_time" value="${esc(dv.time)}" style="width:130px"></div>
+      <div id="td_dayPick" class="dp-host"></div>
       <label style="margin-top:12px">Signups open at <span class="muted small">(before this, only organizers can add players)</span></label>
       <div style="display:flex;gap:8px"><input type="date" id="td_sudate" value="${esc(su.date)}" style="flex:1"><input type="time" id="td_sutime" value="${esc(su.time)}" style="width:130px"></div>
       <label style="margin-top:12px">Signups close at <span class="muted small">(auto-closes signups; team forming &amp; picks still work. Empty = manual)</span></label>
@@ -442,6 +553,11 @@ async function drawAdmin(el) {
                 \u00b7 ${q.applied ? 'applied \u2014 ' + (q.qualified || []).length + ' qualified' : (q.status === 'finished' ? 'pending' : 'waiting for it to finish')}</div>
               ${(q.qualified || []).length ? '<div class="muted small">Qualified: ' + esc(q.qualified.join(', ')) + '</div>' : ''}
               ${(q.unreachable || []).length ? '<div class="warn small">No FAF account \u2014 invite manually: ' + esc(q.unreachable.join(', ')) + '</div>' : ''}
+              <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                Seed block:
+                <input type="number" class="ql-seed" data-qlseed="${esc(q.id)}" min="0" max="128" value="${q.seedFrom || 0}" style="width:70px;margin:0">
+                <span>${q.seedFrom ? 'arrivals take seeds ' + q.seedFrom + ' and down, in the order they qualified' : '0 = seed them normally with everyone else'}</span>
+              </div>
             </div>
             <button class="btn ghost small" data-qlrm="${esc(q.id)}">Remove</button>
           </div>`).join('') + '</div>' : ''}
@@ -453,6 +569,7 @@ async function drawAdmin(el) {
           </div>
           <div style="width:150px"><label>Rule</label><select id="qlType"><option value="top">Top N advance</option><option value="points">N+ points</option></select></div>
           <div style="width:74px"><label>N</label><input type="number" id="qlN" min="1" max="128" value="4"></div>
+          <div style="width:96px"><label>Seed from</label><input type="number" id="qlSeedFrom" min="0" max="128" value="0"></div>
           <button class="btn ghost" id="qlAdd">Add</button>
         </div>
       </div>
@@ -466,19 +583,37 @@ async function drawAdmin(el) {
       </div>
       ${T.seriesName ? '<p class="muted small" style="margin-top:8px">Currently in <strong>' + esc(T.seriesName) + '</strong>.</p>' : ''}
     </div>`;
+    const meFid = (fafAuth.user && fafAuth.user.fafId) ? String(fafAuth.user.fafId) : '';
+    const canDropLast = sa;   // only a site admin may leave a tournament with no organizers
     html += `<div class="panel section"><h2>Organizers <span class="h2-strong">(${orgs.length})</span></h2>
-      <p class="muted small">Accounts with organizer rights on this tournament${sa ? ' — as site admin you can remove them' : ''}.</p>
-      <p class="muted small">Add an organizer below by FAF name or id. Any organizer can add co-organizers; only a site admin can remove one. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
+      <p class="muted small">Accounts with organizer rights on this tournament. <strong>Any organizer can add or remove any other organizer</strong>, or leave the team themselves - it is trust-based. Organizers are recognised by their FAF account; there is no organizer link.</p>
+      <p class="muted small">Add an organizer below by FAF name or id. Players see the visible organizers on the Chat tab; hide one to keep them off that public list (default: shown).</p>
       ${orgs.length ? '' : '<div class="empty" style="margin:10px 0">No FAF account holds organizer rights here yet. Add one below by FAF name or id.</div>'}
-      <div class="pick-rows" style="margin-top:10px">${orgs.map(o => `<div class="pick-row on" style="cursor:default">
-        <span class="pr-name">${esc(o.name)} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
+      <div class="pick-rows" style="margin-top:10px">${orgs.map(o => {
+        const mine = meFid && String(o.fafId) === meFid;
+        const removable = orgs.length > 1 || canDropLast;
+        return `<div class="pick-row on" style="cursor:default">
+        <span class="pr-name">${esc(o.name)}${mine ? ' <span class="idbadge verified">you</span>' : ''} <span class="muted small">FAF id ${esc(o.fafId)}</span> ${o.hidden ? '<span class="idbadge late" title="Not shown to players">hidden</span>' : ''}</span>
         <button class="btn ghost small" data-orgvis="${esc(o.fafId)}" data-hidden="${o.hidden ? 1 : 0}">${o.hidden ? 'Show to players' : 'Hide from players'}</button>
-        ${sa ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '">Remove</button>' : ''}
-      </div>`).join('')}</div>
+        ${removable ? '<button class="btn danger small" data-orgdel="' + esc(o.fafId) + '" data-orgname="' + esc(o.name) + '" data-orgself="' + (mine ? 1 : 0) + '">' + (mine ? 'Leave' : 'Remove') + '</button>'
+          : '<span class="muted small" title="Add another organizer first">last organizer</span>'}
+      </div>`;
+      }).join('')}</div>
       <div style="margin-top:10px">
         ${fafAuth.user && (sa || (fafAuth.user.director && T.category === 'official')) && !orgs.some(o => o.fafId === fafAuth.user.fafId) ? '<button class="btn ghost small" id="orgClaimSelf" style="margin-bottom:10px">+ Add myself (' + esc(fafAuth.user.fafName || '') + ')</button>' : ''}
         <div id="orgAdd"></div>
       </div></div>`;
+
+    const casters = T.casters || [];
+    html += `<div class="panel section"><h2>Casters</h2>
+      <p class="muted small">Read access to everything on this tournament: every chat room (and they can post in them), hidden maps and pools, and all vetoes. No organizer powers at all \u2014 no Admin tab, no Log, no player changes.</p>
+      <p class="muted small">Bound to a FAF account, so it works in the desktop client too. Any organizer can add or remove a caster.</p>
+      ${casters.length ? '' : '<div class="empty" style="margin:10px 0">No casters yet. Add one below by FAF name or id.</div>'}
+      <div class="pick-rows" style="margin-top:10px">${casters.map(c => `<div class="pick-row on" style="cursor:default">
+        <span class="pr-name">${esc(c.name)} <span class="muted small">FAF id ${esc(c.fafId)}</span></span>
+        <button class="btn danger small" data-casterdel="${esc(c.fafId)}">Remove</button>
+      </div>`).join('')}</div>
+      <div style="margin-top:10px"><div id="casterAdd"></div></div></div>`;
   }
 
   if (['signup', 'draft', 'drafted'].indexOf(T.status) >= 0) {
@@ -531,6 +666,26 @@ async function drawAdmin(el) {
             <input type="checkbox" id="af_hcap"${p.lbHandicap || p.lbHandicap === undefined ? ' checked' : ''}> Upper bracket finalist starts the grand final 1-0 up
           </label>
         </div>
+        <label id="af_thirdWrap" style="display:${T.bracketType === 'single' ? 'flex' : 'none'};align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+          <input type="checkbox" id="af_third"${p.thirdPlace ? ' checked' : ''}> 3rd place match: the two beaten semi-finalists play for 3rd
+        </label>
+        ${(() => {
+          // Divisions (King / Prince): their own brackets. Once a draft is under way it decides
+          // them, so the number is fixed until signups are reopened; the names stay editable.
+          const nDiv = T.divisions || 0;
+          const divLocked = T.status === 'draft'
+            || (T.status === 'drafted' && T.formation === 'draft' && !!T.draft && !!(T.draft.division || (T.draftDone || []).length));
+          const names = T.divisionNamesSet || [];
+          return `<div id="af_divWrap" style="display:${(T.bracketType === 'single' || T.bracketType === 'double') ? 'block' : 'none'}">
+            <label>Divisions</label>
+            <select id="af_divisions"${divLocked ? ' disabled' : ''}>${[0, 2, 3, 4].map(n => '<option value="' + n + '"' + (n === nDiv ? ' selected' : '') + '>' + (n ? n + ' divisions' : 'One bracket') + '</option>').join('')}</select>
+            ${divLocked ? '<div class="muted small" style="margin-top:4px">The draft decides the divisions, so their number is fixed until signups are reopened. The names can still be changed.</div>'
+              : (T.status === 'drafted' ? '<div class="muted small" style="margin-top:4px">Changing this splits the locked teams by rating again. Move single teams on the Teams tab.</div>' : '')}
+            <div id="af_divNames" class="row" style="gap:10px;margin-top:8px;flex-wrap:wrap">
+              ${[1, 2, 3, 4].map(d => '<div style="flex:1;min-width:110px" data-afdivname="' + d + '"><div class="muted small">Division ' + d + ' name</div><input type="text" id="af_divName' + d + '" maxlength="24" placeholder="' + DIVISION_DEFAULT_NAMES[d - 1] + '" value="' + esc(names[d - 1] || '') + '" autocomplete="off"></div>').join('')}
+            </div>
+          </div>`;
+        })()}
         <div id="af_pSwiss" style="display:none">
           <label>Match lengths</label>
           <div class="row" style="gap:10px">
@@ -543,6 +698,76 @@ async function drawAdmin(el) {
           <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text)">
             <input type="checkbox" id="af_swfast"${p.fast ? ' checked' : ''}> Fast pairing \u2014 next matchup starts as soon as two teams are free
           </label>
+          <div style="margin-top:8px"><div class="muted small">Order within the same record</div>
+            <select id="af_tiebreak"><option value="gd"${T.tiebreak !== 'beaten' ? ' selected' : ''}>Game difference</option><option value="beaten"${T.tiebreak === 'beaten' ? ' selected' : ''}>Sum of the scores of the opponents beaten, then random</option></select>
+            <div class="muted small" style="margin-top:4px">Decides the standings between equal records, and with a playoff stage who goes through, the playoff seeds and who picks first.</div></div>
+
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+            <input type="checkbox" id="af_swcuts"${(p.winCut || p.lossCut) ? ' checked' : ''}> Finish on record instead of a round count
+          </label>
+          <div id="af_swCutBox" style="display:${(p.winCut || p.lossCut) ? 'block' : 'none'};padding:8px 0 0 22px">
+            <p class="muted small" style="margin:0 0 8px">Teams leave the stage the moment they hit either mark. The stage ends when everyone is decided.</p>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">Wins to advance</div><input type="number" id="af_swwin" min="0" max="15" value="${p.winCut || 3}"></div>
+              <div style="flex:1"><div class="muted small">Losses to eliminate</div><input type="number" id="af_swloss" min="0" max="15" value="${p.lossCut || 3}"></div>
+              <div style="flex:1"><div class="muted small">Deciding matches</div><select id="af_swdec"><option value="0"${!p.decidingBo ? ' selected' : ''}>same as above</option>${[1, 3, 5, 7].map(v => '<option value="' + v + '"' + (p.decidingBo === v ? ' selected' : '') + '>Bo' + v + '</option>').join('')}</select></div>
+            </div>
+            <p class="muted small" style="margin:8px 0 0">A deciding match is one where a win qualifies someone or a loss knocks them out.</p>
+          </div>
+
+          <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:12px">
+            <input type="checkbox" id="af_sw2"${p.stage2 ? ' checked' : ''}> Second stage: cut the qualifiers into a playoff bracket
+          </label>
+          <div id="af_sw2Box" style="display:${p.stage2 ? 'block' : 'none'};padding:8px 0 0 22px">
+            <p class="muted small" style="margin:0 0 8px">One tournament, two stages: the Swiss stage runs first, then the teams that came through are seeded into a bracket on the same page.</p>
+            <div class="row" style="gap:10px">
+              <div style="flex:1"><div class="muted small">Teams through</div><input type="number" id="af_sw2cut" min="2" max="64" value="${p.s2CutTo || 8}"></div>
+              <div style="flex:1"><div class="muted small">Bracket</div><select id="af_sw2type"><option value="single"${p.s2Type !== 'double' ? ' selected' : ''}>Single elimination</option><option value="double"${p.s2Type === 'double' ? ' selected' : ''}>Double elimination</option></select></div>
+              <div style="flex:1"><div class="muted small">Playoff matches</div>${boSel('af_sw2bo', p.s2Bo || 3)}</div>
+              <div style="flex:1"><div class="muted small">Playoff final</div>${boSel('af_sw2final', p.s2Final || 5)}</div>
+            </div>
+            <label id="af_sw2thirdWrap" style="display:${p.s2Type !== 'double' ? 'flex' : 'none'};align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:8px">
+              <input type="checkbox" id="af_sw2third"${p.s2Third ? ' checked' : ''}> 3rd place match: the two beaten semi-finalists play for 3rd
+            </label>
+            <p class="muted small" style="margin:8px 0 0">The single top-2 final above is replaced by the bracket while this is on.</p>
+          </div>
+        </div>
+      </div>
+      <div id="af_stopAt">
+        <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
+          <input type="checkbox" id="af_stopOn"${T.stopAtAlive ? ' checked' : ''}> End the tournament early, once a set number are left
+        </label>
+        <div id="af_stopBox" style="display:${T.stopAtAlive ? 'block' : 'none'};padding:8px 0 0 22px">
+          <p class="muted small" style="margin:0 0 8px">For a qualifier: once the field is down to the number that qualifies there is nothing left worth playing. It ends by itself at that point, standings locked, no champion. Stated on the bracket from the moment it is generated so nobody is surprised. Single or double elimination only.</p>
+          <div class="row" style="gap:10px;align-items:flex-end">
+            <div style="width:150px"><div class="muted small">Stop when this many are left</div><input type="number" id="af_stopN" min="2" max="128" value="${T.stopAtAlive || 4}"></div>
+            <div class="muted small" style="flex:1;padding-bottom:8px">You can still stop it by hand at any time from this tab.</div>
+          </div>
+        </div>
+      </div>
+      <div id="af_pickPhase">
+        <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin-top:14px">
+          <input type="checkbox" id="af_pick"${T.pickOpponents ? ' checked' : ''}> Let the top seeds choose their own opponent
+        </label>
+        <div class="muted small" style="margin:4px 0 0 22px">${T.bracketType !== 'swiss'
+          ? 'Runs on round one of the bracket.'
+          : (swissStageTwoPlanned(T)
+            ? 'On a Swiss this runs on the <strong>playoff bracket</strong>. Swiss round 1 is drawn by seed, and can be rearranged by hand once the rounds start.'
+            : 'Does nothing on a Swiss with no second stage. Swiss round 1 is drawn by seed, and can be rearranged by hand once the rounds start.')}</div>
+        <div id="af_pickBox" style="display:${T.pickOpponents ? 'block' : 'none'};padding:8px 0 0 22px">
+          <p class="muted small" id="af_pickWhat" style="margin:0 0 8px">The top half of the seeds each pick who they play, in seed order. Needs a full bracket (4, 8, 16, 32...).</p>
+          <div id="af_pickModeRow" style="display:none;margin:0 0 8px">
+            <div class="muted small">Who picks</div>
+            <select id="af_pickMode">
+              <option value="half"${T.pickMode !== 'unbeaten' && T.pickMode !== 'bottom' ? ' selected' : ''}>The top half of the playoff seeds</option>
+              <option value="unbeaten"${T.pickMode === 'unbeaten' ? ' selected' : ''}>Only the unbeaten; everyone else is drawn</option>
+              <option value="bottom"${T.pickMode === 'bottom' ? ' selected' : ''}>Only the unbeaten, from the lowest record; everyone else is seeded</option>
+            </select>
+          </div>
+          <div class="row" style="gap:10px;align-items:flex-end">
+            <div style="width:170px"><div class="muted small">Time limit per pick</div><input type="number" id="af_pickMins" min="0" max="1440" value="${T.pickMinutes || 0}"></div>
+            <div class="muted small" style="flex:1;padding-bottom:8px">Minutes. 0 means no limit. A pick that runs out of time gets the standard bracket matchup.</div>
+          </div>
         </div>
       </div>
       <div id="af_ffa" style="display:none">
@@ -572,7 +797,7 @@ async function drawAdmin(el) {
         </div>
       </div>
       <label>Seeding</label>
-      <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option></select>
+      <select id="af_seed"${dis}><option value="rating"${T.seeding === 'rating' ? ' selected' : ''}>By rating</option><option value="random"${T.seeding === 'random' ? ' selected' : ''}>Random</option>${T.seeding === 'manual' ? '<option value="manual" selected>Manual (set on the seeding list)</option>' : ''}</select>
       <label>Max teams / entrants (0 = unlimited)</label>
       <input type="number" id="af_max" min="0" max="128" value="${T.maxTeams || 0}" autocomplete="off">
       <label>Signups</label>
@@ -586,22 +811,15 @@ async function drawAdmin(el) {
     </div>`;
   }
 
-  if (T.status === 'drafted' && T.competition === 'team' && (T.bracketType === 'single' || T.bracketType === 'double')) {
-    const seeded = T.teams.slice().sort((a, b) => a.seed - b.seed);
-    html += `<div class="panel section"><h2>Seeding</h2>
-      <p class="muted small">Drag to reorder, or use the arrows. Seed 1 is the top seed. This determines the bracket \u2014 fixed once you start it.</p>
-      <div style="margin:10px 0"><button class="btn ghost small" id="seedRandom">\ud83c\udfb2 Randomize</button>
-      ${T.seeding === 'rating' ? '<button class="btn ghost small" id="seedByRating" style="margin-left:8px">Reset to rating order</button>' : ''}</div>
-      <ol id="seedList" class="seedlist">
-        ${seeded.map(tm => `<li class="seeditem" draggable="true" data-tid="${tm.id}">
-          <span class="seednum"></span>
-          <span class="seedname">${esc(tm.name)}</span>
-          <span class="seedbtns"><button class="seedup" title="Move up">\u25b2</button><button class="seeddown" title="Move down">\u25bc</button></span>
-        </li>`).join('')}
-      </ol>
-      <div style="margin-top:12px"><button class="btn amber" id="seedSave">Save seeding</button> <span class="muted small" id="seedDirty"></span></div>
-    </div>`;
-  }
+  html += seedPanelHTML();
+
+  // Player names: FAF has no rename webhook, so a name recorded at signup goes stale silently
+  // and the bracket keeps showing it. Check is read-only; nothing is written until a box is
+  // ticked, because the old name is sometimes the one the organizer wants to keep.
+  html += `<div class="panel section"><h2>Player <span class="h2-strong">names</span></h2>
+    <p class="muted small">FAF names are recorded when someone signs up. If they rename on FAF afterwards, this tournament keeps showing the old name until they next open it. Check here, then pick which ones to update.</p>
+    <div style="margin:10px 0"><button class="btn ghost small" id="rnCheck">Check players for renames</button></div>
+    <div id="rnOut"></div></div>`;
 
   html += `<div class="panel section"><h2>Game setup</h2>
     <div class="row" style="justify-content:space-between;align-items:center">
@@ -683,6 +901,20 @@ async function drawAdmin(el) {
       <div style="flex:1;min-width:140px"><label>Rating cap (clamp)</label><input type="number" id="aiCapR" min="0" max="4000" value="${T.ratingCap != null ? T.ratingCap : ''}" placeholder="off"></div>
     </div>
     <div style="margin-top:12px"><button class="btn" id="aiRatSave">Save rating limits</button></div>
+
+    <div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
+      <label>Which rating counts <span class="muted small">(entry checks, the cap and seeding all use this board)</span></label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="aiRatingType" style="flex:1;min-width:220px">
+          ${[['global', 'Global (fetched from FAF)'], ['1v1', '1v1 / ladder (fetched)'], ['2v2', '2v2 (fetched)'], ['3v3', '3v3 (fetched)'], ['4v4', '4v4 (fetched)'],
+             ['rc', "Fearghal's RC \u2014 best of 2v2/3v3/4v4/Global, blended to 300 games (fetched)"], ['none', 'None \u2014 players enter their own rating']]
+            .map(o => '<option value="' + o[0] + '"' + ((T.ratingType || 'global') === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('')}
+        </select>
+        <button class="btn" id="aiRatingTypeSave">Save</button>
+      </div>
+      <p class="muted small" style="margin-top:6px">Changing this does <strong>not</strong> re-pull anyone already signed up \u2014 they keep the rating they were admitted on until you re-pull below. New signups use the new board immediately.</p>
+    </div>
+
     ${T.ratingType && T.ratingType !== 'none' ? `<div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
       <label>Rating source date <span class="muted small">(FAF ratings are pulled as of this day; blank = whenever the player signs up)</span></label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -690,6 +922,11 @@ async function drawAdmin(el) {
         <button class="btn" id="aiRatingDateSave">Save rating date</button>
       </div>
       <p class="muted small" style="margin-top:6px">Currently: <strong>${T.ratingDate ? new Date(T.ratingDate).toLocaleDateString() : 'taken at signup time'}</strong>. Changing this affects ratings pulled from now on; it doesn't retroactively re-pull players already signed up.</p>
+    </div>
+    <div style="border-top:1px solid var(--line-solid);margin-top:16px;padding-top:14px">
+      <label>Re-pull every signed-up player's rating</label>
+      <p class="muted small" style="margin:4px 0 8px">Fetches all <strong>${T.players.length}</strong> player${T.players.length === 1 ? '' : 's'} again on the board and date set above, and re-applies the cap. Use it after changing either. Anyone FAF can't answer for keeps the rating they already have.</p>
+      <button class="btn amber" id="aiRepull">Re-pull ${T.players.length} rating${T.players.length === 1 ? '' : 's'} now</button>
     </div>` : ''}
   </div>`;
 
@@ -720,6 +957,8 @@ async function drawAdmin(el) {
           <option value="manual"${v.abMode === 'manual' ? ' selected' : ''}>I set it myself for every match</option>
         </select>
         <div class="muted small" style="margin-top:6px" id="vtAbNote"></div>
+        ${(T.mapDb || []).some(m => m.secret) ? `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:14px"><input type="checkbox" id="vtRevealBans" style="width:auto"${v.revealBans ? ' checked' : ''}> Reveal a secret map when it is <strong>banned</strong></label>
+        <div class="muted small" style="margin:4px 0 0 24px">Off by default: banning blind is the point of secret maps, and revealing every ban hands the pool over one map at a time. A secret map is always revealed when it is picked for a game or left as the decider, whichever way this is set.</div>` : ''}
 
         <label style="margin-top:14px">When is the veto done?</label>
         <select id="vtMode" style="max-width:420px">
@@ -729,6 +968,26 @@ async function drawAdmin(el) {
         <div class="muted small" style="margin-top:8px">Whatever the rule, you can still override A/B on any match from the Vetoes tab before it starts.</div>
       </div>
       <div style="margin-top:12px"><button class="btn amber" id="vtSave">Save vetoes</button></div>
+    </div>`;
+  }
+
+  // Faction vetoes: 1v1 only, since each side is one player choosing their own faction.
+  if (T.status !== 'finished' && T.competition === 'team' && T.teamSize === 1) {
+    const fv = T.fveto || { enabled: 0, bans: 1, picks: 2 };
+    html += `<div class="panel section"><h2>Faction vetoes</h2>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="fvEnabled" style="width:auto"${fv.enabled ? ' checked' : ''}> Enable faction vetoes</label>
+      <div id="fvCfg" style="${fv.enabled ? '' : 'display:none;'}margin-top:12px">
+        <p class="muted small">Runs per game of a series, in parallel with the map veto and independently of it. Each player bans factions (denying them to their opponent), then picks factions in order of preference. <strong>Nobody sees anyone else's choices \u2014 not the opponent, not you.</strong> You can see who still owes choices. Once both are done the result is shown to everyone.</p>
+        <label style="margin-top:12px">Bans each</label>
+        <select id="fvBans" style="max-width:200px">
+          <option value="1"${fv.bans === 1 ? ' selected' : ''}>1 ban</option>
+          <option value="2"${fv.bans === 2 ? ' selected' : ''}>2 bans</option>
+        </select>
+        <label style="margin-top:12px">Picks each</label>
+        <select id="fvPicks" style="max-width:200px"></select>
+        <div class="muted small" style="margin-top:6px" id="fvNote"></div>
+      </div>
+      <div style="margin-top:12px"><button class="btn amber" id="fvSave">Save faction vetoes</button></div>
     </div>`;
   }
 
@@ -749,6 +1008,8 @@ async function drawAdmin(el) {
     <div class="desc-gallery">${(T.descImages || []).map(f => { const used = inlineRef.indexOf('/desc-images/' + encodeURIComponent(f)) >= 0 || inlineRef.indexOf('/desc-images/' + f) >= 0; return `<div class="desc-thumb"><img src="/desc-images/${encodeURIComponent(f)}" alt="">${used ? '<div class="mono small" style="color:var(--green);text-align:center">in use</div>' : ''}<button class="btn danger small" data-descdel="${esc(f)}">Remove</button></div>`; }).join('')}</div></div>`;
   }
 
+  html += '<div class="panel section" id="tBanPanelHost"></div>';
+
   if (siteAdmin()) {
     html += `<div class="panel section"><h2>Category <span class="muted small">(site admin only)</span></h2>
       <p class="muted small">Organizers pick this once at creation; only site admins can change it afterwards.</p>
@@ -756,6 +1017,51 @@ async function drawAdmin(el) {
         <span class="catbox ${T.category === 'official' ? 'official' : 'community'}">${T.category === 'official' ? 'OFFICIAL' : 'COMMUNITY'}</span>
         <button class="btn ghost small" id="saCatSwap">Change to ${T.category === 'official' ? 'COMMUNITY' : 'OFFICIAL'}</button>
       </div></div>`;
+  }
+
+  // Who picks their playoff opponent, and redoing the playoffs, while a Swiss stage runs. The
+  // Format panel is gone by now, and this is exactly when that decision gets made.
+  if (T.status === 'running' && T.playoffs) html += playoffSetupPanelHTML();
+
+  // Stop a running tournament where it stands. This is the qualifier control: a LotS qualifier
+  // runs until the top 4 is settled, not until a champion exists.
+  if (T.status === 'running' && T.competition !== 'ffa' && T.survivors) {
+    const wb = T.survivors.wb || [], lb = T.survivors.lb || [];
+    const alive = wb.length + lb.length;
+    const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+    const split = T.bracketType === 'double'
+      ? `<div class="muted small" style="margin:6px 0 0">Winners bracket: ${wb.length ? esc(wb.map(nm).join(', ')) : 'nobody'}<br>Losers bracket: ${lb.length ? esc(lb.map(nm).join(', ')) : 'nobody'}</div>`
+      : `<div class="muted small" style="margin:6px 0 0">${esc(wb.map(nm).join(', ')) || 'nobody'}</div>`;
+    const declared = parseInt(T.stopAtAlive, 10) || 0;
+    const toGo = declared ? Math.max(0, alive - declared) : null;
+    html += `<div class="panel section"><h2>End <span class="h2-strong">early</span></h2>
+      ${declared
+        ? '<p class="muted small" style="margin:6px 0 10px">This tournament is set to end by itself once <strong>' + declared + '</strong> are left'
+          + (toGo === 0 ? ' \u2014 the next result will do it.' : ', ' + toGo + ' elimination' + (toGo === 1 ? '' : 's') + ' from now.')
+          + ' Players can see that on the bracket. You can also stop it by hand right now:</p>'
+        : '<p class="muted small" style="margin:6px 0 10px">Locks the standings exactly as they are and marks the tournament finished, without playing out the remaining matches. Nobody is crowned champion. Use this when the tournament exists to decide who qualifies, not who wins - any parent tournament drawing from this one will invite from the locked standings. To have it happen automatically instead, set a survivor count on the <strong>Format</strong> panel before the bracket starts.</p>'}
+      <div class="infocell"><div class="mono small muted">STILL STANDING (${alive})</div>${split}</div>
+      <div class="stop-set">
+        <div class="ic-label">End automatically</div>
+        <p class="muted small" style="margin:4px 0 8px">${declared
+          ? 'Change the number, or clear it to play the tournament out in full. Players see this on the bracket.'
+          : 'Set the number that qualifies and the tournament ends by itself when it gets there - and says so on the bracket from now on, so nobody is surprised by matches that never get played.'}</p>
+        <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span class="muted small">Stop when</span>
+          <input type="number" id="stopAtN" min="2" max="128" value="${declared || Math.max(2, Math.min(4, alive - 1))}" style="width:80px;margin:0">
+          <span class="muted small">are left</span>
+          <button class="btn small" id="stopAtSave">${declared ? 'Update' : 'Set'}</button>
+          ${declared ? '<button class="btn ghost small" id="stopAtClear">Clear</button>' : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn danger" id="finishEarlyBtn">End here and lock standings</button>
+      </div></div>`;
+  }
+  if (T.earlyFinish) {
+    html += `<div class="panel section"><h2>Ended <span class="h2-strong">early</span></h2>
+      <p class="muted small" style="margin:6px 0 10px">${T.earlyFinish.auto ? 'Stopped automatically' : 'Stopped by ' + esc(T.earlyFinish.by || 'an organizer')} with ${T.earlyFinish.alive} still standing: ${esc((T.earlyFinish.names || []).join(', '))}.${T.earlyFinish.target && T.earlyFinish.alive < T.earlyFinish.target ? ' Two results landed close together, so it went one past the target of ' + T.earlyFinish.target + '.' : ''}</p>
+      <button class="btn ghost" id="undoFinishEarlyBtn">Reopen the tournament</button></div>`;
   }
 
   html += `<div class="panel section" style="border-color:var(--danger,#e5484d)"><h2>Archive / Abandon</h2>
@@ -768,6 +1074,41 @@ async function drawAdmin(el) {
     </div></div>`;
 
   el.innerHTML = html;
+  wirePlayoffSetup();
+
+  // Multi-day picker, two-way bound to the native date input beside it (see mountDayPicker).
+  let _tdDayPick = null;
+  {
+    const dateEl = document.getElementById('td_date');
+    const host = document.getElementById('td_dayPick');
+    if (dateEl && host) {
+      const existing = (T.eventDays && T.eventDays.length) ? T.eventDays.slice() : (dateEl.value ? [dateEl.value] : []);
+      _tdDayPick = mountDayPicker(host, {
+        days: existing,
+        onChange: (days) => { if (days.length) dateEl.value = days[0]; }
+      });
+      dateEl.addEventListener('change', () => _tdDayPick.setSingle(dateEl.value));
+    }
+  }
+
+  // Per-tournament bans. Removing someone already worked; nothing stopped them signing back up,
+  // which is the loop this closes.
+  {
+    const host = document.getElementById('tBanPanelHost');
+    if (host) {
+      banPanel(host, {
+        title: 'Banned from this tournament',
+        blurb: 'These accounts can\u2019t sign up, be added or be invited to <strong>this tournament</strong>. Use it when removing someone isn\u2019t enough because they can just sign up again. Other tournaments are unaffected \u2014 for a whole recurring event use a series ban, and only a site admin or tournament director can ban from official tournaments site-wide.',
+        bans: T.bans || [],
+        lookup: { tournamentId: T.id },
+        addLabel: 'Ban from this tournament',
+        onSet: (r) => api('/api/t/' + T.id + '/ban_set', Object.assign({ admin: adminToken() }, r)),
+        onRemove: (fid) => api('/api/t/' + T.id + '/ban_remove', { fafId: fid, admin: adminToken() }),
+        after: () => refresh()
+      });
+    }
+  }
+
   const tdSave = document.getElementById('td_save');
   if (tdSave) tdSave.onclick = async () => {
     try {
@@ -776,6 +1117,7 @@ async function drawAdmin(el) {
       const dd = document.getElementById('td_date');
       if (dd) {
         info.eventDate = combineDateTimeUTC(dd, document.getElementById('td_time'));
+        info.eventDays = _tdDayPick ? _tdDayPick.get() : [];
         info.signupOpensAt = combineDateTimeUTC(document.getElementById('td_sudate'), document.getElementById('td_sutime'));
         info.signupClosesAt = combineDateTimeUTC(document.getElementById('td_scdate'), document.getElementById('td_sctime'));
         info.checkInDeadline = combineDateTimeUTC(document.getElementById('td_cidate'), document.getElementById('td_citime'));
@@ -790,7 +1132,7 @@ async function drawAdmin(el) {
   const claimSelf = document.getElementById('orgClaimSelf');
   if (claimSelf) claimSelf.onclick = async () => {
     try {
-      await api('/api/t/' + T.id + '/claim_organizer', { adminToken: secrets.adminToken });
+      await api('/api/t/' + T.id + '/add_organizer', { fafId: fafAuth.user.fafId, name: fafAuth.user.fafName || '', admin: adminToken() });
       toast('You are now listed as an organizer');
       await refresh();
     } catch (e) { toast(e.message, true); }
@@ -843,6 +1185,7 @@ async function drawAdmin(el) {
             tournamentId: chosen.id,
             ruleType: document.getElementById('qlType').value,
             n: document.getElementById('qlN').value,
+            seedFrom: document.getElementById('qlSeedFrom').value,
             admin: adminToken()
           });
           _qlPanelOpen = true;
@@ -850,6 +1193,13 @@ async function drawAdmin(el) {
         } catch (e) { toast(e.message, true); }
       };
     }
+    el.querySelectorAll('[data-qlseed]').forEach(inp => inp.onchange = async () => {
+      try {
+        await api('/api/t/' + T.id + '/qualifier_seed', { id: inp.dataset.qlseed, seedFrom: inp.value, admin: adminToken() });
+        toast(parseInt(inp.value, 10) > 0 ? 'Seed block set' : 'Seed block cleared');
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    });
     el.querySelectorAll('[data-qlrm]').forEach(b => b.onclick = async () => {
       if (!confirm('Remove this qualifier link? Invites already sent are kept.')) return;
       try { await api('/api/t/' + T.id + '/qualifier_remove', { id: b.dataset.qlrm, admin: adminToken() }); toast('Removed'); await refresh(); }
@@ -889,6 +1239,22 @@ async function drawAdmin(el) {
       } catch (e) { toast(e.message, true); }
     };
   }, { tournamentId: T.id });
+  const casterAddBox = document.getElementById('casterAdd');
+  if (casterAddBox) adminLookupBox(casterAddBox, (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)}) <button class="btn primary small" id="casterAddGo">Make caster</button>`;
+    result.querySelector('#casterAddGo').onclick = async () => {
+      try {
+        await api('/api/t/' + T.id + '/add_caster', { fafId: found.fafId, name: found.name, admin: adminToken() });
+        toast('Caster added'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }, { tournamentId: T.id });
+  el.querySelectorAll('[data-casterdel]').forEach(b => b.onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/remove_caster', { fafId: b.dataset.casterdel, admin: adminToken() });
+      toast('Caster removed'); await refresh();
+    } catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-orgvis]').forEach(b => b.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/organizer_visibility', { fafId: b.dataset.orgvis, hidden: b.dataset.hidden === '1' ? 0 : 1, admin: adminToken() });
@@ -897,17 +1263,74 @@ async function drawAdmin(el) {
     } catch (e) { toast(e.message, true); }
   });
   el.querySelectorAll('[data-orgdel]').forEach(b => b.onclick = async () => {
+    const self = b.dataset.orgself === '1';
+    const who = b.dataset.orgname || 'this account';
     const last = (T.organizers || []).length <= 1;
-    if (!confirm('Remove organizer rights from this account?' + (last ? '\n\nThis is the LAST organizer — afterwards only site admins can manage this tournament.' : ''))) return;
+    const msg = self
+      ? 'Leave the organizer team?\n\nYou lose organizer access to this tournament straight away. Another organizer can add you back.'
+      : 'Remove ' + who + ' as an organizer?\n\nThey lose organizer access straight away.';
+    if (!confirm(msg + (last ? '\n\nThis is the LAST organizer - afterwards only site admins can manage this tournament.' : ''))) return;
     try {
-      await api('/api/t/' + T.id + '/remove_organizer', { fafId: b.dataset.orgdel, admin: siteAdmin() });
-      toast('Organizer removed');
+      const r = await api('/api/t/' + T.id + '/remove_organizer', { fafId: b.dataset.orgdel, admin: adminToken() });
+      toast(self ? 'You left the organizer team' : who + ' is no longer an organizer');
+      // Having left, the Admin tab is not ours any more - go somewhere that still exists.
+      if (r && r.self) { currentTab = 'overview'; syncTabURL(); }
       await refresh();
     } catch (e) { toast(e.message, true); }
   });
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied'));
   });
+
+  // The survivor count, editable while the tournament runs. The Format panel disappears once
+  // the bracket starts, and mid-event is exactly when a TD decides a qualifier should stop.
+  const saveStopAt = async (n) => {
+    const send = force => api('/api/t/' + T.id + '/set_stop_at', { stopAtAlive: n, confirm: force ? 1 : 0, admin: adminToken() });
+    try { const r = await send(false); toast(r.ended ? 'Tournament ended - standings locked' : (n ? 'Set: ends when ' + n + ' are left' : 'Early stop cleared')); }
+    catch (e) {
+      if (!/straight away/i.test(e.message)) return toast(e.message, true);
+      if (!confirm(e.message)) return;
+      try { const r2 = await send(true); toast(r2.ended ? 'Tournament ended - standings locked' : 'Set'); }
+      catch (e2) { return toast(e2.message, true); }
+    }
+    await refresh();
+  };
+  const stopSave = document.getElementById('stopAtSave');
+  if (stopSave) stopSave.onclick = () => saveStopAt(parseInt(document.getElementById('stopAtN').value, 10) || 0);
+  const stopClear = document.getElementById('stopAtClear');
+  if (stopClear) stopClear.onclick = () => {
+    if (!confirm('Clear the early-stop rule? This tournament will then be played out in full.')) return;
+    saveStopAt(0);
+  };
+
+  const feBtn = document.getElementById('finishEarlyBtn');
+  if (feBtn) feBtn.onclick = async () => {
+    const wb = (T.survivors && T.survivors.wb) || [], lb = (T.survivors && T.survivors.lb) || [];
+    const alive = wb.length + lb.length;
+    if (!confirm('End "' + T.name + '" now and lock the standings with ' + alive + ' still standing?\n\nNo champion will be recorded. Any tournament that draws qualifiers from this one will invite them straight away.')) return;
+    const send = async force => api('/api/t/' + T.id + '/phase', { action: 'finish_early', force: force ? 1 : 0, admin: adminToken() });
+    try { await send(false); }
+    catch (e) {
+      // the only soft refusal is "matches are still live" - offer to override rather than fail
+      if (!/still being played/i.test(e.message)) return toast(e.message, true);
+      if (!confirm(e.message + '\n\nStop anyway?')) return;
+      try { await send(true); } catch (e2) { return toast(e2.message, true); }
+    }
+    toast('Standings locked');
+    await refresh();
+  };
+  const ufeBtn = document.getElementById('undoFinishEarlyBtn');
+  if (ufeBtn) ufeBtn.onclick = async () => {
+    const send = async force => api('/api/t/' + T.id + '/phase', { action: 'undo_finish_early', force: force ? 1 : 0, admin: adminToken() });
+    try { await send(false); }
+    catch (e) {
+      if (!/already gone out/i.test(e.message)) return toast(e.message, true);
+      if (!confirm(e.message + '\n\nReopen anyway?')) return;
+      try { await send(true); } catch (e2) { return toast(e2.message, true); }
+    }
+    toast('Tournament reopened');
+    await refresh();
+  };
 
   const abandonBtn = document.getElementById('abandonBtn');
   if (abandonBtn) abandonBtn.onclick = async () => {
@@ -990,6 +1413,28 @@ async function drawAdmin(el) {
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+  const ratingTypeSave = document.getElementById('aiRatingTypeSave');
+  if (ratingTypeSave) ratingTypeSave.onclick = async () => {
+    const val = document.getElementById('aiRatingType').value;
+    if (val !== (T.ratingType || 'global') && T.players.length
+        && !confirm('Change the counting rating to "' + val + '"?\n\nThe ' + T.players.length + ' player(s) already signed up keep the rating they were admitted on until you re-pull. New signups use the new board straight away.')) return;
+    try {
+      await api('/api/t/' + T.id + '/edit_info', { ratingType: val, admin: adminToken() });
+      toast('Rating type saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const repull = document.getElementById('aiRepull');
+  if (repull) repull.onclick = async () => {
+    if (!confirm('Re-pull ratings for all ' + T.players.length + ' player(s) from FAF?\n\nThis overwrites their stored ratings with the current board and date, and re-applies the cap.')) return;
+    repull.disabled = true; const was = repull.textContent; repull.textContent = 'Asking FAF\u2026';
+    try {
+      const r = await api('/api/t/' + T.id + '/repull_ratings', { admin: adminToken() });
+      toast('Re-pulled ' + r.updated + ' rating' + (r.updated === 1 ? '' : 's') + (r.failed && r.failed.length ? ' \u2014 ' + r.failed.length + ' could not be fetched' : ''));
+      if (r.failed && r.failed.length) alert('Could not fetch a rating for:\n\n' + r.failed.join('\n') + '\n\nThey keep the rating they had.');
+      await refresh();
+    } catch (e) { toast(e.message, true); repull.disabled = false; repull.textContent = was; }
+  };
   const ratingDateSave = document.getElementById('aiRatingDateSave');
   if (ratingDateSave) ratingDateSave.onclick = async () => {
     try {
@@ -1031,8 +1476,8 @@ async function drawAdmin(el) {
     const vtAb = document.getElementById('vtAb');
     const abNote = () => {
       const notes = {
-        lowerA: 'The lower rated captain is Team A and takes the first step. Rating comes from the captain, not the team average.',
-        lowerB: 'The lower rated captain is Team B, so the higher rated captain takes the first step. Rating comes from the captain, not the team average.',
+        lowerA: 'The lower rated team is Team A and takes the first step. Rating is the team\u2019s combined rating \u2014 the same number shown on the Teams tab.',
+        lowerB: 'The lower rated team is Team B, so the higher rated team takes the first step. Rating is the team\u2019s combined rating \u2014 the same number shown on the Teams tab.',
         random: 'A coin flip per match, decided when the match is ready.',
         manual: 'Nobody can start their veto until you set Team A on that match (Vetoes tab). Use this when you want full control.'
       };
@@ -1043,80 +1488,80 @@ async function drawAdmin(el) {
       const enabled = vtEnabled.checked;
       const mode = document.getElementById('vtMode').value;
       const abMode = vtAb ? vtAb.value : 'lowerA';
+      // The checkbox only renders when the tournament actually has secret maps; when it is
+      // absent the stored setting must be carried through untouched rather than cleared.
+      const rbEl = document.getElementById('vtRevealBans');
+      const revealBans = rbEl ? (rbEl.checked ? 1 : 0) : ((T.veto && T.veto.revealBans) ? 1 : 0);
       if (enabled) {
         const pools = T.mapPools || [];
         const ready = pools.filter(p => (p.sequence || []).length && (p.sequence || []).length === (p.mapIds || []).length - 1);
         if (ready.length === 0) return toast('No pool has a valid ban/pick order yet — set one up on the Maps tab first', true);
       }
       try {
-        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode }, admin: adminToken() });
+        await api('/api/t/' + T.id + '/edit_info', { veto: { enabled, mode, abMode, revealBans }, admin: adminToken() });
         await refresh();
         toast('Vetoes saved');
       } catch (e) { toast(e.message, true); }
     };
   }
 
-  // ---- seeding editor ----
-  const seedList = document.getElementById('seedList');
-  if (seedList) {
-    const renumber = () => {
-      let i = 1;
-      seedList.querySelectorAll('.seeditem').forEach(li => { li.querySelector('.seednum').textContent = i++; });
-      const sd = document.getElementById('seedDirty'); if (sd) sd.textContent = 'unsaved changes';
+  // ---- faction vetoes ----
+  const fvEnabled = document.getElementById('fvEnabled');
+  if (fvEnabled) {
+    const cfg = document.getElementById('fvCfg');
+    const bansSel = document.getElementById('fvBans');
+    const picksSel = document.getElementById('fvPicks');
+    const note = document.getElementById('fvNote');
+    const cur = T.fveto || { bans: 1, picks: 2 };
+    // Picks must exceed bans or an opponent could ban every faction you nominated, leaving the
+    // game unresolvable. The options offered adapt so an invalid pair can't be chosen at all.
+    const syncPicks = () => {
+      const b = parseInt(bansSel.value, 10);
+      const min = b + 1;
+      const keep = parseInt(picksSel.value, 10) || cur.picks || min;
+      picksSel.innerHTML = '';
+      for (let n = min; n <= 3; n++) {
+        const o = document.createElement('option');
+        o.value = String(n); o.textContent = n + ' pick' + (n === 1 ? '' : 's');
+        if (n === keep) o.selected = true;
+        picksSel.appendChild(o);
+      }
+      if (!picksSel.value) picksSel.selectedIndex = 0;
+      note.textContent = 'With ' + b + ' ban' + (b === 1 ? '' : 's') + ' each, at least ' + min +
+        ' picks are needed so your opponent can never ban all of them. There are 4 factions.';
     };
-    renumber();
-    const sd0 = document.getElementById('seedDirty'); if (sd0) sd0.textContent = '';
-
-    // arrow buttons
-    seedList.querySelectorAll('.seedup').forEach(b => b.onclick = e => {
-      const li = e.target.closest('.seeditem'); const prev = li.previousElementSibling;
-      if (prev) { seedList.insertBefore(li, prev); renumber(); }
-    });
-    seedList.querySelectorAll('.seeddown').forEach(b => b.onclick = e => {
-      const li = e.target.closest('.seeditem'); const next = li.nextElementSibling;
-      if (next) { seedList.insertBefore(next, li); renumber(); }
-    });
-
-    // drag and drop
-    let dragEl = null;
-    seedList.querySelectorAll('.seeditem').forEach(li => {
-      li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
-      li.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('dragging'); dragEl = null; renumber(); });
-    });
-    seedList.addEventListener('dragover', e => {
-      e.preventDefault();
-      const after = [...seedList.querySelectorAll('.seeditem:not(.dragging)')].reduce((closest, child) => {
-        const box = child.getBoundingClientRect();
-        const offset = e.clientY - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) return { offset, el: child };
-        return closest;
-      }, { offset: -Infinity, el: null }).el;
-      if (!dragEl) return;
-      if (after == null) seedList.appendChild(dragEl);
-      else seedList.insertBefore(dragEl, after);
-    });
-
-    const saveOrder = async (order, randomize) => {
+    fvEnabled.onchange = () => { cfg.style.display = fvEnabled.checked ? '' : 'none'; };
+    bansSel.onchange = syncPicks;
+    syncPicks();
+    document.getElementById('fvSave').onclick = async () => {
       try {
-        await api('/api/t/' + T.id + '/reseed', randomize ? { randomize: 1, admin: adminToken() } : { order, admin: adminToken() });
+        await api('/api/t/' + T.id + '/fveto_config', {
+          enabled: fvEnabled.checked ? 1 : 0,
+          bans: parseInt(bansSel.value, 10),
+          picks: parseInt(picksSel.value, 10),
+          admin: adminToken()
+        });
         await refresh();
-        toast('Seeding saved');
+        toast('Faction vetoes saved');
       } catch (e) { toast(e.message, true); }
     };
-    document.getElementById('seedSave').onclick = () => {
-      const order = [...seedList.querySelectorAll('.seeditem')].map(li => li.dataset.tid);
-      saveOrder(order, false);
-    };
-    const rnd = document.getElementById('seedRandom');
-    if (rnd) rnd.onclick = () => saveOrder(null, true);
-    const byr = document.getElementById('seedByRating');
-    if (byr) byr.onclick = async () => {
-      // reset: order teams by their players' avg rating (desc)
-      const withR = T.teams.map(tm => ({ id: tm.id, r: tm.playerIds.reduce((s, pid) => { const p = T.players.find(x => x.id === pid); return s + (p && p.rating || 0); }, 0) }));
-      withR.sort((a, b) => b.r - a.r);
-      saveOrder(withR.map(x => x.id), false);
-    };
   }
+
+  // ---- seeding editor (shared with the Players tab - see seedPanelHTML) ----
+  wireSeedPanel();
+
+  // ---- rename check ----
+  const rnCheck = document.getElementById('rnCheck');
+  if (rnCheck) rnCheck.onclick = async () => {
+    const out = document.getElementById('rnOut');
+    const label = rnCheck.textContent;
+    rnCheck.disabled = true; rnCheck.textContent = 'Checking\u2026';
+    out.innerHTML = '';
+    try {
+      drawRenameCheck(out, await api('/api/t/' + T.id + '/check_renames', { admin: adminToken() }));
+    } catch (e) { toast(e.message, true); }
+    rnCheck.disabled = false; rnCheck.textContent = label;
+  };
 
   const afComp = document.getElementById('af_comp');
   if (afComp) {
@@ -1146,13 +1591,59 @@ async function drawAdmin(el) {
       g('af_pSingle').style.display = (bt === 'single' && !perRound) ? '' : 'none';
       g('af_pDouble').style.display = (bt === 'double' && !perRound) ? '' : 'none';
       g('af_pSwiss').style.display = bt === 'swiss' ? '' : 'none';
+      if (g('af_thirdWrap')) g('af_thirdWrap').style.display = bt === 'single' ? 'flex' : 'none';
+      if (g('af_divWrap')) {
+        g('af_divWrap').style.display = (bt === 'single' || bt === 'double') ? 'block' : 'none';
+        const nd = parseInt((g('af_divisions') || {}).value, 10) || 0;
+        el.querySelectorAll('[data-afdivname]').forEach(x => { x.style.display = parseInt(x.dataset.afdivname, 10) <= nd ? '' : 'none'; });
+        if (g('af_divNames')) g('af_divNames').style.display = nd > 1 ? 'flex' : 'none';
+      }
+      if (g('af_sw2thirdWrap')) g('af_sw2thirdWrap').style.display = (g('af_sw2type') && g('af_sw2type').value === 'double') ? 'none' : 'flex';
+      if (g('af_swCutBox')) g('af_swCutBox').style.display = (g('af_swcuts') && g('af_swcuts').checked) ? 'block' : 'none';
+      if (g('af_sw2Box')) g('af_sw2Box').style.display = (g('af_sw2') && g('af_sw2').checked) ? 'block' : 'none';
+      if (g('af_swfinal')) g('af_swfinal').disabled = !!(g('af_sw2') && g('af_sw2').checked);
+      if (g('af_stopBox')) g('af_stopBox').style.display = (g('af_stopOn') && g('af_stopOn').checked) ? 'block' : 'none';
+      // a survivor cut-off is an elimination-bracket idea; swiss and FFA have no such count
+      if (g('af_stopAt')) g('af_stopAt').style.display = (isFfa || bt === 'swiss') ? 'none' : '';
+      if (g('af_pickBox')) g('af_pickBox').style.display = (g('af_pick') && g('af_pick').checked) ? 'block' : 'none';
+      // WHO picks is a playoff question: it needs a Swiss stage to have produced records first.
+      {
+        const playoffs = g('af_bt') && g('af_bt').value === 'swiss' && g('af_sw2') && g('af_sw2').checked;
+        if (g('af_pickModeRow')) g('af_pickModeRow').style.display = playoffs ? '' : 'none';
+        const cutsOn = g('af_swcuts') && g('af_swcuts').checked;
+        const win = cutsOn ? (parseInt((g('af_swwin') || {}).value, 10) || 0) : 0;
+        const loss = cutsOn ? (parseInt((g('af_swloss') || {}).value, 10) || 0) : 0;
+        const bottomRec = (win && loss) ? win + '-' + (loss - 1) : 'lowest record';
+        if (g('af_pickMode') && g('af_pickMode').options[1]) {
+          g('af_pickMode').options[1].textContent = 'Only the unbeaten (' + (win ? win + '-0' : 'no losses') + '); everyone else is drawn';
+        }
+        if (g('af_pickMode') && g('af_pickMode').options[2]) {
+          g('af_pickMode').options[2].textContent = 'Only the unbeaten (' + (win ? win + '-0' : 'no losses') + '), from the ' + bottomRec + 's; everyone else is seeded';
+        }
+        const mode = playoffs && g('af_pick') && g('af_pick').checked && g('af_pickMode') ? g('af_pickMode').value : 'half';
+        // that option always seeds by the beaten score, so the tiebreak follows it (and comes back after)
+        const tbSel = g('af_tiebreak');
+        if (tbSel) {
+          if (mode === 'bottom') { if (!tbSel.disabled) tbSel.dataset.was = tbSel.value; tbSel.value = 'beaten'; tbSel.disabled = true; }
+          else if (tbSel.disabled) { tbSel.disabled = false; if (tbSel.dataset.was) tbSel.value = tbSel.dataset.was; }
+        }
+        if (g('af_pickWhat')) {
+          g('af_pickWhat').textContent = mode === 'bottom'
+            ? 'Everyone who went through the Swiss without a loss chooses their playoff opponent from the ' + bottomRec + 's, in seed order. The rest are paired by seed, the best remaining against the lowest. Seeds follow the standings, then the sum of the scores of the opponents each player beat. Needs a playoff of 4, 8, 16 or 32. Can still be changed while the Swiss is played, on this tab.'
+            : mode === 'unbeaten'
+            ? 'Everyone who went through the Swiss without a loss chooses their playoff opponent, in seed order. The rest are drawn against each other, a different record against each other where possible. Needs a playoff of 4, 8, 16 or 32. Can still be changed while the Swiss is played, on this tab.'
+            : 'The top half of the seeds each pick who they play, in seed order. Needs a full bracket (4, 8, 16, 32...).';
+        }
+      }
+      // picking is a bracket concept; FFA has no round-one pairing to choose
+      if (g('af_pickPhase')) g('af_pickPhase').style.display = isFfa ? 'none' : '';
       g('af_fpoints').style.display = g('af_fmode').value === 'points' ? '' : 'none';
       g('af_felim').style.display = g('af_fmode').value === 'elim' ? '' : 'none';
       g('af_fcutto').style.display = g('af_fcutmode').value === '1' ? '' : 'none';
       g('af_ffinalsize').style.display = g('af_ffinalmode').value === '1' ? '' : 'none';
       syncPm();
     };
-    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound']) { const e = g(id); if (e) e.onchange = sync; }
+    for (const id of ['af_comp', 'af_size', 'af_form', 'af_bt', 'af_fsize', 'af_fmode', 'af_fcutmode', 'af_ffinalmode', 'af_perRound', 'af_swcuts', 'af_sw2', 'af_pick', 'af_stopOn', 'af_pickMode', 'af_swwin', 'af_swloss', 'af_sw2type', 'af_divisions']) { const e = g(id); if (e) e.onchange = sync; }
     sync();
 
     g('af_save').onclick = async () => {
@@ -1167,11 +1658,38 @@ async function drawAdmin(el) {
         body.seeding = g('af_seed').value;
       }
       if (!isFfa) {
+        const stopOn = g('af_stopOn') && g('af_stopOn').checked;
+        body.stopAtAlive = stopOn ? g('af_stopN').value : 0;
+        const pickOn = g('af_pick') && g('af_pick').checked;
+        body.pickOpponents = pickOn ? 1 : 0;
+        body.pickMinutes = pickOn ? g('af_pickMins').value : 0;
+        if (g('af_pickMode')) body.pickMode = g('af_pickMode').value;
+        if (g('af_tiebreak') && g('af_bt').value === 'swiss') body.tiebreak = g('af_tiebreak').value;
         body.bracketType = g('af_bt').value;
         body.perRoundBo = (g('af_perRound') && g('af_perRound').checked) ? 1 : 0;
-        if (g('af_bt').value === 'single') body.plan = { early: g('af_early').value, semi: g('af_semi').value, final: g('af_final').value };
+        if ((g('af_bt').value === 'single' || g('af_bt').value === 'double') && g('af_divisions')) {
+          if (!g('af_divisions').disabled) body.divisions = g('af_divisions').value;
+          body.divisionNames = [1, 2, 3, 4].map(d => ((g('af_divName' + d) || {}).value || '').trim());
+        }
+        if (g('af_bt').value === 'single') body.plan = { early: g('af_early').value, semi: g('af_semi').value, final: g('af_final').value, thirdPlace: (g('af_third') && g('af_third').checked) ? 1 : 0 };
         else if (g('af_bt').value === 'double') body.plan = { wb: g('af_wb').value, wbFinal: g('af_wbf').value, lb: g('af_lb').value, lbFinal: g('af_lbf').value, gf: g('af_gf').value, lbHandicap: g('af_hcap').checked };
-        else body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };
+        else {
+          body.plan = { bo: g('af_swbo').value, final: g('af_swfinal').checked, finalBo: g('af_swfbo').value, fast: g('af_swfast').checked };
+          const cutsOn = g('af_swcuts') && g('af_swcuts').checked;
+          body.plan.winCut = cutsOn ? g('af_swwin').value : 0;
+          body.plan.lossCut = cutsOn ? g('af_swloss').value : 0;
+          body.plan.decidingBo = cutsOn ? g('af_swdec').value : 0;
+          const s2On = g('af_sw2') && g('af_sw2').checked;
+          body.plan.stage2 = s2On ? 1 : 0;
+          if (s2On) {
+            body.plan.s2CutTo = g('af_sw2cut').value;
+            body.plan.s2Type = g('af_sw2type').value;
+            body.plan.s2Bo = g('af_sw2bo').value;
+            body.plan.s2Final = g('af_sw2final').value;
+            body.plan.s2Gf = g('af_sw2final').value;
+            body.plan.s2Third = (g('af_sw2type').value !== 'double' && g('af_sw2third') && g('af_sw2third').checked) ? 1 : 0;
+          }
+        }
       } else {
         body.perMatch = g('af_pm').value;
         body.mode = g('af_fmode').value;
@@ -1224,13 +1742,18 @@ function drawTlog(el) {
 
 // ---------- chat ----------
 // A lightweight polling chat that runs independently of the main tournament poll so
-// messages arrive quickly. One active room at a time; its own timer, torn down on close.
+// messages arrive quickly.
+//
+// Every mounted panel is its own INSTANCE: its own room, history, reply state and timer.
+// This used to be module-level state, which meant a second mount silently killed the first —
+// fine when only one chat could ever be on screen, fatal now that a chat can be pinned to the
+// right while another one is open in the tab or a popup.
 let _srOfficialOnly = false;   // series index: show only official series
 let _qlPanelOpen = false;   // Qualifiers controls revealed on the Admin tab (per session)
-let _chatRoom = null;
 let _chatActiveRoom = null;
 let _chatCompletedOpen = false;   // completed-match chats collapsed by default
-let _chatSince = 0;
+const _chatInstances = new Set();
+
 // Drop a room's unread marker from the cached view and repaint just the affected badges.
 function clearUnreadFor(room) {
   if (!T || !T.unreadByRoom) return;
@@ -1249,17 +1772,178 @@ function clearUnreadFor(room) {
   }
 }
 
-let _chatTimer = null;
-let _chatMsgs = [];
-
-let _chatPollNow = null;
-function stopChatPoll() { if (_chatTimer) { clearInterval(_chatTimer); _chatTimer = null; } _chatPollNow = null; }
+function destroyChat(inst) {
+  if (!inst) return;
+  inst.dead = true;
+  if (inst.timer) { clearInterval(inst.timer); inst.timer = null; }
+  _chatInstances.delete(inst);
+}
+// Kill whatever chat currently lives inside `host` (or anywhere under it).
+function destroyChatIn(host) {
+  if (!host) return;
+  for (const inst of Array.from(_chatInstances)) {
+    if (inst.host === host || host.contains(inst.host)) destroyChat(inst);
+  }
+}
+// Tear down every transient chat panel — the tab's, or one in a popup — but never the pinned
+// rail, which is the entire point of pinning. Kept under its old name because drawTournament
+// calls it on every redraw and on every tab switch.
+function stopChatPoll() {
+  for (const inst of Array.from(_chatInstances)) if (!inst.pinned) destroyChat(inst);
+}
+// Poked from app.js the instant a hidden tab becomes visible again: catch every live panel up.
+const _chatPollNow = () => { for (const inst of Array.from(_chatInstances)) inst.pollNow(); };
 
 async function chatRooms() {
   const tok = viewToken();
   const r = await api('/api/t/' + T.id + '/chat_rooms' + (tok ? '?token=' + encodeURIComponent(tok) : ''));
   return r;
 }
+
+// ---------- pinned chat ----------
+// One chat can be pinned to a rail on the right of the screen. It lives outside #app so a
+// tournament redraw, a tab switch or a popup never disturbs it, and it survives everything
+// except the four things that should genuinely end it (see syncPinnedChat).
+let _pinnedChat = null;   // { tid, room, label }
+
+function pinStoreKey() { const id = tourneyId(); return id ? 'faf_pinchat_' + id : null; }
+
+// Is this room one of the "Completed matches" chats? Those are read-only history in practice:
+// pinning one would be a dead end, since the rail closes itself the moment a match finishes.
+// A room whose match has vanished entirely (bracket regenerated, tournament reset) counts too.
+function chatRoomIsDone(room) {
+  if (!room || room.indexOf('match:') !== 0) return false;   // global / captains / staff never complete
+  if (!T || !T.matches) return false;                        // no data yet: don't guess, don't close
+  const m = T.matches.find(x => x.id === room.slice(6));
+  if (!m) return true;
+  return m.status === 'done';
+}
+function chatRoomPinnable(room) { return !!room && !!tourneyId() && !chatRoomIsDone(room); }
+
+// `prev` is the record being cleared. Keying off it rather than off tourneyId() matters when
+// the pin is dropped BECAUSE the viewer has navigated to a different tournament: keying off the
+// current page would clear the wrong tournament's stored pin.
+function savePinned(prev) {
+  const rec = _pinnedChat || prev;
+  const tid = rec ? rec.tid : tourneyId();
+  if (!tid) return;
+  const key = 'faf_pinchat_' + tid;
+  try {
+    if (_pinnedChat) sessionStorage.setItem(key, JSON.stringify(_pinnedChat));
+    else sessionStorage.removeItem(key);
+  } catch (e) {}
+}
+
+// The rail is fixed to the viewport, so it has to start below the sticky top bar. offsetHeight
+// (not getBoundingClientRect) because body carries a `zoom` from the UI-scale setting and both
+// elements live in that same scaled coordinate space.
+function positionPinRail() {
+  const bar = document.querySelector('.topbar');
+  // A zero reading means we were called before layout settled — fall back rather than tucking
+  // the rail up underneath the bar.
+  const h = (bar && bar.offsetHeight) ? bar.offsetHeight : 56;
+  document.documentElement.style.setProperty('--pin-top', h + 'px');
+}
+
+function pinChat(room, label) {
+  if (!room) return;
+  if (!chatRoomPinnable(room)) { toast('That match is finished — its chat can’t be pinned.', true); return; }
+  if (_pinnedChat && _pinnedChat.room === room) return;      // already there: don't remount and lose scroll
+  _pinnedChat = { tid: tourneyId(), room, label: label || room };
+  savePinned();
+  renderPinRail();          // replaces whatever was pinned before
+  refreshPinButtons();
+}
+
+function unpinChat(note) {
+  if (!_pinnedChat) return;
+  const prev = _pinnedChat;
+  _pinnedChat = null;
+  savePinned(prev);
+  const el = document.getElementById('pinRail');
+  if (el) { destroyChatIn(el); el.remove(); }
+  document.body.classList.remove('chat-pinned');
+  refreshPinButtons();
+  if (note) toast(note);
+}
+
+function renderPinRail() {
+  if (!_pinnedChat) return;
+  let el = document.getElementById('pinRail');
+  if (!el) {
+    el = document.createElement('aside');
+    el.id = 'pinRail';
+    el.className = 'pin-rail';
+    document.body.appendChild(el);
+  }
+  destroyChatIn(el);
+  el.innerHTML = '<div class="pin-rail-body"></div>';
+  document.body.classList.add('chat-pinned');
+  positionPinRail();
+  mountChat(el.querySelector('.pin-rail-body'), _pinnedChat.room, _pinnedChat.label, { pinned: true });
+}
+
+// Restore a pin after a reload. Called once the tournament data is in, so chatRoomIsDone can
+// actually judge the room; a stored pin for a match that finished meanwhile is simply dropped.
+function restorePinnedChat() {
+  const key = pinStoreKey();
+  if (!key) return;
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (e) { saved = null; }
+  if (!saved || !saved.room) return;
+  if (saved.tid !== tourneyId() || !chatRoomPinnable(saved.room)) {
+    try { sessionStorage.removeItem(key); } catch (e) {}
+    return;
+  }
+  if (_pinnedChat && _pinnedChat.room === saved.room) return;
+  _pinnedChat = saved;
+  renderPinRail();
+  refreshPinButtons();
+}
+
+// The single guard that keeps the rail honest. Runs on every redraw, on every tournament poll
+// and on the rail's own 3.5s tick, so no route into a stale pin is left open:
+//   - navigated off the tournament (or onto a different one) -> close
+//   - the match finished, or no longer exists                -> close, and say why
+//   - a room the viewer may no longer pin                    -> the buttons for it disappear
+function syncPinnedChat() {
+  if (_pinnedChat) {
+    positionPinRail();          // the top bar wraps to two rows on narrow screens
+    const tid = tourneyId();
+    if (!tid || tid !== _pinnedChat.tid) unpinChat();
+    else if (T && T.id === tid && chatRoomIsDone(_pinnedChat.room)) {
+      unpinChat('Pinned chat closed — that match is complete.');
+    }
+  }
+  refreshPinButtons();
+}
+
+// Repaint every pin control on screen from the one source of truth. Cheap, and it means no
+// caller has to remember which buttons it just rendered.
+function refreshPinButtons() {
+  const pinnedRoom = _pinnedChat ? _pinnedChat.room : null;
+  document.querySelectorAll('[data-pinbtn]').forEach(b => {
+    const room = b.dataset.pinbtn;
+    // a match that finished while this panel was open loses the button entirely
+    if (!chatRoomPinnable(room)) { b.style.display = 'none'; return; }
+    b.style.display = '';
+    const on = room === pinnedRoom;
+    b.classList.toggle('on', on);
+    b.textContent = on ? '\u{1F4CC} Pinned on the right' : '\u{1F4CC} Pin this chat on the right';
+    b.title = on ? 'Click to unpin it' : 'Keep this chat open in a panel on the right of the screen';
+  });
+  document.querySelectorAll('[data-pinroom]').forEach(b => {
+    const room = b.dataset.pinroom;
+    if (!chatRoomPinnable(room)) { b.style.display = 'none'; return; }
+    b.style.display = '';
+    const on = room === pinnedRoom;
+    b.classList.toggle('on', on);
+    b.title = on ? 'Unpin this chat' : 'Pin this chat on the right';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+window.addEventListener('resize', positionPinRail);
 
 // Escape text, then visually highlight @mentions (word-initial @ followed by a name run).
 // Purely cosmetic — matches loosely so "@Deli" or "@deli7961" both light up.
@@ -1268,13 +1952,13 @@ function highlightMentions(text) {
   return safe.replace(/(^|\s)@([^\s@]{1,40})/g, (whole, pre, name) => pre + '<span class="chat-ping">@' + name + '</span>');
 }
 
-function renderChatMessages(container) {
+function renderChatMessages(container, msgs) {
   const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
   // Timestamps used to be raw browser-local hours, which ignored the viewer's chosen time zone
   // and gave no clue what DAY a message was from. Now: a divider whenever the day changes, and
   // the full date/time on hover, both honouring the viewer's tz and format settings.
   let lastDay = '';
-  container.innerHTML = _chatMsgs.map(m => {
+  container.innerHTML = msgs.map(m => {
     const iso = new Date(m.at).toISOString();
     const time = fmtTimePart(new Date(m.at), resolvedTZ());
     const full = fmtDateTime(iso);
@@ -1283,73 +1967,178 @@ function renderChatMessages(container) {
     if (day !== lastDay) { divider = `<div class="chat-day"><span>${esc(day)}</span></div>`; lastDay = day; }
     if (m.sys) return divider + `<div class="chat-sys">\u{1F3B2} ${esc(m.text)} <span class="chat-time" title="${esc(full)}">${esc(time)}</span></div>`;
     const org = viewerIsOrganizer();
-    return divider + `<div class="chat-msg" data-mid="${esc(m.id)}">
-      <span class="chat-who">${esc(m.who)}</span>
+    // The quoted parent is a snapshot taken when the reply was posted, so it still reads
+    // correctly if the original was deleted or has scrolled out of the retained history.
+    const quote = m.replyTo ? `<div class="chat-quote" data-jump="${esc(m.replyTo.id)}" title="Jump to the original">
+      <span class="cq-who">${esc(m.replyTo.who)}</span><span class="cq-text">${esc(m.replyTo.text)}</span></div>` : '';
+    return divider + `<div class="chat-msg${m.everyone ? ' chat-everyone' : ''}" data-mid="${esc(m.id)}">
+      ${quote}
+      <span class="chat-who">${esc(m.who)}</span>${(() => {
+        const who = m.fafId && (T.players || []).find(p => p.fafId === m.fafId);
+        return (who && who.discord) ? '<span class="chat-dc" title="' + esc(who.name) + ' on Discord">' + esc(who.discord) + '</span>' : '';
+      })()}
       <span class="chat-time" title="${esc(full)}">${esc(time)}</span>
-      ${org && m.fafId ? `<span class="chat-mod"><a href="#" data-chatdel="${esc(m.id)}" title="Delete message">\u2715</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a></span>` : ''}
+      <span class="chat-mod"><a href="#" data-chatreply="${esc(m.id)}" data-replywho="${esc(m.who)}" data-replytext="${esc(String(m.text || '').slice(0, 140))}" title="Reply to this message">reply</a>${org && m.fafId ? ` <a href="#" data-chatdel="${esc(m.id)}" title="Delete message">✕</a> <a href="#" data-chatmute="${esc(m.fafId)}" data-chatmutename="${esc(m.who)}" title="Mute ${esc(m.who)}">mute</a>` : ''}</span>
       <div class="chat-text">${highlightMentions(m.text)}</div>
     </div>`;
   }).join('') || '<div class="empty">No messages yet. Say hi, or type <code>!roll</code>.</div>';
   if (nearBottom) container.scrollTop = container.scrollHeight;
 }
 
-// Build a chat panel into `host` for the given room. Reusable by the tab and the match modal.
-async function mountChat(host, room, label) {
-  stopChatPoll();
-  _chatRoom = room; _chatSince = 0; _chatMsgs = [];
-  host.innerHTML = `<div class="chat-panel">
-    <div class="chat-head">${esc(label)}</div>
-    <div class="chat-log" id="chatLog"><div class="empty">Loading\u2026</div></div>
-    <div class="chat-input">
-      <div class="chat-inwrap"><input type="text" id="chatText" maxlength="500" placeholder="Message\u2026 (!roll for 1\u2013100, !organizer to ping the organizers, @name to mention)" autocomplete="off"><div class="chat-mentions" id="chatMentions" style="display:none"></div></div>
-      <button class="btn primary small" id="chatSend">Send</button>
-      ${viewerIsOrganizer() ? '' : '<button class="btn ghost small" id="chatPing" title="Flags this chat for the organizers so they know you need help">\uD83D\uDD14 Ping organizer</button>'}
+// Build a chat panel into `host` for the given room. Reusable by the tab, the match popup and
+// the pinned rail. Everything inside is addressed by CLASS, not id: two panels can be on screen
+// at once and duplicate ids would have them fighting over the same nodes.
+// opts: { pinned }      this panel IS the rail — offer a close X instead of a pin button
+//       { closeOnPin }  pinning from here should dismiss the popup the panel sits in
+async function mountChat(host, room, label, opts) {
+  opts = opts || {};
+  destroyChatIn(host);
+  const inst = {
+    host, room, label, pinned: !!opts.pinned,
+    since: 0, msgs: [], replyTo: null, timer: null, dead: false,
+    pollNow: () => {}
+  };
+  _chatInstances.add(inst);
+
+  const headRight = inst.pinned
+    ? `<span class="ch-actions">
+         <button type="button" class="ch-icon" data-chatexpand title="Open this chat in the Chat tab">⤢</button>
+         <button type="button" class="ch-icon ch-close" data-chatunpin title="Unpin and close this chat">✕</button>
+       </span>`
+    : (chatRoomPinnable(room)
+        ? `<span class="ch-actions"><button type="button" class="chat-pin-btn" data-pinbtn="${esc(room)}">\u{1F4CC} Pin this chat on the right</button></span>`
+        : '');
+
+  host.innerHTML = `<div class="chat-panel${inst.pinned ? ' chat-panel-pinned' : ''}">
+    <div class="chat-head">${inst.pinned ? '<span class="ch-pin-mark" title="Pinned chat">\u{1F4CC}</span>' : ''}<span class="ch-label" title="${esc(label)}">${esc(label)}</span>${headRight}</div>
+    <div class="chat-log js-chatlog"><div class="empty">Loading…</div></div>
+    <div class="chat-replybar js-replybar" style="display:none">
+      <span class="crb-label">Replying to</span> <span class="crb-who js-replywho"></span>
+      <span class="crb-text js-replytext"></span>
+      <button type="button" class="crb-x js-replycancel" title="Cancel reply">×</button>
     </div>
-    <div class="muted small" id="chatNote" style="margin-top:4px"></div>
+    <div class="chat-input">
+      <div class="chat-inwrap"><input type="text" class="js-chattext" maxlength="500" placeholder="${viewerIsOrganizer() ? 'Message… (@everyone to ping all entrants, @name to mention, !roll for 1–100)' : 'Message… (!roll for 1–100, !organizer to ping the organizers, @name to mention)'}" autocomplete="off"><div class="chat-mentions js-mentions" style="display:none"></div></div>
+      <button class="btn primary small js-chatsend">Send</button>
+      ${viewerIsOrganizer() ? '' : '<button class="btn ghost small js-chatping" title="Flags this chat for the organizers so they know you need help">🔔 Ping organizer</button>'}
+    </div>
+    <div class="muted small js-chatnote" style="margin-top:4px"></div>
   </div>`;
-  const logEl = host.querySelector('#chatLog');
-  const inp = host.querySelector('#chatText');
-  const note = host.querySelector('#chatNote');
+  const logEl = host.querySelector('.js-chatlog');
+  const inp = host.querySelector('.js-chattext');
+  const note = host.querySelector('.js-chatnote');
+
+  // ---- pin / unpin controls in the header ----
+  const pinBtn = host.querySelector('[data-pinbtn]');
+  if (pinBtn) pinBtn.onclick = (e) => {
+    e.preventDefault();
+    if (_pinnedChat && _pinnedChat.room === room) { unpinChat(); return; }
+    pinChat(room, label);
+    if (opts.closeOnPin && _pinnedChat && _pinnedChat.room === room) { destroyChat(inst); closeModal(); }
+  };
+  const unpinBtn = host.querySelector('[data-chatunpin]');
+  if (unpinBtn) unpinBtn.onclick = (e) => { e.preventDefault(); unpinChat(); };
+  const expandBtn = host.querySelector('[data-chatexpand]');
+  if (expandBtn) expandBtn.onclick = (e) => {
+    e.preventDefault();
+    // Only meaningful while the tournament page with a Chat tab is on screen.
+    if (!document.querySelector('.tab[data-tab="chat"]')) { toast('The Chat tab isn’t open right now'); return; }
+    _chatActiveRoom = room;
+    currentTab = 'chat';
+    syncTabURL();
+    drawTournament();
+  };
 
   const load = async (incremental) => {
+    if (inst.dead) return;
+    // The panel was torn out of the DOM (redraw, popup dismissed by Escape or a backdrop click).
+    // Self-heal rather than polling forever against a detached node.
+    if (!document.body.contains(host)) { destroyChat(inst); return; }
     try {
       const tok = viewToken();
-      const r = await api('/api/t/' + T.id + '/chat_read?room=' + encodeURIComponent(room) + (_chatSince ? '&since=' + _chatSince : '') + (tok ? '&token=' + encodeURIComponent(tok) : ''));
-      if (r.muted) note.textContent = 'You are muted by an organizer \u2014 you can read but not post.';
+      // Only the poll asks for what is newer than the last message; a full load asks for the
+      // whole room. A full load used to send `since` too, got nothing back and emptied the
+      // panel - which is what deleting (or muting) from it did.
+      const since = incremental ? inst.since : 0;
+      const r = await api('/api/t/' + T.id + '/chat_read?room=' + encodeURIComponent(room) + (since ? '&since=' + since : '') + (tok ? '&token=' + encodeURIComponent(tok) : ''));
+      if (inst.dead) return;
+      if (r.muted) note.textContent = 'You are muted by an organizer — you can read but not post.';
+      // A message was deleted since this panel last loaded the room. The poll only ever sees
+      // newer messages, so it would keep showing the deleted one: load the room again instead.
+      if (incremental && r.rev !== undefined && inst.rev !== undefined && r.rev !== inst.rev) { await load(false); return; }
+      if (r.rev !== undefined) inst.rev = r.rev;
       const incoming = r.messages || [];
-      if (incoming.length) {
-        if (incremental) _chatMsgs = _chatMsgs.concat(incoming);
-        else _chatMsgs = incoming;
-        _chatSince = _chatMsgs[_chatMsgs.length - 1].at;
-        renderChatMessages(logEl);
-      } else if (!incremental) {
-        _chatMsgs = []; renderChatMessages(logEl);
+      if (!incremental) {
+        inst.msgs = incoming;
+        inst.since = incoming.length ? incoming[incoming.length - 1].at : 0;
+        renderChatMessages(logEl, inst.msgs);
+      } else if (incoming.length) {
+        inst.msgs = inst.msgs.concat(incoming);
+        inst.since = inst.msgs[inst.msgs.length - 1].at;
+        renderChatMessages(logEl, inst.msgs);
       }
       // Reading the room clears its unread server-side, but the badges come from the cached
       // tournament view, and the poll deliberately doesn't redraw while you're in chat. Clear
       // them locally so the marker disappears as you read instead of on the next tab switch.
       clearUnreadFor(room);
-    } catch (e) { note.textContent = e.message; stopChatPoll(); }
+    } catch (e) {
+      note.textContent = e.message;
+      // Losing access (dropped from the team, caster role revoked, room gone) must not leave a
+      // dead panel bolted to the screen. Anything else is a network blip: say so, keep the
+      // panel up and let the next poll recover it.
+      if (/no access/i.test(e.message || '')) {
+        if (inst.pinned) unpinChat('Pinned chat closed — you no longer have access to it.');
+        else destroyChat(inst);
+      }
+    }
   };
   await load(false);
+  // Torn down while that first load was in flight (panel replaced, popup dismissed, access
+  // lost). Stop here rather than wiring handlers and starting a timer on a dead instance.
+  if (inst.dead) return inst;
+
+  // ---- reply / quote ----
+  const replyBar = host.querySelector('.js-replybar');
+  const replyWho = host.querySelector('.js-replywho');
+  const replyText = host.querySelector('.js-replytext');
+  const clearReply = () => { inst.replyTo = null; if (replyBar) replyBar.style.display = 'none'; };
+  const setReply = (id, who, text) => {
+    inst.replyTo = id;
+    if (replyWho) replyWho.textContent = who || '';
+    if (replyText) replyText.textContent = text || '';
+    if (replyBar) replyBar.style.display = '';
+    inp.focus();
+  };
+  clearReply();
+  const rc = host.querySelector('.js-replycancel');
+  if (rc) rc.onclick = clearReply;
+  // Escape cancels a reply before it does anything else.
+  inp.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && inst.replyTo) { ev.stopPropagation(); clearReply(); }
+  });
 
   const send = async () => {
     const text = inp.value.trim();
     if (!text) return;
+    const replyTo = inst.replyTo;
     inp.value = '';
     try {
-      await api('/api/t/' + T.id + '/chat_post', { room, text, token: viewToken() });
+      await api('/api/t/' + T.id + '/chat_post', { room, text, replyTo: replyTo || undefined, token: viewToken() });
+      clearReply();
       await load(true);
     } catch (e) { toast(e.message, true); inp.value = text; }
   };
-  host.querySelector('#chatSend').onclick = send;
+  host.querySelector('.js-chatsend').onclick = send;
 
   // ---- @mention autocomplete (Discord-style) ----
   // Suggest from everyone signed up (players) plus team names, deduped. Typing "@" opens the
   // list; more letters filter it. Enter/Tab/click completes the current highlight.
-  const mentionBox = host.querySelector('#chatMentions');
+  const mentionBox = host.querySelector('.js-mentions');
   const nameList = (() => {
     const set = new Map();
+    // Organizers only: @everyone pings every signed-up account. Offered first so it is easy to
+    // reach, and simply absent for anyone who isn't allowed to use it.
+    if (viewerIsOrganizer()) set.set('everyone', 'everyone');
     for (const p of (T.players || [])) if (p && p.name) set.set(p.name.toLowerCase(), p.name);
     for (const tm of (T.teams || [])) if (tm && tm.name) set.set(tm.name.toLowerCase(), tm.name);
     return Array.from(set.values());
@@ -1406,7 +2195,7 @@ async function mountChat(host, room, label) {
     if (e.key === 'Enter') { e.preventDefault(); send(); }
   };
   inp.addEventListener('blur', () => setTimeout(closeMentions, 120));
-  const pingBtn = host.querySelector('#chatPing');
+  const pingBtn = host.querySelector('.js-chatping');
   if (pingBtn) pingBtn.onclick = async () => {
     try {
       await api('/api/t/' + T.id + '/chat_post', { room, text: '!organizer ' + (inp.value.trim() || ''), token: viewToken() });
@@ -1419,6 +2208,23 @@ async function mountChat(host, room, label) {
   logEl.onclick = async (e) => {
     const del = e.target.closest('[data-chatdel]');
     const mute = e.target.closest('[data-chatmute]');
+    const rep = e.target.closest('[data-chatreply]');
+    const jump = e.target.closest('[data-jump]');
+    if (rep) {
+      e.preventDefault();
+      setReply(rep.dataset.chatreply, rep.dataset.replywho, rep.dataset.replytext);
+      return;
+    }
+    if (jump) {
+      // Scroll the quoted original into view and flash it, if it is still in the loaded history.
+      const target = logEl.querySelector('[data-mid="' + jump.dataset.jump.replace(/"/g, '') + '"]');
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+        target.classList.add('chat-flash');
+        setTimeout(() => target.classList.remove('chat-flash'), 1200);
+      } else { toast('That message is no longer in the loaded history'); }
+      return;
+    }
     if (del) {
       e.preventDefault();
       try { await api('/api/t/' + T.id + '/chat_delete', { room, id: del.dataset.chatdel, admin: adminToken() }); await load(false); }
@@ -1431,18 +2237,23 @@ async function mountChat(host, room, label) {
     }
   };
 
-  _chatPollNow = () => { if (_chatRoom === room) load(true); };
-  _chatTimer = setInterval(() => {
+  inst.pollNow = () => { if (!inst.dead) load(true); };
+  inst.timer = setInterval(() => {
+    if (inst.dead) { clearInterval(inst.timer); return; }
+    if (!document.body.contains(host)) { destroyChat(inst); return; }   // panel is gone
+    // The rail is the only panel that outlives a redraw, so it is also the one that has to keep
+    // checking whether it still has any business being on screen.
+    if (inst.pinned) syncPinnedChat();
     if (document.hidden) return;                       // tab in the background
-    if (_chatRoom !== room) { stopChatPoll(); return; }
-    if (document.activeElement === inp && inp.value) { /* still poll, just don't steal focus */ }
     load(true);
   }, 3500);
+  refreshPinButtons();
+  return inst;
 }
 
 async function drawChatTab(el) {
   stopChatPoll();
-  el.innerHTML = '<div class="panel section"><div class="empty">Loading chats\u2026</div></div>';
+  el.innerHTML = '<div class="panel section"><div class="empty">Loading chats…</div></div>';
   let data;
   try { data = await chatRooms(); } catch (e) { el.innerHTML = '<div class="panel section"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
   const rooms = data.rooms || [];
@@ -1453,10 +2264,11 @@ async function drawChatTab(el) {
     ? `<div class="org-callout">
       <div class="org-callout-title">Organizer${orgs.length === 1 ? '' : 's'}</div>
       <div class="org-callout-list">${orgs.map(o => `<div class="org-row">
-        <span class="org-name">${esc(o.name)}</span>
-        ${o.discord ? '<span class="org-discord" title="Discord handle">' + esc(o.discord) + '</span>' : '<span class="muted small">no Discord listed</span>'}
+        ${o.discord
+          ? '<span class="org-idpair"><span class="org-name">' + esc(o.name) + '</span><span class="org-discord" title="' + esc(o.name) + ' on Discord">' + esc(o.discord) + '</span></span>'
+          : '<span class="org-name">' + esc(o.name) + '</span><span class="muted small">no Discord listed</span>'}
       </div>`).join('')}</div>
-      <div class="org-callout-hint">Type <code>!organizer</code> or press \uD83D\uDD14 to ping them in that chat.</div>
+      <div class="org-callout-hint">Type <code>!organizer</code> or press 🔔 to ping them in that chat.</div>
     </div>`
     : '';
 
@@ -1467,13 +2279,20 @@ async function drawChatTab(el) {
         <p class="muted small" style="margin:6px 0 0">Chat here is mostly between players until the event begins. If you need something answered sooner, message an organizer on Discord${orgs.some(o => o.discord) ? ' (' + orgs.filter(o => o.discord).map(o => esc(o.discord)).join(', ') + ')' : ''}.</p>
       </div>`
     : '';
+  // A room and, beside it, a pin toggle. The pin is a SIBLING of the room button, not a child:
+  // nesting a button inside a button is invalid and swallows the click. Completed rooms get no
+  // pin at all — there is nothing live left to follow.
   const roomBtn = (r) => {
     const badges = [];
     if (r.mention) badges.push('<span class="chat-mention-badge">1</span>');       // you were @mentioned
     else if (r.unread) badges.push('<span class="unread-dot">' + (r.unread > 9 ? '9+' : r.unread) + '</span>');
-    if (r.ping && viewerIsOrganizer()) badges.push('\uD83D\uDD14');                  // organizer attention
+    if (r.ping && viewerIsOrganizer()) badges.push('🔔');                  // organizer attention
     const cnt = r.count ? ' <span class="muted small">(' + r.count + ')</span>' : '';
-    return `<button class="chat-room ${r.mention ? 'mentioned' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${badges.length ? '<span class="chat-room-badges">' + badges.join(' ') + '</span> ' : ''}${esc(r.label)}${cnt}</button>`;
+    const pin = r.done ? '' : `<button type="button" class="chat-pin-mini" data-pinroom="${esc(r.id)}" data-pinlabel="${esc(r.label)}" title="Pin this chat on the right">\u{1F4CC}</button>`;
+    return `<div class="chat-room-row">
+      <button class="chat-room ${r.mention ? 'mentioned' : ''} ${r.ping && viewerIsOrganizer() ? 'pinged' : ''}" data-room="${esc(r.id)}" data-label="${esc(r.label)}">${badges.length ? '<span class="chat-room-badges">' + badges.join(' ') + '</span> ' : ''}${esc(r.label)}${cnt}</button>
+      ${pin}
+    </div>`;
   };
   const active = rooms.filter(r => !r.done);
   const completed = rooms.filter(r => r.done);
@@ -1482,7 +2301,7 @@ async function drawChatTab(el) {
   const listHtml = active.map(roomBtn).join('')
     + (completed.length
         ? `<button class="chat-room-group chat-group-toggle ${_chatCompletedOpen ? 'open' : ''}" id="chatCompletedToggle">
-             <span class="cg-caret">${_chatCompletedOpen ? '\u25BE' : '\u25B8'}</span> Completed matches <span class="muted small">(${completed.length})</span>${completedMention && !_chatCompletedOpen ? ' <span class="chat-mention-badge">!</span>' : ''}
+             <span class="cg-caret">${_chatCompletedOpen ? '▾' : '▸'}</span> Completed matches <span class="muted small">(${completed.length})</span>${completedMention && !_chatCompletedOpen ? ' <span class="chat-mention-badge">!</span>' : ''}
            </button>
            <div class="chat-completed" id="chatCompletedWrap" style="display:${_chatCompletedOpen ? '' : 'none'}">${completed.map(roomBtn).join('')}</div>`
         : '');
@@ -1492,6 +2311,7 @@ async function drawChatTab(el) {
       ${orgLine}
       ${data.muted ? '<div class="warn small" style="margin-bottom:8px">You are muted.</div>' : ''}
       <div class="chat-roomlist">${listHtml}</div>
+      <p class="muted small chat-pin-hint">\u{1F4CC} keeps a chat open on the right while you browse the bracket, matches and vetoes. One at a time.</p>
     </div>
     <div class="chat-host" id="chatHost"></div>
   </div>`;
@@ -1503,6 +2323,11 @@ async function drawChatTab(el) {
     mountChat(host, btn.dataset.room, btn.dataset.label);
   };
   el.querySelectorAll('.chat-room').forEach(b => b.onclick = () => pick(b));
+  el.querySelectorAll('[data-pinroom]').forEach(b => b.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (_pinnedChat && _pinnedChat.room === b.dataset.pinroom) unpinChat();
+    else pinChat(b.dataset.pinroom, b.dataset.pinlabel);
+  });
   const cToggle = el.querySelector('#chatCompletedToggle');
   if (cToggle) cToggle.onclick = () => {
     _chatCompletedOpen = !_chatCompletedOpen;
@@ -1510,21 +2335,25 @@ async function drawChatTab(el) {
     if (wrap) wrap.style.display = _chatCompletedOpen ? '' : 'none';
     cToggle.classList.toggle('open', _chatCompletedOpen);
     const caret = cToggle.querySelector('.cg-caret');
-    if (caret) caret.textContent = _chatCompletedOpen ? '\u25BE' : '\u25B8';
+    if (caret) caret.textContent = _chatCompletedOpen ? '▾' : '▸';
   };
   // Re-select the room the user was already in (if it still exists), not always Global — a
   // background refresh must not yank them back to the global chat.
   const prev = _chatActiveRoom && el.querySelector('.chat-room[data-room="' + (window.CSS && CSS.escape ? CSS.escape(_chatActiveRoom) : _chatActiveRoom) + '"]');
   pick(prev || el.querySelector('.chat-room'));
+  refreshPinButtons();
 }
 
 function openMatchChat(m) {
-  const label = mLabel(m) + ' \u2014 ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  const label = mLabelFull(m) + ' - ' + teamName(m.team1) + ' vs ' + teamName(m.team2);
+  const room = 'match:' + m.id;
   modal(`<h3>Match chat</h3><div id="mcHost" class="chat-compact"></div>
     <div class="actions"><button class="btn ghost" id="mcClose">Close</button></div>`, root => {
-    root.querySelector('#mcClose').onclick = () => { stopChatPoll(); closeModal(); };
-    mountChat(root.querySelector('#mcHost'), 'match:' + m.id, label);
-  });
+    const mcHost = root.querySelector('#mcHost');
+    root.querySelector('#mcClose').onclick = () => { destroyChatIn(mcHost); closeModal(); };
+    // Pinning from the popup puts the chat on the right, so the popup has done its job.
+    mountChat(mcHost, room, label, { closeOnPin: true });
+  }, { mid: true });
 }
 
 // ---------- routing ----------
@@ -1547,6 +2376,9 @@ function setTitle(name) {
 }
 
 function route() {
+  // A pinned chat belongs to one tournament. Leaving it (home, series, another event) closes
+  // the rail before the new page draws, so it can never hang around over unrelated content.
+  syncPinnedChat();
   if (location.pathname === '/series') renderSeriesIndex();
   else if (location.pathname.startsWith('/series/')) renderSeries(location.pathname.slice(8));
   else if (location.pathname === '/host') renderHost();
@@ -1560,25 +2392,62 @@ function route() {
   refreshPending();
 }
 
+// Hall of Fame: players only - a team's win counts for each of its players. Searchable by name or
+// FAF id, 100 to a page. The search and page live in the address (/hall?q=&page=) so a result can
+// be linked; the server does the filtering and paging.
+let _hofTimer = null;
 async function renderHall() {
   setTitle('Hall of Fame');
   drawTopbar('');
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="page"><h1 style="margin:0 0 14px">Hall of Fame</h1><div id="hofBody"><div class="panel"><div class="empty">Loading…</div></div></div></div>';
+  const qs = new URLSearchParams(location.search);
+  const q0 = qs.get('q') || '';
+  app.innerHTML = `<div class="page"><h1 style="margin:0 0 14px">Hall of Fame</h1>
+    <div class="panel section">
+      <div class="hof-search"><input type="text" id="hofQ" placeholder="Search a player by name or FAF id" maxlength="60" autocomplete="off" value="${esc(q0)}"></div>
+      <div id="hofBody"><div class="empty">Loading\u2026</div></div>
+    </div></div>`;
+  const inp = document.getElementById('hofQ');
+  inp.oninput = () => {
+    clearTimeout(_hofTimer);
+    _hofTimer = setTimeout(() => loadHall(inp.value.trim(), 1), 250);
+  };
+  await loadHall(q0, parseInt(qs.get('page'), 10) || 1);
+}
+async function loadHall(q, page) {
+  const body = document.getElementById('hofBody');
+  if (!body) return;
   let data;
-  try { const r = await fetch('/api/halloffame'); data = await r.json(); if (!r.ok) throw new Error(data.error || 'Failed to load'); }
-  catch (e) { document.getElementById('hofBody').innerHTML = '<div class="panel"><div class="empty">' + esc(e.message) + '</div></div>'; return; }
-  const players = data.players || [], teams = data.teams || [];
-  let html = '<div class="panel section"><h2>Players <span class="muted small">(by championships)</span></h2>';
-  if (!players.length) html += '<div class="empty">No results yet — win a tournament to get on the board.</div>';
-  else html += '<table><thead><tr><th>#</th><th>Player</th><th>Wins</th><th>Entered</th></tr></thead><tbody>' +
-    players.map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(p.name)}</td><td class="mono">${p.wins}</td><td class="mono muted">${p.entered}</td></tr>`).join('') + '</tbody></table>';
-  html += '</div><div class="panel section"><h2>Teams <span class="muted small">(by championships)</span></h2>';
-  if (!teams.length) html += '<div class="empty">No champions yet.</div>';
-  else html += '<table><thead><tr><th>#</th><th>Team</th><th>Wins</th></tr></thead><tbody>' +
-    teams.map((t, i) => `<tr><td class="muted">${i + 1}</td><td>${esc(t.name)}</td><td class="mono">${t.wins}</td></tr>`).join('') + '</tbody></table>';
-  html += '</div>';
-  document.getElementById('hofBody').innerHTML = html;
+  try {
+    const r = await fetch('/api/halloffame?q=' + encodeURIComponent(q || '') + '&page=' + (page || 1));
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Failed to load');
+  } catch (e) { body.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+  // keep the address in step, without adding a history entry per keystroke
+  if (location.pathname === '/hall') {
+    const p = new URLSearchParams();
+    if (data.q) p.set('q', data.q);
+    if (data.page > 1) p.set('page', String(data.page));
+    history.replaceState(null, '', '/hall' + (p.toString() ? '?' + p.toString() : ''));
+  }
+  const players = data.players || [];
+  if (!data.all) { body.innerHTML = '<div class="empty">No results yet - win a tournament to get on the board.</div>'; return; }
+  const count = data.q
+    ? '<p class="muted small" style="margin:0 0 8px">' + data.total + ' of ' + data.all + ' players match</p>'
+    : '<p class="muted small" style="margin:0 0 8px">' + data.all + ' players, by championships</p>';
+  if (!players.length) { body.innerHTML = count + '<div class="empty">No player matches \u201c' + esc(data.q) + '\u201d.</div>'; return; }
+  const pager = data.pages > 1 ? `<div class="hof-pager">
+      <button class="btn ghost small" data-hofpage="${data.page - 1}"${data.page <= 1 ? ' disabled' : ''}>\u2039 Previous</button>
+      <span class="muted small">Page ${data.page} of ${data.pages}</span>
+      <button class="btn ghost small" data-hofpage="${data.page + 1}"${data.page >= data.pages ? ' disabled' : ''}>Next \u203a</button>
+    </div>` : '';
+  body.innerHTML = count + '<table><thead><tr><th>#</th><th>Player</th><th>Wins</th><th>Entered</th></tr></thead><tbody>' +
+    players.map(p => `<tr><td class="muted">${p.rank}</td><td>${esc(p.name)}</td><td class="mono">${p.wins}</td><td class="mono muted">${p.entered}</td></tr>`).join('') +
+    '</tbody></table>' + pager;
+  body.querySelectorAll('[data-hofpage]').forEach(b => b.onclick = () => {
+    loadHall(data.q, parseInt(b.dataset.hofpage, 10) || 1);
+    try { window.scrollTo(0, 0); } catch (e) {}
+  });
 }
 
 async function renderFaq() {
@@ -1695,7 +2564,8 @@ function drawStats(el) {
   const fullTeams = teams.filter(t => (t.playerIds || []).length);
   const teamTotals = fullTeams.map(t => ({ t, r: teamRating(t) })).sort((a, b) => b.r - a.r);
 
-  // longest series (most games in one match)
+  // (the old "longest series" panel was removed: with several series tied on length it silently
+  // showed just one of them, which read as if it were the only one)
   let longest = null, longestN = 0;
   for (const m of done) {
     const n = ((m.score1 > 0 ? m.score1 : 0) + (m.score2 > 0 ? m.score2 : 0));
@@ -1712,20 +2582,31 @@ function drawStats(el) {
     </div>`;
 
   let html = '';
-  if (champ) {
+  if (divisionsOnT()) {
+    for (let d = 1; d <= T.divisions; d++) {
+      const c = divisionChampionOf(d);
+      if (c) html += `<div class="panel section st-champ"><div class="st-champ-lbl">${esc(divisionNameOf(d))} champion</div><h1 style="margin:4px 0 0">${esc(teamName(c))}</h1></div>`;
+    }
+  } else if (champ) {
     html += `<div class="panel section st-champ"><div class="st-champ-lbl">Champion</div><h1 style="margin:4px 0 0">${esc(champ)}</h1></div>`;
   }
 
+  // Everyone who signed up, versus everyone who actually ended up on a team that played. In a
+  // team event those differ whenever people sign up solo and never find a team, and conflating
+  // them under one "Players" number was misleading.
+  const onTeams = players.filter(p => p.teamId && fullTeams.some(tm => tm.id === p.teamId)).length;
+  const avgSub = avgRating != null ? 'avg rating ' + avgRating + ' across ' + rated.length + ' rated' : '';
+
   html += '<div class="panel section"><h2>By the numbers</h2><div class="st-grid">';
-  html += card(solo ? 'Entrants' : 'Players', players.length);
+  html += card(solo ? 'Individual signups' : 'Individual signups', players.length, avgSub);
+  if (!solo) html += card('Players in teams', onTeams, 'actually played in the event');
   if (!solo) html += card('Teams', fullTeams.length);
-  html += card('Matches played', done.length);
+  html += card('Series played', done.length);
   html += card('Games played', games, 'individual games across all series');
   if ((T.mapDb || []).length) html += card('Maps in the tournament', (T.mapDb || []).length);
   if (mapIds.length) html += card('Different maps played', mapIds.length);
   if (vetoesDone) html += card('Vetoes completed', vetoesDone);
   if (forfeits) html += card('Forfeits', forfeits, decidedByFf ? decidedByFf + ' with no games played' : '');
-  if (avgRating != null) html += card('Average rating', avgRating, rated.length + ' rated ' + (solo ? 'entrants' : 'players'));
   html += '</div></div>';
 
   // podium / final standings, if the bracket produced them
@@ -1771,12 +2652,6 @@ function drawStats(el) {
           <span class="st-num mono">${n || '\u2014'}</span></div>`;
       }).join('') +
       `</div></div>`;
-  }
-
-  if (longest && longestN > 1) {
-    html += `<div class="panel section"><h2>Longest series</h2>
-      <p>${esc(mLabel(longest))} — <strong>${esc(teamName(longest.team1))}</strong> vs <strong>${esc(teamName(longest.team2))}</strong>
-      went ${longestN} games (${(longest.score1 > 0 ? longest.score1 : 0)}\u2013${(longest.score2 > 0 ? longest.score2 : 0)}).</p></div>`;
   }
 
   el.innerHTML = html || '<div class="panel"><div class="empty">No statistics available.</div></div>';
@@ -1866,13 +2741,16 @@ async function renderSeries(id) {
   if (!eds.length) html += '<div class="empty">No tournaments in this series yet.</div>';
   else html += '<div class="sr-eds">' + eds.map(e => {
     const kind = e.competition === 'ffa' ? 'FFA' : (e.teamSize + 'v' + e.teamSize + ' ' + ({ single: 'SE', double: 'DE', swiss: 'Swiss' }[e.bracketType] || ''));
-    const state = e.abandoned ? 'abandoned' : e.status;
+    // statusPillLabel/Class, not statusLabel(e.status): `status` is 'signup' from creation, so
+    // building the pill by hand here claimed "Signups open" on editions that had not opened yet.
     return `<a class="sr-ed" href="/t/${esc(e.id)}" data-link>
       <div class="sr-ed-main">
-        <div class="sr-ed-name">${esc(e.name)}${e.published === 0 ? ' <span class="idbadge late">draft</span>' : ''}</div>
-        <div class="muted small">${esc(kind)}${e.eventDate ? ' \u00b7 ' + esc(fmtDate(e.eventDate)) : ''}${e.champion ? ' \u00b7 winner: ' + esc(e.champion) : ''}</div>
+        <div class="sr-ed-name">${esc(e.name)}${e.published === 0 ? (e.canManage === 0
+          ? ' <span class="idbadge late" title="Someone else\u2019s draft. Visible to you as a tournament director; you have no organizer rights on it.">draft \u00b7 view only</span>'
+          : ' <span class="idbadge late" title="Draft \u2014 not public yet">draft</span>') : ''}</div>
+        <div class="muted small">${esc(kind)}${e.eventDate ? ' \u00b7 ' + esc(fmtDate(e.eventDate)) : ''}${eventDaysLabel(e) ? ' <span class="tdays" title="Runs on ' + esc(eventDaysLabel(e)) + '">' + esc(eventDaysCountLabel(e)) + '</span>' : ''}${e.champion ? ' \u00b7 winner: ' + esc(e.champion) : ''}</div>
       </div>
-      <span class="pill ${esc(state)}">${esc(statusLabel(e.status) || state)}</span>
+      <span class="pill ${statusPillClass(e)}"${signupsNotOpenYet(e) ? ' title="Signups open ' + esc(fmtDateTime(e.signupOpensAt)) + '"' : ''}>${esc(statusPillLabel(e))}</span>
     </a>`;
   }).join('') + '</div>';
   html += '</div>';
@@ -1886,6 +2764,7 @@ async function renderSeries(id) {
         '</div></div>';
     }
   }
+  if (data.canEdit) html += '<div class="panel section" id="srBanHost"></div>';
   if (data.canEdit) {
     html += `<div class="panel section"><h2>Manage</h2>
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -1910,6 +2789,23 @@ async function renderSeries(id) {
   }
   document.getElementById('srBody').innerHTML = html;
   wireSeriesLinks();
+  // Series bans: the same record as a global ban, scoped to every edition of this series - the
+  // natural unit when someone keeps turning up to a recurring event they were thrown out of.
+  {
+    const host = document.getElementById('srBanHost');
+    if (host) {
+      banPanel(host, {
+        title: 'Banned from this series',
+        blurb: 'These accounts can\u2019t sign up, be added or be invited to <strong>any tournament in this series</strong>, including future editions. Set an expiry or leave it open-ended. Organizers can also ban from a single tournament; only a site admin or tournament director can ban from official tournaments site-wide.',
+        bans: data.bans || [],
+        lookup: { seriesId: s.id },
+        addLabel: 'Ban from this series',
+        onSet: (r) => api('/api/series', Object.assign({ action: 'ban_set', id: s.id }, r)),
+        onRemove: (fid) => api('/api/series', { action: 'ban_remove', id: s.id, fafId: fid }),
+        after: () => renderSeries(s.id)
+      });
+    }
+  }
   let srColor = s.color || 'amber';
   document.querySelectorAll('[data-srcolor]').forEach(b => b.onclick = () => {
     srColor = b.dataset.srcolor;

@@ -14,13 +14,41 @@ function showPoolPopup(pool) {
     const mo = mapObj(id);
     if (!mo) return '';
     return `<div class="pool-thumb${mo.image ? '' : ' noimg'}"${mo.image ? ' data-map-info="' + esc(id) + '"' : ''}>
-      ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">no image</span>'}
+      ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">' + mapNoImgLabel(mo) + '</span>'}
       <span class="pool-thumb-name">${esc(mo.name)}</span>
     </div>`;
   }).join('');
+  // Spell out exactly how the veto will run, in plain order, so captains aren't seeing the
+  // sequence for the first time when it is their turn to act.
+  const seq = (pool.sequence || []);
+  const vetoPlan = (() => {
+    if (!(T.veto && T.veto.enabled)) return '<p class="muted small">Map vetoes are off for this tournament \u2014 the organizer sets the maps directly.</p>';
+    if (!seq.length) return '<p class="muted small">No ban/pick order set for this pool yet.</p>';
+    const abNote = {
+      lowerA: 'the lower rated team is <strong>Team A</strong> and acts first',
+      lowerB: 'the higher rated team is <strong>Team A</strong> and acts first',
+      random: '<strong>Team A</strong> is picked at random per match',
+      manual: '<strong>Team A</strong> is set by the organizer per match'
+    }[(T.veto && T.veto.abMode) || 'lowerA'];
+    const rows = seq.map((st, i) => `<div class="vp-step">
+        <span class="vp-n">${i + 1}</span>
+        <span class="veto-act veto-act-${st.action === 'ban' ? 'ban' : 'pick'}">${st.action === 'ban' ? 'BAN' : 'PICK'}</span>
+        <span class="vp-team">Team ${esc(st.team)}</span>
+      </div>`).join('');
+    const bans = seq.filter(x => x.action === 'ban').length;
+    const picks = seq.filter(x => x.action === 'pick').length;
+    return `<div class="veto-plan">
+      <p class="muted small" style="margin:0 0 6px">${ids.length} maps \u2014 ${bans} ban${bans === 1 ? '' : 's'} and ${picks} pick${picks === 1 ? '' : 's'}, then the single map left over is the decider. Rating decides sides: ${abNote}.</p>
+      <div class="vp-steps">${rows}<div class="vp-step decider"><span class="vp-n">\u2605</span><span class="veto-act veto-act-pick">DECIDER</span><span class="vp-team">last map standing</span></div></div>
+      <p class="muted small" style="margin:6px 0 0">${(T.veto && T.veto.timing === 'continuous') ? 'Steps are revealed as games are played.' : 'The whole sequence is completed before game 1.'}</p>
+    </div>`;
+  })();
+
   modal(`<div class="pool-card" style="border:none;padding:0">
     <div class="pool-card-head"><span class="pool-card-name">${esc(pool.name)}</span><span class="muted small">Bo${bo} &middot; ${ids.length} map${ids.length === 1 ? '' : 's'}</span></div>
     <div class="pool-card-maps pool-thumbs" style="margin-top:10px">${thumbs || '<span class="muted small">no maps</span>'}</div>
+    <h4 class="vp-title">How the veto will run</h4>
+    ${vetoPlan}
     <div class="actions"><button class="btn ghost" id="ppClose">Close</button></div>
   </div>`, root => {
     root.querySelectorAll('[data-map-info]').forEach(t => t.onclick = () => showMapInfo(t.dataset.mapInfo));
@@ -30,7 +58,8 @@ function showPoolPopup(pool) {
 
 function mapsLine(bracket, round, el) {
   if (T.imported) return;
-  const admin = viewerIsOrganizer();
+  // assigning a pool to a round is a map action, so it follows map access, not organizer rights
+  const admin = viewerCanMaps();
 
   // With vetoes on, a round's maps come from its assigned pool — show that instead of a
   // fixed list, and let the organizer change it right here (works in the preview too).
@@ -39,8 +68,11 @@ function mapsLine(bracket, round, el) {
     const assigned = (T.poolAssign || {})[key];
     const pools = T.mapPools || [];
     const pool = assigned ? pools.find(p => p.id === assigned) : null;
-    const fallback = (!pool && pools.length) ? pools[0] : null;
-    const shown = pool || fallback;
+    // A 3rd place match with no pool of its own plays the semi-finals' pool (lib/match poolForMatch).
+    const semiId = (!pool && bracket === '3p') ? (T.poolAssign || {})['wb:' + (round - 1)] : null;
+    const semiPool = semiId ? pools.find(p => p.id === semiId) : null;
+    const fallback = (!pool && !semiPool && pools.length) ? pools[0] : null;
+    const shown = pool || semiPool || fallback;
     if (!admin && !shown) return;
     const div = document.createElement('div');
     div.className = 'mapblock';
@@ -54,8 +86,10 @@ function mapsLine(bracket, round, el) {
     }
     div.innerHTML = '<div class="mapblock-head"><span>MAP POOL</span>' + (admin ? '<a href="#">change</a>' : '') + '</div>' +
       (shown
-        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : ' <span class="muted">(default)</span>') + '</span></div>' + sub
-        : '<div class="maprow muted">no pools yet — add them on the Maps tab</div>');
+        ? '<div class="maprow"><span>' + esc(shown.name) + (pool ? '' : semiPool
+            ? ' <span class="muted" title="No pool is assigned to the 3rd place match, so it is played on the semi-finals\u2019 pool. Click change to pin one.">(as the semi-finals)</span>'
+            : ' <span class="muted" title="No pool is assigned to this round, so the first pool is being used. Click change to pin one.">(default)</span>') + '</span></div>' + sub
+        : '<div class="maprow muted">no pools yet \u2014 add them on the Maps tab</div>');
     const a = div.querySelector('a');
     if (a) a.onclick = e => { e.preventDefault(); pickPoolForRound(bracket, round); };
     const showBtn = div.querySelector('.mapblock-showpool');
@@ -132,7 +166,7 @@ function pickPoolForRound(bracket, round) {
 function projectedBoFor(bracket, round) {
   const plan = T.plan || {};
   if (bracket === 'gf') return plan.gf || 5;
-  const n = (T.teams && T.teams.length >= 2) ? T.teams.length : projectedTeamCount();
+  const n = projectedTeamCount();
   const size = Math.max(2, Math.pow(2, Math.ceil(Math.log2(Math.max(n, 2)))));
   const R = Math.round(Math.log2(size));
   if (T.bracketType === 'double') {
@@ -152,7 +186,7 @@ function editMaps(bracket, round) {
   const count = Math.max(maxBo, existing.length, 1);
   const db = (T.mapDb || []);
   if (db.length === 0) {
-    modal(`<h3>Maps — ${esc(bracket === 'gf' ? 'Grand final' : bracket.toUpperCase() + ' round ' + round)}</h3>
+    modal(`<h3>Maps — ${esc(bracket === 'gf' ? 'Grand final' : bracket === '3p' ? '3rd place match' : bracket.toUpperCase() + ' round ' + round)}</h3>
       <p class="muted small">No maps in the database yet. Add maps on the <strong>Maps</strong> tab first, then assign them here.</p>
       <div class="actions"><button class="btn ghost" id="mCancel">Close</button></div>`, root => {
       root.querySelector('#mCancel').onclick = closeModal;
@@ -165,7 +199,7 @@ function editMaps(bracket, round) {
     selects.push(`<label style="display:block;margin-bottom:7px">Game ${i + 1} <select class="mapSel" style="width:100%">${opt(existing[i] || '')}</select></label>`);
   }
   modal(`
-    <h3>Maps — ${esc(bracket === 'gf' ? 'Grand final' : bracket.toUpperCase() + ' round ' + round)}</h3>
+    <h3>Maps — ${esc(bracket === 'gf' ? 'Grand final' : bracket === '3p' ? '3rd place match' : bracket.toUpperCase() + ' round ' + round)}</h3>
     <p class="muted small">Pick a map from the database for each game of the series (Bo${maxBo}). ${T.veto && T.veto.enabled ? 'Note: if map vetoes are enabled, captains pick the maps per match — this round pool is a fallback.' : 'Everyone in this round plays these maps.'}</p>
     ${selects.join('')}
     <div class="actions">
@@ -188,13 +222,20 @@ function editMaps(bracket, round) {
 // Match chat is open to the two participating teams' members and to organizers.
 function matchChatAllowed(m) {
   if (viewerIsOrganizer()) return true;
-  if (T.viewer && T.viewer.streamer) return true;   // caster link: every chat
+  if (T.viewer && T.viewer.caster) return true;   // caster role: every chat
   const mine = (T.viewer && T.viewer.memberTeamId) || (T.viewer && T.viewer.teamId) || null;
   return !!(mine && (mine === m.team1 || mine === m.team2));
 }
 
+// The label with the division in front ("PRINCE R1 M2"), for every place a match is shown away
+// from its own bracket tab: the veto popup and cards, match details, the Matches tab, match chat.
+function mLabelFull(m) {
+  const core = mLabel(m);
+  return (m && m.division && divisionsOnT()) ? divisionNameOf(m.division).toUpperCase() + ' ' + core : core;
+}
 function mLabel(m) {
   if (m.bracket === 'gf') return T.bracketType === 'swiss' ? 'FINAL' : 'GRAND FINAL';
+  if (m.bracket === '3p') return '3RD PLACE';
   if (m.bracket === 'sw') return 'R' + m.round + ' M' + (m.index + 1);
   if (m.bracket === 'ffa') return 'R' + m.round + ' LOBBY ' + (m.index + 1);
   const p = m.bracket === 'lb' ? 'LB ' : (T.bracketType === 'double' ? 'WB ' : '');
@@ -215,6 +256,13 @@ function buildFeeders() {
 function viewerHasRights() { return !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
 function viewerIsAdmin() { return !playerViewMode && !!(T.viewer && T.viewer.admin); }
 function viewerIsOrganizer() { return !playerViewMode && !!(T.viewer && (T.viewer.admin || T.viewer.organizer)); }
+// Map prep is its own permission, NARROWER than organizer rights: a global tournament director
+// organizes every official tournament but competes in them too, so they get no map access unless
+// they are a named organizer here. The server decides (viewer.maps / viewer.mapsView); this only
+// mirrors it so the page does not offer buttons every action behind them would refuse.
+// "View as player" still applies on top, exactly as it does for organizer controls.
+function viewerCanMaps() { return !playerViewMode && !!(T.viewer && T.viewer.maps); }
+function viewerSeesMapPrep() { return !playerViewMode && !!(T.viewer && T.viewer.mapsView); }
 function viewerLoggedIn() { return !!(T.viewer && T.viewer.loggedIn) || isFafVerified(); }
 function viewerSignedUp() { return !!(T.viewer && T.viewer.signedUpPlayerId); }
 // helper: prompt login (kicks off FAF flow if configured, else the name modal)
@@ -277,13 +325,25 @@ function bracketLabel(tid) {
   return names.length ? names.join(', ') : teamName(tid);
 }
 
-// Vetoes tab scope for someone actually playing: their own matches (default) or everything.
-// Lives on the tab itself rather than the header toggles, since it only means anything there.
-let _vetoShowAll = (() => { try { return localStorage.getItem('faf_veto_all') === '1'; } catch (e) { return false; } })();
-function setVetoShowAll(on) {
-  _vetoShowAll = !!on;
-  try { localStorage.setItem('faf_veto_all', _vetoShowAll ? '1' : '0'); } catch (e) {}
+// Vetoes tab: who the page follows - 'all', 'mine', 't:<teamId>' or 'p:<playerId>' - remembered per
+// tournament. Someone playing starts on their own matches, everyone else on all of them; the old
+// site-wide "all vetoes" switch still decides a player's starting point.
+function vetoFollowDefault() {
+  const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.caster);
+  const mine = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
+  if (isOrg || !mine) return 'all';
+  try { if (localStorage.getItem('faf_veto_all') === '1') return 'all'; } catch (e) {}
+  return 'mine';
 }
+function getVetoFollow() {
+  try { const v = localStorage.getItem('faf_veto_follow_' + T.id); if (v) return v; } catch (e) {}
+  return vetoFollowDefault();
+}
+function setVetoFollow(v) {
+  try { localStorage.setItem('faf_veto_follow_' + T.id, v); } catch (e) {}
+}
+// The sub-page picked by hand (Swiss stage / playoffs, or a division), for this visit only.
+let _vetoStage = null;   // { tid, key }
 
 // A replay id links to the FAF replay vault, but only the number is shown. Ids are digits-only
 // server-side; anything odd in older data is rendered as plain text rather than a broken link.
@@ -302,7 +362,7 @@ function matchBox(m) {
   const box = document.createElement('div');
   // masked = hidden by streamer mode, unless this specific match has been revealed
   const masked = streamerMode && !revealedMatches.has(m.id);
-  box.className = 'bmatch ' + (masked ? 'ready' : m.status);
+  box.className = 'bmatch ' + (masked ? 'ready' : m.status) + (neverPlayed(m, T) ? ' notplayed' : '');
   const row = (tid, score, slot) => {
     const win = !masked && m.winner && m.winner === tid && tid !== 'BYE';
     let nm;
@@ -342,9 +402,15 @@ function matchBox(m) {
       const chat = (m.team1 && m.team2 && matchChatAllowed(m))
         ? '<a href="#" data-matchchat class="veto-mini-link">\u{1F4AC} Match chat' + unreadDot('match:' + m.id) + '</a>' : '';
       const veto = masked ? '' : vetoLinkHTML(m);
-      return (chat || veto) ? '<div class="mlinks">' + chat + veto + '</div>' : '';
+      // Your own outstanding faction choice goes FIRST: it is the only line here that is a job
+      // rather than a link, and it only ever appears when you actually owe one.
+      const fv = masked ? '' : myFvetoLinkHTML(m);
+      return (fv || chat || veto) ? '<div class="mlinks">' + fv + chat + veto + '</div>' : '';
     })() +
-    ((!masked && m.status === 'done' && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
+    // Show replays as soon as games are confirmed, not only once the series ends. A Bo3 sitting
+    // at 1-0 already has a replay worth watching, and casters need it while the match is live.
+    // `masked` still hides them in streamer mode until the result is revealed.
+    ((!masked && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
       ? '<div class="replayline" title="FAF replay IDs, in game order">' + ((m.replayIds && m.replayIds.length) ? 'Replays: ' + m.replayIds.map(replayLink).join(', ') : '') + ((m.drawReplayIds && m.drawReplayIds.length) ? ((m.replayIds && m.replayIds.length) ? ' \u00b7 ' : '') + 'Draws: ' + m.drawReplayIds.map(replayLink).join(', ') : '') + '</div>' : '') +
     ((streamerMode && m.status === 'done')
       ? `<div class="bfoot"><button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? '\u25C9 Hide result' : '\u25CB Reveal result'}</button></div>` : '') +
@@ -362,6 +428,8 @@ function matchBox(m) {
   if (vlink) vlink.onclick = (e) => { e.preventDefault(); showVetoPopup(m); };
   const mchat = box.querySelector('[data-matchchat]');
   if (mchat) mchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
+  const fvlink = box.querySelector('[data-fveto-link]');
+  if (fvlink) fvlink.onclick = (e) => { e.preventDefault(); showVetoPopup(m); };
   box.querySelectorAll('[data-teamid]').forEach(nameEl => {
     nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
   });
@@ -387,26 +455,29 @@ function vetoLinkHTML(m) {
 // Popup showing a single match's veto (status or final maps), plus a link to that match's chat.
 // Opened from the "See vetoed maps" link on a bracket match, so the user stays on the bracket.
 function showVetoPopup(m) {
-  if (!m || !m.veto) return;
+  // Faction-only matches have no m.veto at all. They used to fall out here, which meant the
+  // popup could not be opened for them and there was nowhere to act from the bracket.
+  if (!m || (!m.veto && !m.fveto)) return;
   const nameHtml = (tid) => {
     const real = T.teams && T.teams.some(t => t.id === tid);
     return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
   };
   const chatLink = matchChatAllowed(m) ? '<a href="#" id="vpChat" class="veto-mini-link">\u{1F4AC} Open match chat</a>' : '';
-  modal(`<h3>${esc(mLabel(m))} <span class="muted" style="font-weight:400">${nameHtml(m.team1)} vs ${nameHtml(m.team2)}</span></h3>
+  modal(`<h3>${esc(mLabelFull(m))} <span class="muted" style="font-weight:400">${nameHtml(m.team1)} vs ${nameHtml(m.team2)}</span></h3>
     <div id="vpBody"></div>
     <div class="veto-pop-foot" style="margin-top:10px">${chatLink}</div>
     <div class="actions"><button class="btn ghost" id="vpClose">Close</button></div>`, root => {
     const body = root.querySelector('#vpBody');
-    body.innerHTML = vetoHTML(m);
+    body.innerHTML = vetoHTML(m) || '<div class="muted small">Nothing to show for this match.</div>';
     wireVeto(body, m);
+    wireFactionVeto(body);
     const chat = root.querySelector('#vpChat');
     if (chat) chat.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
     root.querySelectorAll('[data-teamid]').forEach(nameEl => {
       nameEl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showTeamPopup(nameEl.dataset.teamid); };
     });
     root.querySelector('#vpClose').onclick = closeModal;
-  });
+  }, { wide: true });
 }
 
 // ---- Maps tab: the map database + where each map is played ----
@@ -417,8 +488,11 @@ async function openMapImport() {
   let sources;
   try { sources = (await api('/api/my_tournaments')).tournaments || []; }
   catch (e) { return toast(e.message, true); }
-  sources = sources.filter(t => t.id !== T.id && (t.mapCount > 0 || t.poolCount > 0));
-  if (!sources.length) return toast('No other tournament of yours has maps to import', true);
+  // canCopyMaps comes from the server and is narrower than "appears in my tournaments": a
+  // director sees every official tournament there, but may only copy maps out of the ones they
+  // actually organize. Filtering here keeps the picker honest instead of offering a 403.
+  sources = sources.filter(t => t.id !== T.id && t.canCopyMaps && (t.mapCount > 0 || t.poolCount > 0));
+  if (!sources.length) return toast('No tournament you organize has maps to import', true);
 
   modal(`<h3>Import maps from another tournament</h3>
     <p class="muted small">Pick one of your tournaments, then choose whole pools or individual maps. Maps you already have (matched by name) won't be duplicated.</p>
@@ -502,6 +576,8 @@ function editMapEntry(map) {
     <div id="mImgWrap">${curImg ? `<img src="${curImg}" alt="" style="max-height:120px;border-radius:4px;display:block;margin:6px 0"><label class="muted small" style="display:block"><input type="checkbox" id="mRemoveImg"> Remove current image</label>` : ''}</div>
     <input type="file" id="mImg" accept="image/*">
     <label style="margin-top:10px;display:block"><input type="checkbox" id="mPub" ${editing && map.published ? 'checked' : ''}> Published (visible to players)</label>
+    <label style="margin-top:6px;display:block"><input type="checkbox" id="mSecret" ${editing && map.secret ? 'checked' : ''}> Secret — players see “Hidden Map N” and no picture until it is played</label>
+    <div class="muted small" style="margin:4px 0 0 22px">Different from Published: a secret map still appears in the pool and can be banned or picked, players just cannot see which map it is. It is revealed the moment it is picked for a game or left as the decider.</div>
     <div class="actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Save map</button></div>`, root => {
     root.querySelectorAll('.spawn-chip').forEach(b => {
       b.onclick = () => b.classList.toggle('on');
@@ -524,6 +600,7 @@ function editMapEntry(map) {
           size: root.querySelector('#mSize').value
         },
         published: root.querySelector('#mPub').checked ? 1 : 0,
+        secret: root.querySelector('#mSecret').checked ? 1 : 0,
         admin: adminToken()
       };
       if (editing) body.id = map.id;
@@ -544,7 +621,7 @@ function editMapEntry(map) {
 }
 
 function drawMaps(el) {
-  const admin = viewerIsOrganizer();
+  const admin = viewerCanMaps();
   const db = T.mapDb || [];
 
   // "Played in" should reflect only DIRECT round assignments of this specific map. Maps that
@@ -592,10 +669,13 @@ function drawMaps(el) {
       const used = directUse[m.id] || [];
       const badges = [];
       if (admin && !m.published) badges.push('<span class="idbadge late">hidden</span>');
+      // "hidden" above means players cannot see the map at all; "secret" means they can see it
+      // but not which map it is. Two different things, so two different badges.
+      if (m.secret) badges.push('<span class="idbadge late" title="Players see &quot;Hidden Map ' + (secretNoOf(m.id) || '?') + '&quot; until it is played">secret \u00b7 Hidden Map ' + (secretNoOf(m.id) || '?') + '</span>');
       if (inPool[m.id]) badges.push('<span class="idbadge verified">' + esc(inPool[m.id].join(', ')) + '</span>');
       mapsHtml += `<div class="mapdb-card">
         <div class="mapdb-thumb${m.image ? '' : ' noimg'}" ${m.image ? 'data-map-info="' + esc(m.id) + '"' : ''}>
-          ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">no image</span>'}
+          ${m.image ? `<img src="/map-images/${esc(m.image)}" alt="${esc(m.name)}">` : '<span class="mapdb-noimg-label">' + mapNoImgLabel(m) + '</span>'}
         </div>
         <div class="mapdb-body">
           <div class="mapdb-name">${esc(m.name)} ${badges.join(' ')}</div>
@@ -608,6 +688,7 @@ function drawMaps(el) {
           ${admin ? `<div class="mapdb-actions">
             <button class="btn ghost small" data-mapedit="${m.id}">Edit</button>
             <button class="btn ghost small" data-mappub="${m.id}">${m.published ? 'Hide' : 'Publish'}</button>
+            <button class="btn ghost small" data-mapsec="${m.id}">${m.secret ? 'Reveal' : 'Make secret'}</button>
             <button class="btn danger small" data-mapdel="${m.id}">Delete</button>
           </div>` : ''}
         </div>
@@ -648,7 +729,7 @@ function drawMaps(el) {
             const mo = mapObj(id);
             if (!mo) return '';
             return `<div class="pool-thumb${mo.image ? '' : ' noimg'}"${mo.image ? ' data-map-info="' + esc(id) + '"' : ''}>
-              ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">no image</span>'}
+              ${mo.image ? `<img src="/map-images/${esc(mo.image)}" alt="${esc(mo.name)}" loading="lazy">` : '<span class="pool-thumb-noimg">' + mapNoImgLabel(mo) + '</span>'}
               <span class="pool-thumb-name">${esc(mo.name)}</span>
             </div>`;
           }).join('') : '<span class="muted small">no maps</span>'}</div>
@@ -698,6 +779,11 @@ function drawMaps(el) {
     try { await api('/api/t/' + T.id + '/map_publish', { id: m.id, published: m.published ? 0 : 1, admin: adminToken() }); await refresh(); }
     catch (e) { toast(e.message, true); }
   });
+  el.querySelectorAll('[data-mapsec]').forEach(b => b.onclick = async () => {
+    const m = mapObj(b.dataset.mapsec);
+    try { await api('/api/t/' + T.id + '/map_secret', { id: m.id, secret: m.secret ? 0 : 1, admin: adminToken() }); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
   el.querySelectorAll('[data-mapdel]').forEach(b => b.onclick = async () => {
     const m = mapObj(b.dataset.mapdel);
     const used = (directUse[m.id] || []).length || (inPool[m.id] && inPool[m.id].length);
@@ -725,11 +811,22 @@ function drawMaps(el) {
 }
 
 // How many teams the bracket will likely have, before it's generated.
+// How many teams the bracket will actually be built from. This has to mirror the server's real
+// selection rule (finalizeOpenTeams): only FULL teams enter, and maxTeams caps how many of them
+// do - anything beyond that is a reserve. Counting every team, forming ones included, made the
+// preview invent rounds that could never exist: 8 full teams plus 2 half-built ones projected a
+// 10-team bracket with an extra round.
 function projectedTeamCount() {
-  if (T.teams && T.teams.length) return T.teams.length;
-  if (T.maxTeams) return T.maxTeams;
   const size = (T.competition === 'ffa') ? 1 : (T.teamSize || 1);
-  return Math.floor((T.players || []).length / Math.max(size, 1));
+  const cap = T.maxTeams > 0 ? T.maxTeams : Infinity;
+  if (T.teams && T.teams.length) {
+    // Once the bracket is generated, t.teams IS the entering set - take it as-is.
+    if (T.status !== 'signup') return Math.min(T.teams.length, cap);
+    const full = T.teams.filter(tm => (tm.playerIds || []).length >= size).length;
+    if (full) return Math.min(full, cap);
+  }
+  if (T.maxTeams) return T.maxTeams;
+  return Math.min(Math.floor((T.players || []).length / Math.max(size, 1)), cap);
 }
 
 // The round keys this bracket will have. Uses real matches once generated, otherwise
@@ -755,6 +852,7 @@ function projectedRoundKeys() {
   } else {
     const R = log2i(nextPow2(n));
     for (let i = 1; i <= R; i++) keys.push('wb:' + i);
+    if (T.bracketType === 'single' && thirdPlaceOn(T) && n >= 4 && !((T.divisions || 0) > 1)) keys.push('3p:' + R);
     if (T.bracketType === 'double') {
       const lbR = Math.max(2 * R - 2, 0);
       for (let i = 1; i <= lbR; i++) keys.push('lb:' + i);
@@ -764,15 +862,17 @@ function projectedRoundKeys() {
   return { keys, projected: true, teams: n };
 }
 
-// a readable label for a round-assignment key — matches the names used in the bracket
-function roundKeyLabel(bracket, round) {
+// a readable label for a round-assignment key - matches the names used in the bracket. With a
+// division it is that division's own round (its final is "Final" however many rounds it has).
+function roundKeyLabel(bracket, round, division) {
   round = parseInt(round, 10);
   if (bracket === 'gf') return 'Grand final';
+  if (bracket === '3p') return '3rd place match';
   if (bracket === 'sw') return 'Swiss round ' + round;
   if (bracket === 'ffa') return 'FFA round ' + round;
-  // deepest round in this bracket — from real matches, or projected during signups
+  // deepest round in this bracket - from real matches, or projected during signups
   let maxR = 0;
-  for (const m of (T.matches || [])) if (m.bracket === bracket && m.round > maxR) maxR = m.round;
+  for (const m of (T.matches || [])) if (m.bracket === bracket && m.round > maxR && (!division || (m.division || 0) === division)) maxR = m.round;
   if (!maxR) {
     const n = projectedTeamCount();
     if (n >= 2) {
@@ -1015,61 +1115,133 @@ function assignPool(pool) {
   });
 }
 
-// Dedicated Vetoes page — each match with a veto gets its own card with the full ban/pick UI.
-function wireVetoScope(el) {
-  el.querySelectorAll('[data-vscope]').forEach(b => b.onclick = () => {
-    setVetoShowAll(b.dataset.vscope === 'all');
-    drawTournament();
-  });
+// Dedicated Vetoes page - each match with a veto gets its own card with the full ban/pick UI.
+// A tournament played in parts gets a sub-page per part: the Swiss stage and its playoffs, or
+// each division's bracket. Within a page: what needs action first, then the results, each in
+// playing order with the newest on top. A follow box narrows the page to one team or player.
+function vetoStageKey(m) {
+  if (divisionsOnT() && m.division) return 'd' + m.division;
+  if (T.bracketType === 'swiss') return m.bracket === 'sw' ? 'swiss' : 'playoffs';
+  return 'all';
+}
+function vetoStageLabel(key) {
+  if (key === 'swiss') return 'Swiss stage';
+  if (key === 'playoffs') return T.stage2 ? 'Playoffs' : 'Final';
+  if (key.charAt(0) === 'd') return divisionNameOf(parseInt(key.slice(1), 10) || 1);
+  return 'All matches';
+}
+function vetoStageOrder(key) {
+  if (key === 'swiss') return 0;
+  if (key === 'playoffs') return 1;
+  return key.charAt(0) === 'd' ? (parseInt(key.slice(1), 10) || 0) : 0;
 }
 
 function drawVetoes(el) {
-  const isOrg = viewerIsOrganizer() || (T.viewer && T.viewer.streamer);
   const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
-  const allMatches = T.matches.filter(m => m.veto && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
-  const mineMatches = myTeamId ? allMatches.filter(m => m.team1 === myTeamId || m.team2 === myTeamId) : [];
-  // Someone actually playing defaults to just their own matches so the page isn't a wall of other
-  // people's vetoes; they can switch to all. Organizers, streamers and observers always see all.
-  const competing = !isOrg && !!myTeamId;
-  const scoped = competing && !_vetoShowAll;
-  let vetoMatches = scoped ? mineMatches : allMatches;
-
-  const scopeBar = competing ? `<div class="veto-scope">
-      <span class="muted small">Showing</span>
-      <button class="btn ghost small${scoped ? ' on' : ''}" data-vscope="mine">My matches (${mineMatches.length})</button>
-      <button class="btn ghost small${scoped ? '' : ' on'}" data-vscope="all">All vetoes (${allMatches.length})</button>
-    </div>` : '';
-
-  if (!vetoMatches.length) {
-    el.innerHTML = scopeBar + '<div class="panel"><div class="empty">' + (scoped
-      ? 'None of your matches have an active map veto right now.' + (allMatches.length ? ' There ' + (allMatches.length === 1 ? 'is 1 other veto' : 'are ' + allMatches.length + ' other vetoes') + ' \u2014 switch to \u201cAll vetoes\u201d to see them.' : '')
-      : 'No map vetoes are active right now. They appear here as matches become ready.') + '</div></div>';
-    wireVetoScope(el);
+  // A match belongs on this tab if it has a map veto OR a faction veto. With map vetoes off but
+  // faction vetoes on, the card lists the series' game slots purely so the factions have rows.
+  const allMatches = T.matches.filter(m => (m.veto || m.fveto) && m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE');
+  if (!allMatches.length) {
+    el.innerHTML = '<div class="panel"><div class="empty">No vetoes are active right now. They appear here as matches become ready.</div></div>';
     return;
   }
-  // newest first: later rounds are the most relevant. Grand final > later rounds > earlier.
-  const rank = m => (m.bracket === 'gf' ? 1000 : 0) + (m.round || 0) * 10 + (m.bracket === 'lb' ? 1 : 0);
-  const byNewest = (a, b) => rank(b) - rank(a) || (a.index || 0) - (b.index || 0);
-  // pending (need action) first, then completed — each newest-first
+
+  // ---- who the page follows ----
+  const inMatches = new Set();
+  for (const m of allMatches) { inMatches.add(m.team1); inMatches.add(m.team2); }
+  const teams = (T.teams || []).filter(x => inMatches.has(x.id)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const solo = T.teamSize === 1;
+  const players = solo ? [] : (T.players || []).filter(p => p.teamId && inMatches.has(p.teamId)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  let follow = getVetoFollow();
+  let followTeam = null, followName = '';
+  if (follow === 'mine') {
+    if (myTeamId) { followTeam = myTeamId; followName = 'You'; } else follow = 'all';
+  } else if (follow.indexOf('t:') === 0) {
+    const tm = teams.find(x => x.id === follow.slice(2));
+    if (tm) { followTeam = tm.id; followName = tm.name; } else follow = 'all';
+  } else if (follow.indexOf('p:') === 0) {
+    const p = players.find(x => x.id === follow.slice(2));
+    if (p) { followTeam = p.teamId; followName = p.name; } else follow = 'all';
+  } else follow = 'all';
+  const inFollow = m => !followTeam || m.team1 === followTeam || m.team2 === followTeam;
+  const countOf = id => allMatches.filter(m => m.team1 === id || m.team2 === id).length;
+  const opt = (v, label) => '<option value="' + esc(v) + '"' + (v === follow ? ' selected' : '') + '>' + esc(label) + '</option>';
+  const followBox = `<div class="veto-follow"><span class="muted small">Follow</span>
+    <select id="vetoFollow" title="Show only the matches of one team or player">
+      ${opt('all', 'All matches (' + allMatches.length + ')')}
+      ${myTeamId ? opt('mine', 'My matches (' + countOf(myTeamId) + ')') : ''}
+      <optgroup label="${solo ? 'Players' : 'Teams'}">${teams.map(x => opt('t:' + x.id, x.name + ' (' + countOf(x.id) + ')')).join('')}</optgroup>
+      ${players.length ? '<optgroup label="Players">' + players.map(p => opt('p:' + p.id, p.name + ' - ' + teamName(p.teamId))).join('') + '</optgroup>' : ''}
+    </select></div>`;
+
+  // ---- which part of the tournament ----
+  const keys = Array.from(new Set(allMatches.map(vetoStageKey))).sort((a, b) => vetoStageOrder(a) - vetoStageOrder(b));
+  const shown = allMatches.filter(inFollow);
+  const nIn = k => shown.filter(m => vetoStageKey(m) === k).length;
+  let stage = (_vetoStage && _vetoStage.tid === T.id && keys.indexOf(_vetoStage.key) >= 0) ? _vetoStage.key : null;
+  if (!stage) {
+    // The latest part with something to show (the playoffs once they exist); for divisions the top
+    // one that has anything.
+    const withAny = keys.filter(k => nIn(k) > 0);
+    const divs = keys[0].charAt(0) === 'd';
+    stage = withAny.length ? (divs ? withAny[0] : withAny[withAny.length - 1]) : keys[keys.length - 1];
+  }
+  const stageBar = keys.length > 1 ? '<div class="subtabs">' + keys.map(k =>
+    '<button class="subtab' + (k === stage ? ' active' : '') + '" data-vstage="' + esc(k) + '">' + esc(vetoStageLabel(k)) + ' (' + nIn(k) + ')</button>').join('') + '</div>' : '';
+  const bar = '<div class="veto-bar">' + stageBar + followBox + '</div>';
+  const inStage = allMatches.filter(m => vetoStageKey(m) === stage);
+  const vetoMatches = inStage.filter(inFollow);
+
+  const wireBar = () => {
+    el.querySelectorAll('[data-vstage]').forEach(b => b.onclick = (e) => {
+      e.preventDefault();
+      _vetoStage = { tid: T.id, key: b.dataset.vstage };
+      drawTournament();
+    });
+    const sel = el.querySelector('#vetoFollow');
+    if (sel) sel.onchange = () => {
+      setVetoFollow(sel.value);
+      _vetoStage = null;   // land on the part where the new choice has matches
+      sel.blur();
+      drawTournament();
+    };
+    const all = el.querySelector('[data-vfollow-all]');
+    if (all) all.onclick = (e) => { e.preventDefault(); setVetoFollow('all'); drawTournament(); };
+  };
+
+  if (!vetoMatches.length) {
+    const where = keys.length > 1 ? ' in the ' + vetoStageLabel(stage) : '';
+    const elsewhere = keys.filter(k => k !== stage && nIn(k) > 0)
+      .map(k => '<a href="#" data-vstage="' + esc(k) + '">' + esc(vetoStageLabel(k)) + ' (' + nIn(k) + ')</a>');
+    const who = follow === 'mine' ? 'You have' : esc(followName) + ' has';
+    el.innerHTML = bar + '<div class="panel"><div class="empty">' + (followTeam
+      ? who + ' no matches with a veto' + esc(where) + ' yet.'
+        + (elsewhere.length ? ' See ' + elsewhere.join(', ') + '.' : '')
+        + (inStage.length ? ' <a href="#" data-vfollow-all>Show all matches</a>' : '')
+      : 'No vetoes' + esc(where) + ' yet.') + '</div></div>';
+    wireBar();
+    return;
+  }
   // A veto is settled once it completes OR once the match has a result - a forfeit or an
   // organizer correction can decide a match mid-veto, and that veto can never be acted on again.
-  const settled = m => m.veto.done || m.status === 'done';
-  const pending = vetoMatches.filter(m => !settled(m)).sort(byNewest);
-  const done = vetoMatches.filter(settled).sort(byNewest);
+  const settled = m => (m.veto ? m.veto.done : factionAllDone(m)) || m.status === 'done';
+  const pending = sortByPlay(vetoMatches.filter(m => !settled(m)), true);
+  const done = sortByPlay(vetoMatches.filter(settled), true);
 
   let html = '';
   const card = (m) => {
-    const label = mLabel(m);
+    const label = mLabelFull(m);
     const chatLink = matchChatAllowed(m) ? `<a href="#" class="veto-mini-link" data-vchat="${m.id}">\u{1F4AC} Match chat${unreadDot('match:' + m.id)}</a>` : '';
     const nameHtml = (tid) => {
       const real = T.teams && T.teams.some(t => t.id === tid);
       return `<span class="${real ? 'vteam-name' : ''}"${real ? ' data-teamid="' + esc(tid) + '"' : ''}>${esc(bracketLabel(tid))}</span>`;
     };
-    const unfinished = (m.status === 'done') && (m.veto.abandoned || !vetoRanToCompletion(m.veto));
+    const unfinished = (m.status === 'done') && m.veto && (m.veto.abandoned || !vetoRanToCompletion(m.veto));
+    const isDone = m.veto ? m.veto.done : factionAllDone(m);
     const doneTag = unfinished
       ? '<span class="veto-done-tag closed">CLOSED</span>'
-      : (m.veto.done ? '<span class="veto-done-tag">RESULT</span>' : '');
-    return `<div class="panel section veto-card${m.veto.done ? ' veto-done' : ''}" data-vmatch="${m.id}">
+      : (isDone ? '<span class="veto-done-tag">RESULT</span>' : '');
+    return `<div class="panel section veto-card${isDone ? ' veto-done' : ''}" data-vmatch="${m.id}">
       <div class="veto-card-head"><h2>${doneTag}${esc(label)}</h2><span class="veto-card-teams">${nameHtml(m.team1)} <span class="muted">vs</span> ${nameHtml(m.team2)}</span></div>
       <div class="veto-card-body"></div>
       ${chatLink ? '<div class="veto-card-foot">' + chatLink + '</div>' : ''}
@@ -1077,11 +1249,12 @@ function drawVetoes(el) {
   };
 
   // ---- veto statistics (finished tournament; organizers, official-tourney directors, site admins) ----
+  // Over every veto on this page, whoever is followed: a stage usually has its own map pool.
   const canSeeStats = viewerIsOrganizer()
     || (fafAuth.user && fafAuth.user.director && T.category === 'official');
   if (T.status === 'finished' && canSeeStats) {
     const banCount = {}, playCount = {}, seen = {};
-    for (const m of vetoMatches) {
+    for (const m of inStage) {
       const v = m.veto; if (!v) continue;
       for (const b of (v.banned || [])) { if (b.map) { banCount[b.map] = (banCount[b.map] || 0) + 1; seen[b.map] = 1; } }
       for (const pk of (v.picks || [])) { if (pk.map) { playCount[pk.map] = (playCount[pk.map] || 0) + 1; seen[pk.map] = 1; } }
@@ -1092,7 +1265,6 @@ function drawVetoes(el) {
       const totalBans = ids.reduce((s, id) => s + (banCount[id] || 0), 0);
       const totalPlays = ids.reduce((s, id) => s + (playCount[id] || 0), 0);
       const barRow = (id, n, denom, cls) => {
-        const pct = denom ? Math.round(n / denom * 100) : 0;
         return `<div class="vstat-row"><span class="vstat-name">${esc(mapName(id))}</span>
           <span class="vstat-bar"><span class="vstat-fill ${cls}" style="width:${denom ? Math.max(4, n / Math.max(1, denom) * 100) : 0}%"></span></span>
           <span class="vstat-num">${n}</span></div>`;
@@ -1101,9 +1273,10 @@ function drawVetoes(el) {
         .map(id => barRow(id, banCount[id], Math.max(...ids.map(x => banCount[x] || 0)), 'ban')).join('');
       const playRows = ids.slice().filter(id => playCount[id]).sort((a, b) => (playCount[b] || 0) - (playCount[a] || 0))
         .map(id => barRow(id, playCount[id], Math.max(...ids.map(x => playCount[x] || 0)), 'play')).join('');
+      const nDone = inStage.filter(m => m.veto && m.veto.done).length;
       html += `<div class="panel section vstat-panel">
         <div class="veto-card-head"><h2>Veto statistics</h2><span class="muted small">Organizers only</span></div>
-        <p class="muted small">Across ${vetoMatches.filter(m => m.veto && m.veto.done).length} completed veto${vetoMatches.filter(m => m.veto && m.veto.done).length === 1 ? '' : 's'} \u2014 ${totalBans} bans, ${totalPlays} maps played.</p>
+        <p class="muted small">Across ${nDone} completed veto${nDone === 1 ? '' : 's'}${keys.length > 1 ? ' in the ' + esc(vetoStageLabel(stage)) : ''} - ${totalBans} bans, ${totalPlays} maps played.</p>
         <div class="vstat-cols">
           <div class="vstat-col"><div class="vstat-h">Most banned</div>${banRows || '<div class="muted small">No bans.</div>'}</div>
           <div class="vstat-col"><div class="vstat-h">Most played</div>${playRows || '<div class="muted small">No maps played.</div>'}</div>
@@ -1113,15 +1286,15 @@ function drawVetoes(el) {
   }
 
   if (pending.length) {
-    html += '<div class="veto-section-label">In progress \u2014 needs action</div>';
+    html += '<div class="veto-section-label">In progress - needs action</div>';
     html += pending.map(card).join('');
   }
   if (done.length) {
-    html += '<div class="veto-section-label"' + (pending.length ? ' style="margin-top:20px"' : '') + '>Completed \u2014 maps decided</div>';
+    html += '<div class="veto-section-label"' + (pending.length ? ' style="margin-top:20px"' : '') + '>Completed - maps decided</div>';
     html += done.map(card).join('');
   }
-  el.innerHTML = scopeBar + html;
-  wireVetoScope(el);
+  el.innerHTML = bar + html;
+  wireBar();
 
   // render the veto UI into each card body and wire it
   for (const m of vetoMatches) {
@@ -1130,6 +1303,7 @@ function drawVetoes(el) {
     const bodyEl = cardEl.querySelector('.veto-card-body');
     bodyEl.innerHTML = vetoHTML(m);
     wireVeto(bodyEl, m);
+    wireFactionVeto(bodyEl);
     const vchat = cardEl.querySelector('[data-vchat]');
     if (vchat) vchat.onclick = (e) => { e.preventDefault(); openMatchChat(m); };
     // map thumbnails open the full preview. Only wired on the tab, not inside the match-details
@@ -1183,7 +1357,7 @@ function vetoLogHTML(v) {
     if (mo && mo.image) {
       return `<img class="vlog-thumb${banned ? ' ban' : ''}" src="/map-images/${encodeURIComponent(mo.image)}" alt="" loading="lazy" decoding="async" width="34" height="34" data-map-info="${esc(id)}">`;
     }
-    return `<span class="vlog-noimg"${mo ? ' data-map-info="' + esc(id) + '"' : ''}></span>`;
+    return `<span class="vlog-noimg"${mo ? ' data-map-info="' + esc(id) + '"' : ''}${mo && mo.masked ? ' title="Hidden until it is played"' : ''}></span>`;
   };
   const rows = log.map(e => `<div class="vlog-row with-thumb">
       <span class="vlog-n">${e.n}</span>
@@ -1198,8 +1372,55 @@ function vetoLogHTML(v) {
   return `<div class="veto-log"><div class="veto-head">Ban / pick order</div>${rows}${dec}</div>`;
 }
 
+// Are every game's factions resolved for this match?
+function factionAllDone(m) {
+  if (!m.fveto || !m.fveto.games) return false;
+  const keys = Object.keys(m.fveto.games);
+  if (!keys.length) return false;
+  return keys.every(k => !!m.fveto.games[k].result);
+}
+
+// Card body when the tournament runs faction vetoes WITHOUT map vetoes: the series' game slots
+// are listed as plain "1st map / 2nd map / ..." labels (no map is being chosen here) so the
+// faction column has a row to sit beside.
+function factionOnlyHTML(m) {
+  const n = m.bo || 1;
+  const rows = [];
+  for (let g = 1; g <= n; g++) rows.push({ game: g });
+  let h = '<div class="vetobox' + (factionAllDone(m) ? ' done' : '') + '">';
+  h += '<div class="veto-head">Factions <span class="muted small">- no map veto for this match, so games are listed by number</span></div>';
+  h += vetoGamesTableHTML(m, rows);
+  h += '</div>';
+  return h;
+}
+
+// The games of a series as one aligned table: the game, its map (marked if it was the decider),
+// then each side's faction. The teams are named once, in the header, and every row lines up
+// however long its map's name is. A faction choice still open spans both team columns.
+function vetoGamesTableHTML(m, rows) {
+  const hasMap = rows.some(r => r.map);
+  const fv = !!(m.fveto && m.fveto.games);
+  const teamTh = tid => '<th class="vgt-f" title="' + esc(teamName(tid) || '') + '">' + esc(bracketLabel(tid) || '') + '</th>';
+  const head = '<thead><tr><th class="vgt-n">Game</th>' + (hasMap ? '<th class="vgt-map">Map</th>' : '') + (fv ? teamTh(m.team1) + teamTh(m.team2) : '') + '</tr></thead>';
+  const body = rows.map(r => {
+    let f = '';
+    if (fv) {
+      const g = m.fveto.games[String(r.game)];
+      if (g && g.result) {
+        f = '<td class="vgt-f">' + factionChip(g.result.t1, {}) + '</td><td class="vgt-f">' + factionChip(g.result.t2, {}) + '</td>';
+      } else {
+        const inner = factionGameHTML(m, r.game);
+        f = '<td class="vgt-fwide" colspan="2">' + (inner || '<span class="muted small">-</span>') + '</td>';
+      }
+    }
+    const map = hasMap ? '<td class="vgt-map">' + (r.map ? mapChip(r.map, 'play') : '') + (r.decider ? '<span class="vg-dec">decider</span>' : '') + '</td>' : '';
+    return '<tr><td class="vgt-n">' + r.game + '</td>' + map + f + '</tr>';
+  }).join('');
+  return '<table class="vgt">' + head + '<tbody>' + body + '</tbody></table>';
+}
+
 function vetoHTML(m) {
-  if (!m.veto) return '';
+  if (!m.veto) return m.fveto ? factionOnlyHTML(m) : '';
   const v = m.veto;
   // Treat a veto on a finished match as closed even if older stored data says otherwise - the
   // result is in, so nobody can ban or pick any more.
@@ -1242,9 +1463,8 @@ function vetoHTML(m) {
   }
 
   if (v.done) {
-    h += '<div class="veto-head">Maps</div><div class="veto-games">';
-    h += games.map(g => `<div class="veto-game"><span class="vg-num">Game ${g.game}</span>${mapChip(g.map, 'play')}${g === v.decider ? '<span class="vg-dec">decider</span>' : ''}</div>`).join('');
-    h += '</div>';
+    h += '<div class="veto-head">Maps</div>';
+    h += vetoGamesTableHTML(m, games.map(g => ({ game: g.game, map: g.map, decider: g === v.decider })));
     h += vetoLogHTML(v);
     h += '</div>';
     return h;
@@ -1267,7 +1487,13 @@ function vetoHTML(m) {
   const canActNow = (myTeamId && turnTeam === myTeamId) || isOrg;
   const stepsLeft = v.sequence.length - v.stepIndex;
 
-  h += `<div class="veto-head">Step ${v.stepIndex + 1} of ${v.sequence.length} · <strong>${esc(turnName)}</strong> to ${actionWord} <span class="muted">(${stepsLeft} left, then decider)</span></div>`;
+  // BAN vs PICK is the thing captains misread, so it gets its own colour-coded badge rather than
+  // being one lowercase word buried in a sentence.
+  const actBadge = `<span class="veto-act veto-act-${actionWord}">${actionWord.toUpperCase()}</span>`;
+  h += `<div class="veto-head veto-head-${actionWord}">Step ${v.stepIndex + 1} of ${v.sequence.length} · <strong>${esc(turnName)}</strong> to ${actBadge} <span class="muted">(${stepsLeft} left, then decider)</span></div>`;
+  if (canActNow) {
+    h += `<div class="veto-yourturn veto-act-${actionWord}">${myTeamId && turnTeam === myTeamId ? 'Your turn' : 'Acting for ' + esc(turnName)} \u2014 choose a map to <strong>${actionWord.toUpperCase()}</strong>. You'll be asked to confirm.</div>`;
+  }
 
   // history so far: bans struck, picks as games
   if (banned.length || picks.length) {
@@ -1277,7 +1503,7 @@ function vetoHTML(m) {
       const th = (mo && mo.image) ? '<img class="vm-thumb dim" src="/map-images/' + encodeURIComponent(mo.image) + '" alt="" loading="lazy">' : '';
       return '<span class="veto-map vm-card banned" title="Banned by ' + esc(teamName(b.by)) + '">' + th + '<span class="vm-name">' + esc(mapName(b.map)) + '</span></span>';
     }).join('') + '</div>';
-    if (picks.length) h += '<div class="veto-games">' + picks.map(g => '<div class="veto-game"><span class="vg-num">G' + g.game + '</span>' + mapChip(g.map, 'play') + '</div>').join('') + '</div>';
+    if (picks.length) h += vetoGamesTableHTML(m, picks.map(g => ({ game: g.game, map: g.map })));
     h += '</div>';
     h += vetoLogHTML(v);
   }
@@ -1308,16 +1534,49 @@ function wireVeto(box, m) {
   const step = v.sequence ? v.sequence[v.stepIndex] : null;
   const turnTeam = step ? (step.team === 'A' ? v.teamA : v.teamB) : null;
 
-  box.querySelectorAll('[data-veto-map]').forEach(btn => {
+  // Two-step confirm, inline rather than a modal: the first click arms that map and turns it into
+  // a "Confirm ban/pick" button, a second click commits. A misclick costs nothing - clicking any
+  // other map moves the arming, and Cancel or Escape clears it. Deliberately not a popup, since a
+  // dialog on every one of a dozen steps would be worse than the misclick it prevents.
+  const actionWord = step ? (step.action === 'ban' ? 'ban' : 'pick') : '';
+  const btns = Array.from(box.querySelectorAll('[data-veto-map]'));
+  const label = (b) => {
+    const tag = document.createElement('span');
+    tag.className = 'vm-confirm';
+    tag.textContent = 'Confirm ' + actionWord + '?';
+    b.appendChild(tag);
+  };
+  const paint = () => {
+    for (const b of btns) {
+      const on = _vetoArmed && _vetoArmed.matchId === m.id && _vetoArmed.map === b.dataset.vetoMap;
+      b.classList.toggle('armed', !!on);
+      const lbl = b.querySelector('.vm-confirm');
+      if (on && !lbl) label(b);
+      if (!on && lbl) lbl.remove();
+    }
+  };
+  const disarm = () => { _vetoArmed = null; paint(); };
+  const commit = async (btn) => {
+    const map = btn.dataset.vetoMap;
+    btns.forEach(b => { b.disabled = true; });
+    const body = { matchId: m.id, map: map, token: myToken() };
+    // organizer acting on behalf of the team whose turn it is
+    if (viewerIsOrganizer() && (!T.viewer || T.viewer.teamId !== turnTeam)) body.asTeam = turnTeam;
+    try { _vetoArmed = null; await api('/api/t/' + T.id + '/veto_action', body); await refresh(); }
+    catch (e) { toast(e.message, true); btns.forEach(b => { b.disabled = false; }); disarm(); }
+  };
+  for (const btn of btns) {
     btn.onclick = async () => {
-      const map = btn.dataset.vetoMap;
-      const body = { matchId: m.id, map: map, token: myToken() };
-      // organizer acting on behalf of the team whose turn it is
-      if (viewerIsOrganizer() && (!T.viewer || T.viewer.teamId !== turnTeam)) body.asTeam = turnTeam;
-      try { await api('/api/t/' + T.id + '/veto_action', body); await refresh(); }
-      catch (e) { toast(e.message, true); }
+      const on = _vetoArmed && _vetoArmed.matchId === m.id && _vetoArmed.map === btn.dataset.vetoMap;
+      if (on) return commit(btn);
+      _vetoArmed = { matchId: m.id, map: btn.dataset.vetoMap };
+      paint();
     };
-  });
+  }
+  paint();
+  // Escape or a click anywhere else clears the arming.
+  box.addEventListener('keydown', e => { if (e.key === 'Escape') disarm(); });
+  box.addEventListener('click', e => { if (!e.target.closest('[data-veto-map]')) disarm(); });
   box.querySelectorAll('[data-veto-seta]').forEach(btn => {
     btn.onclick = async () => {
       const teamA = btn.dataset.team;
@@ -1356,6 +1615,84 @@ function drawConnectors(wrap) {
   };
   draw();
   connectorRedraws.push(draw);
+}
+
+// ---- the 3rd place match ----
+// It hangs under the final, in the final's own column, the way brackets usually show it. A spacer
+// of the same height above the final keeps the final centred between the semi-finals, so the
+// connectors still meet it where they should. The spacer is sized after layout (and on resize),
+// through the same redraw list the connectors use - and before them, since it moves the final.
+function hangUnderFinal(mc, blk) {
+  const stack = document.createElement('div');
+  stack.className = 'bfinal-stack';
+  const spacer = document.createElement('div');
+  spacer.className = 'bthird-spacer';
+  stack.appendChild(spacer);
+  while (mc.firstChild) stack.appendChild(mc.firstChild);
+  stack.appendChild(blk);
+  mc.appendChild(stack);
+  const size = () => { spacer.style.height = blk.offsetHeight + 'px'; };
+  size();
+  connectorRedraws.push(size);
+}
+function thirdPlaceBlock(m3) {
+  const blk = document.createElement('div');
+  blk.className = 'bthird';
+  const head = document.createElement('div');
+  head.className = 'bcol-title';
+  head.textContent = '3RD PLACE';
+  blk.appendChild(head);
+  if (viewerIsOrganizer()) {
+    const started = m3.status === 'live' || m3.status === 'done' || (Array.isArray(m3.games) && m3.games.length);
+    const boWrap = document.createElement('div');
+    if (!started) {
+      boWrap.className = 'bcol-bo';
+      boWrap.innerHTML = 'Bo <select class="bcol-bo-sel">' + [1, 3, 5, 7].map(v => '<option value="' + v + '"' + (v === m3.bo ? ' selected' : '') + '>Bo' + v + '</option>').join('') + '</select>';
+      const sel = boWrap.querySelector('select');
+      sel.onchange = async () => {
+        try {
+          await api('/api/t/' + T.id + '/set_round_bo', { bracket: '3p', round: m3.round, bo: parseInt(sel.value, 10), division: null, admin: adminToken() });
+          toast('3rd place match set to Bo' + sel.value);
+          await refresh();
+        } catch (e) { toast(e.message, true); sel.value = m3.bo; }
+      };
+    } else {
+      boWrap.className = 'bcol-bo muted';
+      boWrap.textContent = 'Bo' + m3.bo;
+    }
+    blk.appendChild(boWrap);
+  }
+  mapsLine('3p', m3.round, blk);
+  blk.appendChild(matchBox(m3));
+  return blk;
+}
+// The organizer's switch for it, above the bracket. Only while it can still be switched: the
+// tournament is running and the match itself has not started.
+function thirdPlaceToolsHTML() {
+  if (!viewerIsOrganizer() || T.status !== 'running' || T.earlyFinish || !thirdPlaceEligible(T)) return '';
+  const m3 = thirdPlaceMatchOf(T);
+  if (m3) {
+    if (thirdPlaceTouched(m3)) return '';
+    return `<div class="third-tools"><button class="btn ghost small" data-third="0">Remove the 3rd place match</button>
+      <span class="muted small">The two beaten semi-finalists play for 3rd. It can be removed until it starts.</span></div>`;
+  }
+  const semis = (T.matches || []).filter(m => m.bracket === 'wb' && !(m.division || 0));
+  const R = semis.reduce((a, m) => Math.max(a, m.round || 0), 0);
+  const played = semis.filter(m => m.round === R - 1 && m.status === 'done').length;
+  return `<div class="third-tools"><button class="btn ghost small" data-third="1">+ Add a 3rd place match</button>
+    <span class="muted small">The two beaten semi-finalists play for 3rd place, so the standings have a clear 3rd and 4th.${played ? ' A semi-final already played sends its loser into it.' : ''}</span></div>`;
+}
+function wireThirdPlaceTools(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-third]').forEach(b => b.onclick = async () => {
+    const on = b.dataset.third === '1';
+    b.disabled = true;
+    try {
+      await api('/api/t/' + T.id + '/third_place', { on: on ? 1 : 0, admin: adminToken() });
+      toast(on ? '3rd place match added' : '3rd place match removed');
+      await refresh();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
+  });
 }
 
 function bracketColumns(el, bracket, title, gfMatch, division) {
@@ -1401,7 +1738,7 @@ function bracketColumns(el, bracket, title, gfMatch, division) {
         col.appendChild(boWrap);
       }
     }
-    mapsLine(bracket, r, col);
+    mapsLine(bracket, poolRoundOf(bracket, r, division), col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
     for (const m of ms.filter(x => x.round === r).sort((a, b) => a.index - b.index)) {
@@ -1409,6 +1746,10 @@ function bracketColumns(el, bracket, title, gfMatch, division) {
       // "won" the bye has already been advanced into its next-round match, so it shows there.
       if (isPhantomMatch(m)) continue;
       mc.appendChild(matchBox(m));
+    }
+    if (bracket === 'wb' && r === rounds && !division && mc.children.length) {
+      const m3 = thirdPlaceMatchOf(T);
+      if (m3 && !isPhantomMatch(m3)) hangUnderFinal(mc, thirdPlaceBlock(m3));
     }
     col.appendChild(mc);
     if (mc.children.length) inner.appendChild(col);
@@ -1459,7 +1800,7 @@ function alignBracketSections(el) {
   }
 }
 
-function drawBracket(el) {
+function drawBracket(el, division) {
   // Imported events with no reproducible bracket (free-for-all, round robin, group-only) have no
   // tree to draw - point at the results instead of rendering an empty frame.
   if (T.imported && T.standingsOnly) {
@@ -1474,49 +1815,84 @@ function drawBracket(el) {
   el.innerHTML = '';
   connectorRedraws = [];
   buildFeeders();
+  drawStopNotice(el);
+  // King / Prince: this tab shows one division's bracket.
+  const one = divisionsOnT() ? (division || 1) : 0;
+  // The opponent pick phase replaces round one, so while it is open it IS the bracket view.
+  const pickOpen = T.picks && T.picks.status === 'open';
+  if (pickOpen && T.picks.forWhat !== 'stage2') { drawPickPhase(el); drawBracketPreview(el, one); return; }
   if (!T.matches.length) {
-    drawBracketPreview(el);
+    drawBracketPreview(el, one);
     return;
   }
 
   if (T.competition === 'ffa') return drawFfaRounds(el);
 
-  if (T.bracketType === 'swiss') return drawSwissRounds(el);
+  if (T.bracketType === 'swiss') {
+    if (pickOpen) drawPickPhase(el);
+    // Two-stage: the playoff bracket sits above the Swiss stage that produced it, so the
+    // live action is at the top and the Swiss rounds read as history below it.
+    if (stageTwoLive()) {
+      const hdr = document.createElement('div');
+      hdr.className = 'division-header';
+      hdr.innerHTML = '<h2 style="margin:0 0 10px">Playoffs <span class="h2-strong">'
+        + esc(String(T.stage2.cutTo)) + '-team ' + (T.stage2.type === 'double' ? 'double' : 'single') + ' elimination</span></h2>'
+        + '<p class="muted small" style="margin:0 0 12px">' + playoffOriginHTML() + '</p>'
+        + playoffActionsHTML(true)
+        + (T.stage2.type === 'double' ? '' : thirdPlaceToolsHTML());
+      el.appendChild(hdr);
+      wirePlayoffActions(hdr);
+      wireThirdPlaceTools(hdr);
+      if (T.stage2.type === 'double') {
+        const gf = T.matches.find(m => m.bracket === 'gf');
+        bracketColumns(el, 'wb', 'Winners bracket', gf, 0);
+        bracketColumns(el, 'lb', 'Losers bracket', null, 0);
+      } else {
+        bracketColumns(el, 'wb', '');
+      }
+      const sep = document.createElement('div');
+      sep.className = 'division-header';
+      sep.innerHTML = '<h2 style="margin:22px 0 10px">Swiss stage</h2>';
+      el.appendChild(sep);
+      drawSwissRounds(el);
+      alignBracketSections(el);
+      for (const f of connectorRedraws) f();
+      return;
+    }
+    drawSwissRound1Editor(el);
+    return drawSwissRounds(el);
+  }
 
-  const divs = T.divisions || 0;
-  const divNames = ['', 'King', 'Prince', 'Duke', 'Baron', 'Knight', 'Squire'];
+  if (one) {
+    const hdr = document.createElement('div');
+    hdr.className = 'division-header';
+    const champ = divisionChampionOf(one);
+    hdr.innerHTML = '<h2 style="margin:0 0 4px">' + esc(divisionNameOf(one)) + ' <span class="h2-strong">bracket</span></h2>'
+      + '<p class="muted small" style="margin:0 0 12px">' + divisionTeamsOf(one).length + ' teams'
+      + (champ ? ' \u00b7 champion: <strong>' + esc(teamName(champ)) + '</strong>' : '') + '</p>';
+    el.appendChild(hdr);
+  }
 
   if (T.bracketType === 'double') {
-    const renderDouble = (division, label) => {
-      if (label) {
-        const hdr = document.createElement('div');
-        hdr.className = 'division-header';
-        hdr.innerHTML = '<h2 style="margin:18px 0 10px">' + esc(label) + ' division</h2>';
-        el.appendChild(hdr);
-      }
-      const gf = T.matches.find(m => m.bracket === 'gf' && (!division || (m.division || 0) === division));
-      bracketColumns(el, 'wb', 'Winners bracket', gf, division);
-      bracketColumns(el, 'lb', 'Losers bracket', null, division);
-    };
-    if (divs > 1) { for (let d = 1; d <= divs; d++) renderDouble(d, divNames[d] || ('Division ' + d)); }
-    else renderDouble(0, '');
+    const gf = T.matches.find(m => m.bracket === 'gf' && (!one || (m.division || 0) === one));
+    bracketColumns(el, 'wb', 'Winners bracket', gf, one);
+    bracketColumns(el, 'lb', 'Losers bracket', null, one);
     alignBracketSections(el);
     for (const f of connectorRedraws) f();
     return;
   }
 
   // single elim
-  if (divs > 1) {
-    for (let d = 1; d <= divs; d++) {
-      const hdr = document.createElement('div');
-      hdr.className = 'division-header';
-      hdr.innerHTML = '<h2 style="margin:18px 0 10px">' + esc(divNames[d] || ('Division ' + d)) + ' division</h2>';
-      el.appendChild(hdr);
-      bracketColumns(el, 'wb', '', null, d);
+  if (!one) {
+    const tools = thirdPlaceToolsHTML();
+    if (tools) {
+      const bar = document.createElement('div');
+      bar.innerHTML = tools;
+      el.appendChild(bar);
+      wireThirdPlaceTools(bar);
     }
-  } else {
-    bracketColumns(el, 'wb', '');
   }
+  bracketColumns(el, 'wb', '', null, one);
   alignBracketSections(el);
   for (const f of connectorRedraws) f();
 }
@@ -1534,26 +1910,47 @@ function previewSeedOrder(n) {
   return order;
 }
 
-// how many teams the bracket will have: locked teams if formed, else cap, else current entrant estimate
-function expectedTeamCount() {
-  if (T.teams && T.teams.length) return T.teams.length;
-  if (T.maxTeams && T.maxTeams > 0) return T.maxTeams;
-  // estimate from signups
-  if (T.competition === 'ffa' || T.teamSize === 1) return T.players.length;
+// How many teams the bracket will have. There used to be a second, subtly different copy of this
+// here, which is what drew the preview's seed list - it counted every team (forming ones included)
+// and ignored maxTeams, so 8 full teams plus 2 half-built ones drew a 10-seed bracket. One
+// implementation now, so the seeds, the round keys and the per-round Bo can never disagree.
+function expectedTeamCount(division) {
+  // one division of a split tournament: the teams it has, or the number it is going to get
+  if (division && divisionsOnT()) return plannedDivisionSize(division) || 0;
+  const n = projectedTeamCount();
+  if (n >= 2) return n;
+  // Nothing formed yet: fall back to a signup-based estimate, still capped.
+  const cap = T.maxTeams > 0 ? T.maxTeams : Infinity;
+  if (T.competition === 'ffa' || T.teamSize === 1) return Math.min(T.players.length, cap);
   if (T.formation === 'premade') {
     const names = {};
     for (const p of T.players) if (p.teamName) names[p.teamName.toLowerCase()] = 1;
-    return Object.keys(names).length;
+    return Math.min(Object.keys(names).length, cap);
   }
-  // draft: one team per captain isn't known yet; fall back to players/teamSize
-  return Math.floor(T.players.length / T.teamSize);
+  return Math.min(Math.floor(T.players.length / Math.max(T.teamSize, 1)), cap);
 }
 
-function seedLabelMap() {
+function seedLabelMap(division) {
   // maps seed number -> team name, when teams already exist
   const m = {};
+  if (division && divisionsOnT()) {
+    // seeds are unique across the field until the start, which numbers each division from 1
+    divisionTeamsOf(division).slice().sort((a, b) => (a.seed || 0) - (b.seed || 0)).forEach((t, i) => { m[i + 1] = t.name; });
+    return m;
+  }
   if (T.teams) for (const t of T.teams) m[t.seed] = t.name;
   return m;
+}
+// The line under a division's preview: where its teams come from and how long its rounds are.
+function divisionPreviewNote(division) {
+  const nm = divisionNameOf(division);
+  const n = divisionTeamsOf(division).length;
+  const off = divisionRoundOffset(division);
+  const bits = [];
+  if (!n) bits.push(T.formation === 'draft' ? 'The ' + nm + ' bracket fills in once its teams are drafted.' : 'The ' + nm + ' bracket fills in once the teams are split into divisions.');
+  else bits.push(n + ' team' + (n === 1 ? '' : 's') + ', seeded 1-' + n + ' within the division.');
+  if (off) bits.push('It has fewer rounds than the biggest division and plays its round lengths counted back from the final: its final is the final, its semi-finals the semi-finals.');
+  return bits.join(' ');
 }
 
 // Build the same match/link topology the server's buildDouble/buildSingle produce,
@@ -1619,21 +2016,28 @@ function vLabel(m, isDouble) {
   return p + 'R' + m.round + ' M' + (m.index + 1);
 }
 
-function drawBracketPreview(el) {
-  const n = expectedTeamCount();
+function drawBracketPreview(el, division) {
+  const one = (division && divisionsOnT()) ? division : 0;
+  const n = expectedTeamCount(one);
 
   // header with format + a clear "preview" note
   const head = document.createElement('div');
   head.className = 'panel section';
   const capNote = T.maxTeams ? ('capped at ' + T.maxTeams + ' teams') : 'uncapped';
-  head.innerHTML = `<h2>Format <span class="h2-strong">preview</span></h2>
-    <p style="margin:0 0 4px">${esc(typeLine(T))}</p>
+  head.innerHTML = (one ? `<h2>${esc(divisionNameOf(one))} <span class="h2-strong">bracket preview</span></h2>
+    <p class="muted small" style="margin:0 0 6px">${esc(divisionPreviewNote(one))}</p>` : `<h2>Format <span class="h2-strong">preview</span></h2>`)
+    + `<p style="margin:0 0 4px">${esc(typeLine(T))}</p>
     <p class="muted" style="margin:0 0 8px">${esc(planSummary(T))}</p>
     <p class="muted small" style="margin:0">This is a preview \u2014 ${esc(capNote)}. Seeds fill in as teams are confirmed; the real bracket is generated when the organizer starts it.</p>`;
   el.appendChild(head);
+  if (one && n < 2) return;
 
   if (T.competition === 'ffa') { drawFfaPreview(el, n); return; }
-  if (T.bracketType === 'swiss') { drawSwissPreview(el, n); return; }
+  if (T.bracketType === 'swiss') {
+    drawSwissPreview(el, n);
+    if (T.status === 'drafted') drawSwissRound1Editor(el);
+    return;
+  }
   if (n < 2) {
     const p = document.createElement('div');
     p.className = 'panel section';
@@ -1646,7 +2050,7 @@ function drawBracketPreview(el) {
   const bracketSize = pw;
   const R = Math.log2(bracketSize);
   const order = previewSeedOrder(bracketSize);
-  const names = seedLabelMap();
+  const names = seedLabelMap(one);
 
   // slot label: real name if that seed is taken, "Seed N" if within team count, "bye" otherwise
   const slotLabel = seed => {
@@ -1657,7 +2061,12 @@ function drawBracketPreview(el) {
 
   const plan = T.plan || {};
   const perRound = !!T.perRoundBo;
-  const listBo = (list, i, fallback) => (perRound && Array.isArray(list) && list[i] != null) ? list[i] : fallback;
+  // A smaller division plays the per-round lengths of the largest one counted back from the final.
+  const offW = one ? divisionRoundOffset(one) : 0;
+  const listBo = (list, i, fallback, isLb) => {
+    const k = i + (isLb ? 2 * offW : offW);
+    return (perRound && Array.isArray(list) && list[k] != null) ? list[k] : fallback;
+  };
   const boForRound = r => {
     if (T.bracketType === 'double') {
       const fb = r === R ? (plan.wbFinal || 3) : (plan.wb || 3);
@@ -1666,7 +2075,7 @@ function drawBracketPreview(el) {
     const fb = r === R ? (plan.final || 5) : r === R - 1 ? (plan.semi || 3) : (plan.early || 3);
     return listBo(plan.roundsList, r - 1, fb);
   };
-  const canEditBo = viewerIsOrganizer() && perRound;
+  const canEditBo = viewerIsOrganizer() && perRound && !one;
   // a Bo <select> for a preview column that persists to the plan draft arrays
   const previewBoSelect = (listName, index, current) => {
     const wrap = document.createElement('div');
@@ -1771,7 +2180,7 @@ function drawBracketPreview(el) {
     h.textContent = colLabel('wb', r, R);
     col.appendChild(h);
     if (canEditBo) col.appendChild(previewBoSelect(T.bracketType === 'double' ? 'wb' : 'rounds', r - 1, boForRound(r)));
-    mapsLine('wb', r, col);
+    mapsLine('wb', poolRoundOf('wb', r, one), col);
     const mc = document.createElement('div');
     mc.className = 'bcol-matches';
     if (r === 1) {
@@ -1790,6 +2199,15 @@ function drawBracketPreview(el) {
         box.dataset.pid = idFor(r, i);
         mc.appendChild(box);
       }
+    }
+    // the 3rd place match, under the final, when one is planned (it needs four real players)
+    if (!isDouble && r === R && R >= 2 && n >= 4 && thirdPlaceOn(T) && !((T.divisions || 0) > 1) && mc.children.length) {
+      const blk = document.createElement('div');
+      blk.className = 'bthird';
+      blk.innerHTML = '<div class="bcol-title">3RD PLACE</div>';
+      blk.appendChild(previewBox({ txt: 'Loser of ' + wbTag(R - 1, 0), tbd: true }, { txt: 'Loser of ' + wbTag(R - 1, 1), tbd: true },
+        (T.cfg && T.cfg.thirdBo) || boForRound(R - 1), '3RD PLACE'));
+      hangUnderFinal(mc, blk);
     }
     col.appendChild(mc);
     if (mc.children.length) inner.appendChild(col); else col.remove();
@@ -1838,9 +2256,9 @@ function drawBracketPreview(el) {
         h.textContent = colLabel('lb', q, lbRounds);
         col.appendChild(h);
         const lbFb = q === lbRounds ? (plan.lbFinal || 3) : (plan.lb || 3);
-        const lbBo = listBo(plan.lbList, q - 1, lbFb);
+        const lbBo = listBo(plan.lbList, q - 1, lbFb, true);
         if (canEditBo) col.appendChild(previewBoSelect('lb', q - 1, lbBo));
-        mapsLine('lb', q, col);
+        mapsLine('lb', poolRoundOf('lb', q, one), col);
         const mc = document.createElement('div');
         mc.className = 'bcol-matches';
         const count = lbCountAt(q);
@@ -1947,7 +2365,7 @@ function previewBox(a, b, bo, label) {
 function drawSwissPreview(el, n) {
   const sec = document.createElement('div');
   sec.className = 'panel section';
-  const rounds = (T.plan && T.plan.rounds) || Math.max(1, Math.ceil(Math.log2(Math.max(2, n))));
+  const rounds = swissPlannedRounds(T, n);
   sec.innerHTML = `<h2>Swiss <span class="h2-strong">preview</span></h2>
     <p class="muted small" style="margin:0">${esc(String(n))} teams expected \u00b7 pairings are generated round by round once the tournament starts. Round 1 pairs by seed; later rounds by standings.</p>`;
   el.appendChild(sec);
@@ -2001,23 +2419,469 @@ function drawFfaPreview(el, n) {
   el.appendChild(sec);
 }
 
+// The declared early stop, stated on the bracket itself. Without this the bracket draws a grand
+// final nobody will play and gives no hint of it, which is the whole complaint.
+function drawStopNotice(el) {
+  if (!stopAtOf(T)) return;
+  const ef = T.earlyFinish;
+  const box = document.createElement('div');
+  const left = stopAtRemaining(T);
+  if (ef) {
+    const over = ef.target && ef.alive < ef.target;
+    box.className = 'panel section stop-notice done';
+    box.innerHTML = `<div class="mono small stop-head">TOURNAMENT ENDED</div>
+      <div>${ef.auto ? 'Stopped automatically' : 'Stopped by ' + esc(ef.by || 'an organizer')} with
+        <strong>${ef.alive}</strong> still standing: ${esc((ef.names || []).join(', '))}.</div>
+      ${over ? '<div class="muted small" style="margin-top:4px">Two results landed close together, so the count went one past the target of ' + ef.target + '.</div>' : ''}
+      <div class="muted small" style="margin-top:6px">Greyed-out matches below were never played.</div>`;
+  } else {
+    box.className = 'panel section stop-notice';
+    box.innerHTML = `<div class="mono small stop-head">THIS TOURNAMENT ENDS EARLY</div>
+      <div>${esc(stopAtLine(T))}</div>
+      ${left != null ? '<div class="stop-count">' + (left === 0
+        ? 'The next result ends it.'
+        : '<strong>' + left + '</strong> more elimination' + (left === 1 ? '' : 's') + ' to go.') + '</div>' : ''}`;
+  }
+  el.appendChild(box);
+}
+
+// ---- opponent pick phase ----
+// Seeds 1-N/2 choose who they play. Modelled on the veto flow: the site always says whose turn
+// it is, shows that person a clear call to action, and lets an organizer act for anyone.
+function drawPickPhase(el) {
+  const p = T.picks;
+  if (!p) return;
+  const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+  const seedOf = id => p.field.indexOf(id) + 1;
+  const org = viewerIsOrganizer();
+  const sec = document.createElement('div');
+  sec.className = 'panel section pickphase';
+
+  const clock = () => {
+    if (p.msLeft == null) return '';
+    const secs = Math.max(0, Math.round(p.msLeft / 1000));
+    const mm = Math.floor(secs / 60), ss = secs % 60;
+    return `<span class="pick-clock${secs <= 30 ? ' urgent' : ''}">${mm}:${String(ss).padStart(2, '0')}</span>`;
+  };
+
+  const head = p.status === 'done'
+    ? '<h2>Opponents <span class="h2-strong">chosen</span></h2>'
+    : `<h2>Choosing <span class="h2-strong">opponents</span></h2>`;
+  // 'unbeaten' mode: only the players with no Swiss loss pick, from anyone, and the rest are drawn.
+  // Their records are what the rule is about, so they are shown next to every name.
+  const unbeaten = p.mode === 'unbeaten';
+  const recOf = id => (unbeaten && p.records && p.records[id]) ? p.records[id] : '';
+  const tag = id => '<span class="muted mono small">(' + seedOf(id) + (recOf(id) ? ' · ' + esc(recOf(id)) : '') + ')</span>';
+
+  let body = '';
+  if (p.status === 'open') {
+    const turnName = p.turn ? nm(p.turn) : '';
+    const n = (p.order || []).length;
+    const seededRest = unbeaten && p.rest === 'seed';
+    // "from the 3-2s": the records of the players they may pick from, when the pool is narrowed
+    const poolRecs = seededRest ? (p.pool || []).map(recOf).filter((v, i, a) => v && a.indexOf(v) === i) : [];
+    const from = poolRecs.length ? ' from the ' + poolRecs.join(' / ') + 's' : '';
+    const seedsLine = (T.tiebreak === 'beaten' && p.forWhat === 'stage2') ? ' Seeds come from the Swiss record, then the sum of the scores of the opponents each player beat.' : '';
+    const who = unbeaten
+      ? (n === 1 ? 'The one player who went through unbeaten chooses who they play' + from + '.'
+        : 'The ' + n + ' players who went through unbeaten each choose who they play' + from + ', in seed order.')
+        + (seededRest
+          ? ' Everyone else is then paired by seed, the best remaining seed against the lowest.' + seedsLine
+          : ' Everyone else is then drawn against each other at random, a different record against each other where possible.')
+      : `The top ${p.half} seeds each choose who they play, in seed order.` + seedsLine;
+    body += `<p class="muted small" style="margin:2px 0 12px">${esc(who)}
+      ${p.perPickMs ? 'Each pick has a time limit; if it runs out, the standard bracket matchup is used.' : 'There is no time limit.'}</p>`;
+    if (p.myTurn) {
+      body += `<div class="pick-callout"><div class="pick-callout-h">Your pick ${clock()}</div>
+        <div class="muted small">Choose your opponent below.</div></div>`;
+    } else {
+      body += `<div class="infocell"><div class="mono small muted">WAITING ON</div>
+        <div>${esc(turnName)} <span class="muted small">(seed ${seedOf(p.turn)}${recOf(p.turn) ? ', ' + esc(recOf(p.turn)) : ''})</span> ${clock()}</div></div>`;
+    }
+  }
+
+  // the pairings so far. Class names of their own (opp-*): as .pick-list / .pick-row they picked up
+  // the compact clickable-list styles, a wrapping row of small chips, which cut every name off.
+  const rows = p.order.map(id => {
+    const pick = p.picks[id];
+    const isTurn = p.status === 'open' && id === p.turn;
+    return `<div class="opp-row${isTurn ? ' turn' : ''}">
+      <span class="opp-seed mono">${seedOf(id)}</span>
+      <span class="opp-name">${esc(nm(id))}${recOf(id) ? ' <span class="muted mono small">' + esc(recOf(id)) + '</span>' : ''}</span>
+      <span class="opp-vs muted">vs</span>
+      <span class="opp-target">${pick
+        ? esc(nm(pick)) + ' ' + tag(pick)
+        : (isTurn ? '<span class="opp-pending">choosing\u2026</span>' : '<span class="muted">\u2014</span>')}</span>
+    </div>`;
+  }).join('');
+  body += `<div class="opp-list">${rows}</div>`;
+
+  // the picker's own controls
+  if (p.status === 'open' && (p.myTurn || org) && (p.available || []).length) {
+    const who = p.turn ? nm(p.turn) : '';
+    body += `<div class="pick-choose">
+      <div class="mono small muted" style="margin-bottom:6px">${p.myTurn ? 'PICK YOUR OPPONENT' : 'PICK ON BEHALF OF ' + esc(who.toUpperCase())}</div>
+      <div class="pick-opts">${p.available.map(id =>
+        `<button class="btn ghost small" data-pickop="${esc(id)}">${esc(nm(id))} <span class="muted mono">${seedOf(id)}${recOf(id) ? ' \u00b7 ' + esc(recOf(id)) : ''}</span></button>`).join('')}</div>
+    </div>`;
+  }
+  if (org && p.status === 'open' && (p.log || []).length) {
+    body += '<div style="margin-top:10px"><button class="btn ghost small" id="pickUndo">Undo the last pick</button></div>';
+  }
+  if (p.forWhat === 'stage2') body += playoffActionsHTML(true);
+  if ((p.log || []).some(l => l.auto)) {
+    body += '<p class="muted small" style="margin:10px 0 0">Picks marked automatic were made by the clock running out, using the standard bracket matchup.</p>';
+  }
+
+  sec.innerHTML = head + body;
+  el.appendChild(sec);
+  wirePlayoffActions(sec);
+
+  sec.querySelectorAll('[data-pickop]').forEach(btn => btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      await api('/api/t/' + T.id + '/pick_opponent', { teamId: btn.dataset.pickop, admin: adminToken() });
+      await refresh();
+    } catch (e) { btn.disabled = false; toast(e.message, true); }
+  });
+  const undo = sec.querySelector('#pickUndo');
+  if (undo) undo.onclick = async () => {
+    try { await api('/api/t/' + T.id + '/undo_pick_opponent', { admin: adminToken() }); toast('Pick undone'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  };
+}
+
+// ---- the playoff setup of a Swiss stage (organizers) ----
+// Who picks their playoff opponent, and the two ways back once the playoffs exist: undo the last
+// pick, or redo the lot. Both stay possible until the first playoff match starts. Shown in two
+// places: the Playoffs panel on the Admin tab, and above the playoff bracket, which is where an
+// organizer is looking the moment the Swiss stage ends and the bracket appears.
+function playoffUnbeatenLabel(t) {
+  const c = swissCutCfg(t || T);
+  return c.win ? c.win + '-0' : 'no losses';
+}
+// The lowest record that can go through: "3-2" when 3 wins qualify and 3 losses eliminate.
+function playoffBottomLabel(t) {
+  const c = swissCutCfg(t || T);
+  return (c.win && c.loss) ? c.win + '-' + (c.loss - 1) : 'lowest record through';
+}
+function playoffPickText(pick, t) {
+  if (pick === 'unbeaten') return 'Only the unbeaten (' + playoffUnbeatenLabel(t) + ') pick their opponent, everyone else is drawn';
+  if (pick === 'bottom') return 'Only the unbeaten (' + playoffUnbeatenLabel(t) + ') pick, from the ' + playoffBottomLabel(t) + 's; everyone else is seeded';
+  if (pick === 'half') return 'The top half of the playoff seeds pick their opponent';
+  return 'Nobody picks: the bracket is seeded from the Swiss standings';
+}
+// "A's pick of B" for the pick an undo would take back, or '' when there is none.
+function playoffLastPick() {
+  const p = T.picks;
+  if (!p || p.forWhat !== 'stage2' || !(p.log || []).length) return '';
+  const last = p.log[p.log.length - 1];
+  return teamName(last.by) + '’s pick of ' + teamName(last.target);
+}
+function playoffActionsHTML(onBracket) {
+  const P = T.playoffs;
+  if (!P || !P.made || P.locked || !viewerIsOrganizer()) return '';
+  // While the picks are still open the pick panel has its own undo button.
+  const undo = P.built && playoffLastPick();
+  return `<div class="playoff-actions">
+    ${undo ? '<button class="btn ghost small" data-poundo="1">Undo the last pick</button>' : ''}
+    <button class="btn ghost small" data-poredo="1">Redo the playoffs</button>
+    ${onBracket ? '<span class="muted small">Organizers only, until the first playoff match starts. Who picks is set on the Admin tab.</span>' : ''}
+  </div>`;
+}
+async function playoffRedo(pick, minutes, tiebreak) {
+  const what = pick === 'off'
+    ? 'The playoff bracket is taken down and seeded again from the Swiss standings.'
+    : 'The picks start again from the first picker' + (pick === 'unbeaten' ? ', and whoever nobody picks is drawn again.' : '.');
+  if (!confirm('Redo the playoffs?\n\n' + what + '\n\nOnly possible while no playoff match has started.')) return false;
+  try {
+    const r = await api('/api/t/' + T.id + '/playoff_setup', { pick, minutes, tiebreak, redo: 1, admin: adminToken() });
+    toast('Playoffs set up again' + (r.droppedPools ? ' (' + r.droppedPools + ' per-match map pool setting' + (r.droppedPools === 1 ? '' : 's') + ' cleared)' : ''));
+    await refresh();
+    return true;
+  } catch (e) { toast(e.message, true); return false; }
+}
+function wirePlayoffActions(root) {
+  const P = T.playoffs;
+  if (!root || !P) return;
+  root.querySelectorAll('[data-poundo]').forEach(b => b.onclick = async () => {
+    if (!confirm('Undo ' + playoffLastPick() + '?\n\nThe playoff bracket is taken down again and that pick is open.')) return;
+    try { await api('/api/t/' + T.id + '/undo_pick_opponent', { admin: adminToken() }); toast('Pick undone'); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  root.querySelectorAll('[data-poredo]').forEach(b => b.onclick = () => playoffRedo(P.pick, T.pickMinutes || 0));
+}
+// How the playoff matchups came about, for the line above the bracket. Everyone can read this.
+function playoffOriginHTML() {
+  const p = T.picks;
+  if (!p || p.forWhat !== 'stage2' || p.status !== 'done') return esc('Seeded from the Swiss standings below.');
+  const vs = pr => esc(teamName(pr[0])) + ' vs ' + esc(teamName(pr[1]));
+  const chosen = (p.order || []).filter(id => p.picks[id]).map(id => [id, p.picks[id]]);
+  if (p.mode === 'unbeaten') {
+    const drawn = p.drawn || [];
+    return (chosen.length ? 'Chosen by the unbeaten: ' + chosen.map(vs).join(' · ') + '. ' : 'Nobody went through unbeaten, so nothing was picked. ')
+      + (drawn.length ? (p.rest === 'seed' ? 'Seeded: ' : 'Drawn: ') + drawn.map(vs).join(' · ') + '.' : '');
+  }
+  return 'The top seeds chose their opponents: ' + chosen.map(vs).join(' · ') + '.';
+}
+
+// The Playoffs panel on the Admin tab, for a Swiss stage that feeds a playoff bracket.
+function playoffSetupPanelHTML() {
+  const P = T.playoffs;
+  if (!P || T.status !== 'running') return '';
+  let state;
+  if (P.locked) state = 'A playoff match has started, so the playoff setup is final.';
+  else if (!P.made) state = 'The Swiss stage is still being played. When it ends, the playoffs are set up the way chosen here, and this can be changed at any time until then.';
+  else if (!P.built) state = 'The players are choosing their playoff opponents right now (see the Bracket tab). The clock can still be changed, and the playoffs can be redone with a different setting.';
+  else state = 'The playoff bracket is set up. Until the first playoff match starts - a result, a score, or a single map or faction ban - the last pick can be undone or the playoffs redone.';
+  const opt = v => `<option value="${v}"${P.pick === v ? ' selected' : ''}>${esc(playoffPickText(v))}</option>`;
+  return `<div class="panel section" id="playoffPanel"><h2>Playoffs</h2>
+    <p class="muted small" style="margin:6px 0 10px">${esc(state)}</p>
+    ${P.locked
+      ? `<div class="infocell"><div class="mono small muted">SET UP AS</div><div>${esc(playoffPickText(P.pick))}</div><div class="muted small">${esc(swissTiebreakText(T.tiebreak))}</div></div>`
+      : `<label>When the Swiss stage ends</label>
+    <select id="po_pick">${opt('off')}${opt('half')}${opt('unbeaten')}${opt('bottom')}</select>
+    <div id="po_help" class="muted small" style="margin:6px 0 0"></div>
+    <label>Order within the same record</label>
+    <select id="po_tb"><option value="gd"${T.tiebreak !== 'beaten' ? ' selected' : ''}>Game difference</option><option value="beaten"${T.tiebreak === 'beaten' ? ' selected' : ''}>Sum of the scores of the opponents beaten, then random</option></select>
+    <div class="muted small" style="margin:6px 0 0">Decides who goes through, the playoff seeds and so who picks and in what order.</div>
+    <div id="po_minsRow" class="row" style="gap:10px;align-items:flex-end;margin-top:8px">
+      <div style="width:170px"><div class="muted small">Time limit per pick</div><input type="number" id="po_mins" min="0" max="1440" value="${T.pickMinutes || 0}"></div>
+      <div class="muted small" style="flex:1;padding-bottom:8px">Minutes. 0 means no limit. A pick that runs out of time gets the standard bracket matchup.</div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn amber" id="po_save">Save</button></div>
+    ${playoffActionsHTML(false)}`}
+    ${playoffThirdHTML()}
+  </div>`;
+}
+// The 3rd place match of the playoffs. A switch of its own, saved the moment it is clicked: it
+// changes nobody's matchups, so it stays open after the playoffs are locked - until it starts itself.
+function playoffThirdHTML() {
+  const s2 = stageTwoCfgOf(T);
+  if (!s2 || s2.type === 'double' || !thirdPlaceEligible(T)) return '';
+  const m3 = thirdPlaceMatchOf(T);
+  const fixed = !!(m3 && thirdPlaceTouched(m3));
+  const note = fixed ? 'It has started, so it stays.'
+    : m3 ? 'It is on the bracket, under the final. It can be removed until it starts.'
+    : s2.built ? 'Ticking this adds it to the bracket straight away, the same length as the semi-finals (the length can be changed on the Bracket tab). A semi-final already played sends its loser into it.'
+    : 'It is added when the playoff bracket is built.';
+  return `<div class="po-third" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line-solid)">
+    <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;font-family:var(--body);font-size:13px;color:var(--text);margin:0">
+      <input type="checkbox" id="po_third"${thirdPlaceOn(T) ? ' checked' : ''}${fixed ? ' disabled' : ''}> 3rd place match: the two beaten semi-finalists play for 3rd
+    </label>
+    <div class="muted small" style="margin:4px 0 0 22px">${esc(note)}</div>
+  </div>`;
+}
+function wirePlayoffThird() {
+  const ck = document.getElementById('po_third');
+  if (!ck) return;
+  ck.onchange = async () => {
+    const on = ck.checked;
+    ck.disabled = true;
+    try {
+      await api('/api/t/' + T.id + '/third_place', { on: on ? 1 : 0, admin: adminToken() });
+      toast(on ? (stageTwoLive() ? '3rd place match added' : 'The playoffs will have a 3rd place match') : '3rd place match removed');
+      await refresh();
+    } catch (e) { toast(e.message, true); ck.checked = !on; ck.disabled = false; }
+  };
+}
+function wirePlayoffSetup() {
+  wirePlayoffThird();
+  const P = T.playoffs;
+  const sel = document.getElementById('po_pick');
+  if (!P || !sel) return;
+  const mins = document.getElementById('po_mins');
+  const save = document.getElementById('po_save');
+  const help = document.getElementById('po_help');
+  const cut = (T.stage2 && T.stage2.cutTo) || 0;
+  const full = cut >= 4 && (cut & (cut - 1)) === 0;
+  const c = swissCutCfg(T);
+  const example = (c.win && c.loss >= 3) ? ' (' + c.win + '-1 against ' + c.win + '-2)' : '';
+  const tb = document.getElementById('po_tb');
+  const changed = () => sel.value !== P.pick || (tb && tb.value !== (T.tiebreak === 'beaten' ? 'beaten' : 'gd'));
+  const sync = () => {
+    const v = sel.value;
+    document.getElementById('po_minsRow').style.display = v === 'off' ? 'none' : '';
+    // The 3-0s-from-the-3-2s option always seeds by the beaten score, so the choice below follows it.
+    if (tb) {
+      if (v === 'bottom') { if (!tb.disabled) tb.dataset.was = tb.value; tb.value = 'beaten'; tb.disabled = true; }
+      else if (tb.disabled) { tb.disabled = false; if (tb.dataset.was) tb.value = tb.dataset.was; }
+    }
+    let h = v === 'bottom'
+      ? 'Everyone who went through the Swiss without a loss chooses their opponent from the ' + playoffBottomLabel(T) + 's, in seed order. The players left over are then paired by seed, the best remaining seed against the lowest. Seeds follow the standings, then the sum of the scores of the opponents each player beat.'
+      : v === 'unbeaten'
+      ? 'Everyone who went through the Swiss without a loss chooses their opponent from the rest of the qualifiers, in seed order. The players left over are then drawn against each other at random, a different record against each other where possible' + example + '.'
+      : v === 'half'
+        ? 'Seeds 1-' + (cut / 2) + ' of the playoff choose their opponent from seeds ' + (cut / 2 + 1) + '-' + cut + ', in seed order.'
+        : 'Standard seeding: the best Swiss record meets the lowest qualifier, and so on.';
+    if (v !== 'off' && !full) h += ' Picking needs a playoff of 4, 8, 16 or 32 players; with ' + cut + ' it is seeded instead.';
+    help.textContent = h;
+    save.textContent = (P.made && changed()) ? 'Redo the playoffs with this setting' : 'Save';
+  };
+  sel.onchange = sync;
+  if (tb) tb.onchange = sync;
+  sync();
+  save.onclick = async () => {
+    const v = sel.value;
+    const m = parseInt(mins.value, 10) || 0;
+    const tbv = tb ? tb.value : undefined;
+    if (P.made && changed()) { await playoffRedo(v, m, tbv); return; }
+    try {
+      await api('/api/t/' + T.id + '/playoff_setup', { pick: v, minutes: m, tiebreak: tbv, admin: adminToken() });
+      toast('Playoff setup saved');
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  wirePlayoffActions(document.getElementById('playoffPanel'));
+}
+
+// Round 1 has no records to pair on, so the site draws it by seed - the same every time. Some
+// formats want the opening matchups chosen instead, so while the round is untouched an organizer
+// can rearrange it here. It disappears the moment anything is reported.
+// The round 1 matchup editor, on either side of the start.
+// BEFORE the stage starts there are no matches yet, so the rows come from the pinned plan (or a
+// seed-order proposal) and saving pins them. That path exists because the editor used to appear
+// only after starting, which left a race an organizer could not win: start the stage, and a
+// player opening their veto seconds later locked the matchups for good.
+// AFTER the start it rewrites the real matches, and still locks once anyone has acted.
+// What the pre-start editor starts from: the pinned plan when there is one that still fits the
+// field, otherwise adjacent seed order (1v2, 3v4, ...), which is what a plain Swiss would draw.
+// A plan naming players who are no longer entered is ignored rather than rendered with gaps.
+function plannedPairsFor(teams) {
+  const ids = {}; for (const x of teams) ids[x.id] = 1;
+  const plan = T.plannedR1;
+  if (Array.isArray(plan) && plan.length) {
+    const seen = {}; let good = true;
+    for (const p of plan) {
+      if (!Array.isArray(p) || p.length !== 2) { good = false; break; }
+      for (const x of p) { if (!ids[x] || seen[x]) { good = false; break; } seen[x] = 1; }
+      if (!good) break;
+    }
+    const left = teams.filter(x => !seen[x.id]).map(x => x.id);
+    if (good && left.length <= 1) return { pairs: plan.map(p => p.slice()), bye: left[0] || null };
+  }
+  const pool = teams.map(x => x.id);
+  const pairs = [];
+  while (pool.length > 1) pairs.push([pool.shift(), pool.shift()]);
+  return { pairs, bye: pool[0] || null };
+}
+
+function drawSwissRound1Editor(el) {
+  if (!viewerIsOrganizer() || T.bracketType !== 'swiss') return;
+  const planning = T.status === 'drafted';
+  if (!planning && !T.swissR1Open) return;
+
+  const nm = id => { const tm = (T.teams || []).find(x => x.id === id); return tm ? tm.name : id; };
+  let r1, bye;
+  if (planning) {
+    const teams = (T.teams || []).slice().sort((a, b) => (a.seed || 0) - (b.seed || 0));
+    if (teams.length < 2) return;
+    const plan = plannedPairsFor(teams);
+    r1 = plan.pairs.map(p => ({ team1: p[0], team2: p[1] }));
+    bye = plan.bye ? { team1: plan.bye } : null;
+  } else {
+    r1 = (T.matches || []).filter(m => m.bracket === 'sw' && m.round === 1 && m.team2 !== 'BYE');
+    if (!r1.length) return;
+    bye = (T.matches || []).find(m => m.bracket === 'sw' && m.round === 1 && m.team2 === 'BYE') || null;
+  }
+  const opts = sel => (T.teams || []).map(x =>
+    '<option value="' + esc(x.id) + '"' + (x.id === sel ? ' selected' : '') + '>' + esc(x.name) + '</option>').join('');
+
+  const sec = document.createElement('div');
+  sec.className = 'panel section r1edit';
+  sec.innerHTML = `<h2>Round 1 <span class="h2-strong">matchups</span></h2>
+    <p class="muted small" style="margin:2px 0 10px">${planning
+      ? 'There are no results to pair on in round 1, so set the opening matchups here before you start. They are applied the moment the stage starts, so nobody can lock them by opening a veto first.'
+      : 'Round 1 is drawn by seed, because there are no results to pair on yet. Set the opening matchups here if you want to choose them. Locked as soon as the first result comes in.'}</p>
+    <div class="r1rows">${r1.map((m, i) => `<div class="r1row">
+      <span class="r1n mono">${i + 1}</span>
+      <select data-r1a="${i}">${opts(m.team1)}</select>
+      <span class="muted small">vs</span>
+      <select data-r1b="${i}">${opts(m.team2)}</select>
+    </div>`).join('')}</div>
+    ${bye ? '<p class="muted small" style="margin:8px 0 0">' + esc(nm(bye.team1)) + ' has the bye.</p>' : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn primary small" id="r1save">Save matchups</button>
+      <button class="btn ghost small" id="r1shuffle">Draw at random</button>
+    </div>
+    <div id="r1warn" class="muted small" style="margin-top:8px"></div>`;
+  el.appendChild(sec);
+
+  // live duplicate check, so a bad set is obvious before it is sent
+  const readPairs = () => r1.map((m, i) => [
+    sec.querySelector('[data-r1a="' + i + '"]').value,
+    sec.querySelector('[data-r1b="' + i + '"]').value
+  ]);
+  const check = () => {
+    const seen = {}, dupes = [];
+    for (const [a, b] of readPairs()) for (const x of [a, b]) { if (seen[x]) dupes.push(nm(x)); seen[x] = 1; }
+    const missing = (T.teams || []).filter(x => !seen[x.id] && !(bye && bye.team1 === x.id)).map(x => x.name);
+    const w = sec.querySelector('#r1warn');
+    if (dupes.length) w.innerHTML = '<span class="warn">Twice in the list: ' + esc([...new Set(dupes)].join(', ')) + '</span>';
+    else if (missing.length) w.innerHTML = '<span class="warn">Not playing: ' + esc(missing.join(', ')) + '</span>';
+    else w.textContent = '';
+    return !dupes.length && !missing.length;
+  };
+  sec.querySelectorAll('select').forEach(x => x.onchange = check);
+  check();
+
+  sec.querySelector('#r1save').onclick = async () => {
+    if (!check()) return toast('Every player has to appear exactly once', true);
+    try {
+      await api('/api/t/' + T.id + '/swiss_round1', { pairs: readPairs(), admin: adminToken() });
+      toast('Round 1 matchups saved'); await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  sec.querySelector('#r1shuffle').onclick = async () => {
+    try {
+      await api('/api/t/' + T.id + '/swiss_round1', { shuffle: 1, admin: adminToken() });
+      toast('Round 1 re-drawn'); await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
 function drawSwissRounds(el) {
   const ms = T.matches.filter(m => m.bracket === 'sw');
   const rounds = Math.max.apply(null, ms.map(m => m.round));
+
+  // Rounds that have not opened yet still need their map pool set, and this list only ever
+  // showed rounds that already had matches - so the pool for the next round could not be
+  // prepared until that round was already being played ("I also need to set the pool to that
+  // round and it doesnt come up"). Assigning a pool to a future round is already valid
+  // server-side: initMatchVetoes reads poolAssign when the round is finally created.
+  // Only while the Swiss stage is still producing rounds; once the playoffs are live the
+  // remaining rounds will never be played and offering them would be a lie.
+  const planned = swissPlannedRounds(T);
+  if (T.status === 'running' && !stageTwoLive()) {
+    for (let r = planned; r > rounds; r--) {
+      const sec = document.createElement('div');
+      sec.className = 'panel section';
+      sec.innerHTML = `<h2>Round <span class="h2-strong">${r}</span> <span class="muted small" style="font-weight:400">not started yet</span></h2>
+        <p class="muted small" style="margin:2px 0 0">Set its pool now and the veto is ready the moment the round opens.</p>`;
+      mapsLine('sw', r, sec);
+      el.appendChild(sec);
+    }
+  }
+
   for (let r = rounds; r >= 1; r--) {
     const sec = document.createElement('div');
     sec.className = 'panel section';
-    sec.innerHTML = `<h2>Round <span class="h2-strong">${r} / ${T.cfg.rounds}</span></h2>`;
+    const cuts = swissCutCfg(T);
+    sec.innerHTML = `<h2>Round <span class="h2-strong">${r}${cuts.on ? '' : ' / ' + T.cfg.rounds}</span></h2>`
+      + (r === rounds && cuts.on ? `<p class="muted small" style="margin:2px 0 0">${esc(swissCutLabel(T))}${cuts.decidingBo ? ' \u00b7 Bo' + cuts.decidingBo + ' when a win qualifies or a loss eliminates' : ''}</p>` : '');
     mapsLine('sw', r, sec);
     const q = document.createElement('div');
     q.className = 'queue';
     q.style.marginTop = '10px';
     sec.appendChild(q);
-    fillQueue(q, ms.filter(m => m.round === r && m.team2 !== 'BYE').sort((a, b) => a.index - b.index), true);
+    fillQueue(q, swissQueueSort(ms.filter(m => m.round === r && m.team2 !== 'BYE')), true);
     for (const bm of ms.filter(m => m.round === r && m.team2 === 'BYE')) {
       const d = document.createElement('div');
       d.className = 'qitem done';
-      d.innerHTML = `<span class="qround">BYE</span><span class="qteams">${esc(teamName(bm.team1))}</span><span class="qscore muted">free win</span>`;
+      const byeRec = (bm.round > 1) ? (swissRecordsBefore(bm.round)[bm.team1] || null) : null;
+      d.innerHTML = `<span class="qround">BYE</span>`
+        + (byeRec ? `<span class="qrec" title="Record brought into this round">${esc(byeRec.w + '-' + byeRec.l)}</span>` : '')
+        + `<span class="qteams">${esc(teamName(bm.team1))}</span><span class="qscore muted">free win</span>`;
       q.appendChild(d);
     }
     el.appendChild(sec);
@@ -2092,10 +2956,15 @@ function drawFfaRounds(el) {
 
 // Human status for the list. Mirrors the pipeline: waiting -> picks & bans -> live -> concluded.
 function matchStateLabel(m, masked) {
+  // The tournament stopped before this match was needed. Saying "Ready" here would be a lie.
+  if (neverPlayed(m, T)) return { txt: 'Not played', cls: 'wait' };
   if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return { txt: 'Waiting', cls: 'wait' };
   if (!masked && m.status === 'done') return { txt: 'Concluded', cls: 'done' };
   if (masked && m.status === 'done') return { txt: 'Played', cls: 'live' };
   if (m.veto && !m.veto.done) return { txt: 'Picks & bans', cls: 'veto' };
+  // A faction veto is picks & bans too - it just isn't the map one. Saying "Ready" while two
+  // players still owe faction choices is what made the whole step easy to miss.
+  if (m.fveto && !factionAllDone(m)) return { txt: 'Picks & bans', cls: 'veto' };
   if (m.status === 'live') return { txt: 'Live', cls: 'live' };
   return { txt: 'Ready', cls: 'ready' };
 }
@@ -2107,15 +2976,13 @@ function drawMatchesTab(el) {
     return;
   }
   const myTeamId = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
-  // later rounds first within each group, mirroring the Vetoes tab ordering
-  const rank = m => (m.bracket === 'gf' ? 1000 : 0) + (m.round || 0) * 10 + (m.bracket === 'lb' ? 1 : 0);
-  const byRound = (a, b) => rank(a) - rank(b) || (a.index || 0) - (b.index || 0);
-
+  // playing order (Swiss rounds before the playoffs, the losers bracket between the winners
+  // rounds); concluded matches newest first
   const known = m => m.team1 && m.team2 && m.team1 !== 'BYE' && m.team2 !== 'BYE';
-  const mine = myTeamId ? all.filter(m => m.team1 === myTeamId || m.team2 === myTeamId).sort(byRound) : [];
-  const concluded = all.filter(m => m.status === 'done').sort((a, b) => rank(b) - rank(a));
-  const ongoing = all.filter(m => m.status !== 'done' && known(m)).sort(byRound);
-  const pending = all.filter(m => m.status !== 'done' && !known(m)).sort(byRound);
+  const mine = myTeamId ? sortByPlay(all.filter(m => m.team1 === myTeamId || m.team2 === myTeamId)) : [];
+  const concluded = sortByPlay(all.filter(m => m.status === 'done'), true);
+  const ongoing = sortByPlay(all.filter(m => m.status !== 'done' && known(m)));
+  const pending = sortByPlay(all.filter(m => m.status !== 'done' && !known(m)));
 
   const row = (m) => {
     const masked = streamerMode && !revealedMatches.has(m.id);
@@ -2144,13 +3011,17 @@ function drawMatchesTab(el) {
     }
     const revealBtn = (streamerMode && m.status === 'done')
       ? `<button class="btn ghost small" data-reveal="${m.id}">${revealedMatches.has(m.id) ? 'Hide' : 'Reveal'}</button>` : '';
-    return `<tr data-mrow="${m.id}">
-      <td class="mono small muted mt-fixed">${esc(mLabel(m))}</td>
+    // A row you are in is tinted and marked, in every section - "My matches" only groups them at
+    // the top, so without this your later-round matches were indistinguishable further down.
+    const myTid = (T.viewer && (T.viewer.memberTeamId || T.viewer.teamId)) || null;
+    const isMine = myTid && (m.team1 === myTid || m.team2 === myTid);
+    return `<tr data-mrow="${m.id}"${isMine ? ' class="mt-mine" title="You are in this match"' : ''}>
+      <td class="mono small muted mt-fixed">${esc(mLabelFull(m))}</td>
       <td class="mt-teamcell">${nameFor(m.team1, 1)}</td>
       <td class="mt-teamcell">${nameFor(m.team2, 2)}</td>
       <td class="mt-fixed"><span class="mt-state ${st.cls}">${esc(st.txt)}</span></td>
       <td class="mt-fixed">${result}</td>
-      <td class="mt-actions mt-fixed">${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
+      <td class="mt-actions mt-fixed">${myFactionTurn(m) ? '<button class="btn amber small" data-fvgo="' + esc(m.id) + '" title="You still owe faction choices on this match">\u26A1 Faction veto</button>' : ''}${revealBtn}<button class="btn ghost small" data-mdet="${m.id}">Details</button></td>
     </tr>`;
   };
 
@@ -2172,6 +3043,10 @@ function drawMatchesTab(el) {
   el.querySelectorAll('[data-mdet]').forEach(b => b.onclick = () => {
     const m = T.matches.find(x => x.id === b.dataset.mdet);
     if (m) showMatchDetails(m);
+  });
+  el.querySelectorAll('[data-fvgo]').forEach(b => b.onclick = () => {
+    const m = T.matches.find(x => x.id === b.dataset.fvgo);
+    if (m) showVetoPopup(m);
   });
   el.querySelectorAll('[data-reveal]').forEach(b => b.onclick = () => {
     const id = b.dataset.reveal;
@@ -2211,6 +3086,15 @@ function showMatchDetails(m) {
         : '<div class="muted small">No players listed.</div>'}</div>
     </div>`;
   };
+  // Replays belong here too: casters and players open Details far more often than the bracket.
+  const replayBlock = (!masked && ((m.replayIds && m.replayIds.length) || (m.drawReplayIds && m.drawReplayIds.length)))
+    ? '<div class="md-replays"><span class="muted small">Replays</span> '
+      + ((m.replayIds && m.replayIds.length) ? m.replayIds.map(replayLink).join(', ') : '')
+      + ((m.drawReplayIds && m.drawReplayIds.length)
+          ? ((m.replayIds && m.replayIds.length) ? ' &middot; ' : '') + '<span class="muted small">draws</span> ' + m.drawReplayIds.map(replayLink).join(', ')
+          : '')
+      + '</div>'
+    : '';
   const s1 = (m.forfeit === m.team1 && m.score1 < 0) ? 'FF' : (m.score1 != null && m.score1 >= 0 ? m.score1 : 0);
   const s2 = (m.forfeit === m.team2 && m.score2 < 0) ? 'FF' : (m.score2 != null && m.score2 >= 0 ? m.score2 : 0);
   const scoreLine = masked
@@ -2221,13 +3105,24 @@ function showMatchDetails(m) {
   const canCorrect = !T.imported && m.status === 'done' && viewerIsAdmin();
   const chatOk = matchChatAllowed(m);
 
-  modal(`<h3>${esc(mLabel(m))} <span class="muted" style="font-weight:400">BO${m.bo}</span>
+  // Per-match Bo: an organizer can retune exactly this series while it has not started. The
+  // per-round control on the bracket stays the bulk tool; this is the one-off escape hatch.
+  const canSetBo = !T.imported && viewerIsOrganizer() && m.bracket !== 'ffa'
+    && m.status !== 'done' && m.status !== 'live' && m.status !== 'bye'
+    && !(Array.isArray(m.games) && m.games.length);
+  const boBlock = canSetBo
+    ? `<select id="mdBo" class="md-bo-sel" title="Change this match's length">${[1, 3, 5, 7].map(v =>
+        '<option value="' + v + '"' + (v === m.bo ? ' selected' : '') + '>BO' + v + '</option>').join('')}</select>`
+    : `<span class="muted" style="font-weight:400">BO${m.bo}</span>`;
+
+  modal(`<h3>${esc(mLabelFull(m))} ${boBlock}
       <span class="mt-state ${st.cls}" style="margin-left:8px">${esc(st.txt)}</span></h3>
     <div class="md-grid">
       ${teamCol(m.team1, m.score1)}
       <div class="md-mid">${scoreLine}<div class="muted small">vs</div></div>
       ${teamCol(m.team2, m.score2)}
     </div>
+    ${replayBlock}
     <div id="mdVeto"></div>
     <div class="md-foot">
       ${chatOk ? '<a href="#" id="mdChat" class="veto-mini-link">\u{1F4AC} Match chat' + unreadDot('match:' + m.id) + '</a>' : ''}
@@ -2239,11 +3134,21 @@ function showMatchDetails(m) {
     </div>`, root => {
     // ban/pick history, hidden while masked so a caster doesn't spoil the maps
     const vh = root.querySelector('#mdVeto');
-    if (m.veto && !masked) { vh.innerHTML = vetoHTML(m); wireVeto(vh, m); }
-    else if (m.veto && masked) vh.innerHTML = '<div class="muted small" style="margin-top:10px">Map veto hidden by streamer mode.</div>';
+    if ((m.veto || m.fveto) && !masked) { vh.innerHTML = vetoHTML(m); wireVeto(vh, m); wireFactionVeto(vh); }
+    else if ((m.veto || m.fveto) && masked) vh.innerHTML = '<div class="muted small" style="margin-top:10px">Veto hidden by streamer mode.</div>';
     root.querySelectorAll('[data-teamid]').forEach(n => n.onclick = (e) => {
       e.preventDefault(); closeModal(); showTeamPopup(n.dataset.teamid);
     });
+    const boSel = root.querySelector('#mdBo');
+    if (boSel) boSel.onchange = async () => {
+      const want = parseInt(boSel.value, 10);
+      try {
+        await api('/api/t/' + T.id + '/set_match_bo', { matchId: m.id, bo: want, admin: adminToken() });
+        toast(mLabelFull(m) + ' is now Bo' + want);
+        closeModal();
+        await refresh();
+      } catch (e) { boSel.value = String(m.bo); toast(e.message, true); }
+    };
     const c = root.querySelector('#mdChat');
     if (c) c.onclick = (e) => { e.preventDefault(); closeModal(); openMatchChat(m); };
     const rv = root.querySelector('#mdReveal');
@@ -2255,4 +3160,213 @@ function showMatchDetails(m) {
     if (rep) rep.onclick = () => { closeModal(); reportScore(m.id); };
     root.querySelector('#mdClose').onclick = closeModal;
   }, { wide: true });
+}
+
+// ---------- faction veto (1v1) ----------
+// Rendered per game slot, to the right of the map that game will be played on. Runs in parallel
+// with the map veto and independently of it: your own choices are the only ones you can ever see,
+// because the server strips the opponent's out of the payload until both sides are finished.
+// Pending "click again to confirm" state. Held at module level rather than inside the wiring
+// functions so the 4-second poll redraw re-applies it instead of silently cancelling it.
+let _vetoArmed = null;    // { matchId, map }
+let _fvetoArmed = null;   // { matchId, game, faction }
+
+const FACTION_META = {
+  uef:      { label: 'UEF',      short: 'U', cls: 'uef' },
+  aeon:     { label: 'Aeon',     short: 'A', cls: 'aeon' },
+  cybran:   { label: 'Cybran',   short: 'C', cls: 'cybran' },
+  seraphim: { label: 'Seraphim', short: 'S', cls: 'sera' }
+};
+const FACTION_ORDER = ['uef', 'aeon', 'cybran', 'seraphim'];
+
+function factionChip(f, opts) {
+  const meta = FACTION_META[f];
+  if (!meta) return '';
+  const o = opts || {};
+  const cls = ['fchip', 'f-' + meta.cls];
+  if (o.dim) cls.push('dim');
+  if (o.on) cls.push('on');
+  if (o.btn) cls.push('clickable');
+  const attrs = o.btn ? ` data-fpick="${esc(f)}" data-fgame="${esc(String(o.game))}" data-fmatch="${esc(o.matchId)}"` : '';
+  const title = o.title ? ` title="${esc(o.title)}"` : ` title="${esc(meta.label)}"`;
+  return `<button type="button" class="${cls.join(' ')}"${attrs}${title}${o.btn ? '' : ' disabled'}><span class="fchip-glyph">${meta.short}</span><span class="fchip-name">${esc(meta.label)}</span></button>`;
+}
+
+// Does the VIEWER still owe faction choices on this match, and what is the next one?
+// Returns { games, next:{game,action,index,of} } or null (not a competitor here, nothing left
+// to do, or the match already has a result). This is the single source of truth behind the
+// turn banner, the Vetoes tab badge, the bracket link and the Matches-tab button - before it
+// existed, a faction veto announced itself nowhere at all.
+function myFactionTurn(m) {
+  if (!m || !m.fveto || !m.fveto.games) return null;
+  if (m.status === 'done') return null;
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  if (!myTeamId || (myTeamId !== m.team1 && myTeamId !== m.team2)) return null;
+  let games = 0, next = null;
+  for (const k of Object.keys(m.fveto.games).sort((a, b) => Number(a) - Number(b))) {
+    const g = m.fveto.games[k];
+    // `mine` is only present for a competitor: the server strips it from everyone else.
+    if (!g || !g.mine || g.mine.done || !g.next) continue;
+    games++;
+    if (!next) next = { game: k, action: g.next.action, index: g.next.index, of: g.next.of };
+  }
+  return games ? { games, next } : null;
+}
+
+// Every faction choice the viewer owes across the whole tournament, newest match first.
+function myFactionTurnsAll() {
+  const out = [];
+  for (const m of (T && T.matches) || []) { const ft = myFactionTurn(m); if (ft) out.push({ m, ft }); }
+  return out;
+}
+function myFactionStepCount() { return myFactionTurnsAll().reduce((n, x) => n + x.ft.games, 0); }
+
+// The same question for the MAP veto: is it my team's turn on this match?
+function myMapVetoTurn(m) {
+  if (!m || !m.veto || m.veto.done || m.status === 'done') return null;
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  const v = m.veto;
+  if (!myTeamId || !v.teamA || !v.teamB) return null;
+  const step = v.sequence && v.sequence[v.stepIndex];
+  if (!step) return null;
+  return ((step.team === 'A' ? v.teamA : v.teamB) === myTeamId) ? step : null;
+}
+// What the Vetoes tab badge counts: everything on this viewer's plate, of either kind.
+function myVetoStepCount() {
+  let n = myFactionStepCount();
+  for (const m of (T && T.matches) || []) if (myMapVetoTurn(m)) n++;
+  return n;
+}
+
+// An amber call to action on the match itself. The map veto has had a link on the bracket box
+// since it existed; the faction veto had none, so a player whose only outstanding job was a
+// faction choice got no prompt anywhere on the page.
+function myFvetoLinkHTML(m) {
+  const ft = myFactionTurn(m);
+  if (!ft) return '';
+  const verb = ft.next.action === 'ban' ? 'ban' : 'pick';
+  const more = ft.games > 1 ? ' <span class="fv-count">' + ft.games + '</span>' : '';
+  return `<a href="#" data-fveto-link="${esc(m.id)}" class="veto-mini-link fveto-cta" title="${ft.games} game${ft.games === 1 ? '' : 's'} on this match still need your faction ban/picks">\u26A1 Your faction ${verb}${more} \u2192</a>`;
+}
+
+// The faction column for one game of one match. Returns '' when there is nothing to show.
+function factionGameHTML(m, gameNum) {
+  const fv = m.fveto;
+  if (!fv) return '';
+  const g = fv.games && fv.games[String(gameNum)];
+  if (!g) return '';
+  const myTeamId = (T.viewer && T.viewer.teamId) || null;
+  const mySide = myTeamId ? (myTeamId === m.team1 ? 't1' : (myTeamId === m.team2 ? 't2' : null)) : null;
+  const settled = m.status === 'done';
+
+  // Both finished: everyone sees the outcome.
+  if (g.result) {
+    return `<div class="fveto-col done">
+      <div class="fveto-res"><span class="fv-who">${esc(bracketLabel(m.team1))}</span>${factionChip(g.result.t1, {})}</div>
+      <div class="fveto-res"><span class="fv-who">${esc(bracketLabel(m.team2))}</span>${factionChip(g.result.t2, {})}</div>
+    </div>`;
+  }
+
+  // Not a competitor (organizer, caster, spectator): only who still owes choices.
+  if (!mySide || !g.mine) {
+    const pend = [];
+    if (!g.t1Done) pend.push(bracketLabel(m.team1));
+    if (!g.t2Done) pend.push(bracketLabel(m.team2));
+    return `<div class="fveto-col">
+      <div class="fveto-wait">${pend.length
+        ? 'Waiting on ' + pend.map(esc).join(' and ')
+        : 'Both done \u2014 resolving\u2026'}</div>
+    </div>`;
+  }
+
+  const mine = g.mine;
+  const oppDone = mySide === 't1' ? g.t2Done : g.t1Done;
+
+  // Mine finished, opponent not.
+  if (mine.done) {
+    return `<div class="fveto-col">
+      <div class="fveto-wait">${oppDone ? 'Resolving\u2026' : '\u2713 You\u2019re done \u2014 waiting on your opponent'}</div>
+      <div class="fveto-mine">${mine.bans.map(f => factionChip(f, { dim: true, title: 'You banned ' + FACTION_META[f].label })).join('')}
+        <span class="fv-arrow">\u2192</span>
+        ${mine.picks.map((f, i) => factionChip(f, { on: true, title: 'Your pick ' + (i + 1) })).join('')}</div>
+    </div>`;
+  }
+
+  if (settled) return '<div class="fveto-col"><div class="fveto-wait">Match decided \u2014 faction veto closed.</div></div>';
+
+  // My turn: banning or picking.
+  const step = g.next;
+  if (!step) return '';
+  const ord = n => n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : n + 'th';
+  const banning = step.action === 'ban';
+  // Already-used factions grey out: you can't ban the same one twice, or pick it twice. Banning a
+  // faction you also pick is allowed - a ban denies it to your opponent, not to you.
+  const used = banning ? mine.bans : mine.picks;
+  const chips = FACTION_ORDER.map(f => used.indexOf(f) >= 0
+    ? factionChip(f, { dim: true, title: banning ? 'Already banned' : 'Already picked' })
+    : factionChip(f, { btn: true, game: gameNum, matchId: m.id })).join('');
+  const soFar = (mine.bans.length ? '<div class="fveto-mine">' + mine.bans.map(f => factionChip(f, { dim: true, title: 'You banned ' + FACTION_META[f].label })).join('') + '</div>' : '')
+    + (mine.picks.length ? '<div class="fveto-mine">' + mine.picks.map((f, i) => factionChip(f, { on: true, title: 'Your pick ' + (i + 1) })).join('') + '</div>' : '');
+  // "1st faction to ban (1/1)" read like a status line, not a job. It is now an explicit
+  // YOUR TURN pill with the same pulsing dot the tournament-wide turn banner uses, so the one
+  // thing on this screen that needs the player's hands looks like it.
+  return `<div class="fveto-col active">
+    <div class="fveto-turn"><span class="turn-dot"></span>Your turn</div>
+    <div class="fveto-prompt">${banning ? 'Ban a faction' : 'Pick a faction'}${step.of > 1 ? '<span class="muted small"> \u2014 ' + ord(step.index) + ' of ' + step.of + '</span>' : ''}</div>
+    <div class="fveto-chips">${chips}</div>
+    ${soFar}
+    <div class="fveto-note muted small">${banning ? 'Bans deny that faction to your opponent.' : 'Picks are in order of preference \u2014 you get the highest one your opponent didn\u2019t ban.'} Nobody can see your choices.</div>
+  </div>`;
+}
+
+// Wire the faction buttons inside a card body.
+function wireFactionVeto(root) {
+  const chips = Array.from(root.querySelectorAll('[data-fpick]'));
+  if (!chips.length) return;
+  // Same two-click confirm as the map veto. A faction choice is irreversible for the player
+  // (only an organizer can reset it), so a stray click matters more here, not less.
+  const paint = () => {
+    for (const b of chips) {
+      const armed = _fvetoArmed && _fvetoArmed.matchId === b.dataset.fmatch
+        && _fvetoArmed.game === b.dataset.fgame && _fvetoArmed.faction === b.dataset.fpick;
+      b.classList.toggle('armed', !!armed);
+    }
+    // The chips are too small for an inline label, so the prompt above them does the talking.
+    const col = root.querySelector('.fveto-col.active .fveto-prompt');
+    if (!col) return;
+    if (!col.dataset.orig) col.dataset.orig = col.innerHTML;
+    if (_fvetoArmed && chips.some(b => b.dataset.fmatch === _fvetoArmed.matchId && b.dataset.fgame === _fvetoArmed.game)) {
+      const meta = FACTION_META[_fvetoArmed.faction];
+      col.innerHTML = 'Click <strong>' + esc(meta ? meta.label : _fvetoArmed.faction) + '</strong> again to confirm'
+        + ' <span class="muted small">(or pick another / press Esc)</span>';
+    } else {
+      col.innerHTML = col.dataset.orig;
+    }
+  };
+  for (const b of chips) {
+    b.onclick = async () => {
+      const same = _fvetoArmed && _fvetoArmed.matchId === b.dataset.fmatch
+        && _fvetoArmed.game === b.dataset.fgame && _fvetoArmed.faction === b.dataset.fpick;
+      if (!same) {
+        _fvetoArmed = { matchId: b.dataset.fmatch, game: b.dataset.fgame, faction: b.dataset.fpick };
+        paint();
+        return;
+      }
+      chips.forEach(x => { x.disabled = true; });
+      try {
+        await api('/api/t/' + T.id + '/fveto_action', {
+          matchId: b.dataset.fmatch, game: parseInt(b.dataset.fgame, 10),
+          faction: b.dataset.fpick, token: viewToken()
+        });
+        _fvetoArmed = null;
+        await refresh();
+      } catch (e) {
+        chips.forEach(x => { x.disabled = false; });
+        _fvetoArmed = null; paint();
+        toast(e.message, true);
+      }
+    };
+  }
+  root.addEventListener('keydown', e => { if (e.key === 'Escape' && _fvetoArmed) { _fvetoArmed = null; paint(); } });
+  paint();   // survives the 4s poll redraw: re-applied from module state, not rebuilt from scratch
 }

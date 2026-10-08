@@ -75,6 +75,18 @@ function tourneyId() {
   return m ? m[1] : null;
 }
 
+// "Which rating counts, and as of when" - the two things a player most needs before signing up
+// and most easily missed. One helper so the Game Setup box, the signup panel and the players tab
+// can never drift apart. Returns '' when the tournament has no FAF-pulled rating.
+function ratingSourceHtml(t) {
+  const T2 = t || (typeof T !== 'undefined' ? T : null);
+  if (!T2 || !T2.ratingType || T2.ratingType === 'none') return '';
+  const when = T2.ratingDate
+    ? 'as of ' + esc(fmtDate(new Date(T2.ratingDate).toISOString()))
+    : 'at signup time';
+  return 'Uses your <strong>' + esc(ratingTypeLabel(T2.ratingType)) + '</strong> rating, taken <strong>'
+    + when + '</strong><span class="muted"> \u2014 pulled from FAF automatically</span>';
+}
 function ratingTypeLabel(rt) {
   return rt === 'global' ? 'Global' : rt === '1v1' ? '1v1 / ladder'
        : rt === 'rc' ? "Fearghal's RC (best of 2v2/3v3/4v4/Global, blended to 300 games)"
@@ -139,6 +151,24 @@ async function refreshPending() {
 // account is a site admin, so existing `admin: siteAdmin()` calls still send something —
 // the server authenticates by session cookie regardless of the value.
 function siteAdmin() { return (fafAuth.user && fafAuth.user.siteAdmin) ? 'siteadmin' : null; }
+// Is this account ON the site-admin list, regardless of whether they currently have the powers
+// switched on? Only the stand-down toggle itself may ask - everything else asks siteAdmin().
+function siteAdminAccount() { return !!(fafAuth.user && fafAuth.user.siteAdminAccount); }
+function adminStoodDown() { return !!(fafAuth.user && fafAuth.user.adminStandDown); }
+// Switch site-admin powers off or on for THIS account, everywhere, until switched back.
+// The server holds the flag, so it survives reloads and follows the account across devices -
+// and, more importantly, the server genuinely stops honouring the powers rather than the page
+// merely hiding the buttons.
+async function setAdminStandDown(on) {
+  try {
+    await api('/auth/faf/stand_down', { on: on ? 1 : 0 });
+  } catch (e) { return toast(e.message, true); }
+  await refreshFafAuth();
+  toast(on
+    ? 'Site-admin powers OFF - you now see the site as a normal player'
+    : 'Site-admin powers ON');
+  route();
+}
 // The bar above is otherwise only drawn on navigation, so its "your turn to ban/pick" text
 // could go stale while a veto progresses elsewhere. Keep it current.
 setInterval(() => { try { refreshPending(); } catch (e) {} }, 30000);
@@ -175,11 +205,11 @@ function capToken() {
   return id ? localStorage.getItem('cap_' + id) : null;
 }
 function myToken() { return adminToken() || capToken(); }
-function streamerToken() { const id = tourneyId(); return id ? localStorage.getItem('streamer_' + id) : null; }
-// token for read-style calls (tournament GET, chat): organizer token wins, else streamer link
-function viewToken() { return myToken() || streamerToken(); }
+// token for read-style calls (tournament GET, chat). Caster access used to ride on a
+// `?streamer=<token>` share link; it is a FAF-account role now, so there is nothing to carry.
+function viewToken() { return myToken(); }
 
-const VALID_TABS = ['overview', 'news', 'chat', 'players', 'teams', 'bracket', 'maps', 'vetoes', 'standings', 'admin', 'log'];
+const VALID_TABS = ['overview', 'news', 'chat', 'players', 'teams', 'bracket', 'bracket2', 'bracket3', 'bracket4', 'matches', 'stats', 'maps', 'vetoes', 'standings', 'predictions', 'admin', 'log'];
 let pendingOrganizerClaim = null; // { id, token } — set when an ?admin= link is opened
 function captureTokensFromURL() {
   const id = tourneyId();
@@ -192,10 +222,9 @@ function captureTokensFromURL() {
     pendingOrganizerClaim = { id, token: q.get('admin') };
   }
   if (q.get('late')) pendingLateSignup = { id, token: q.get('late') };
-  if (q.get('streamer')) localStorage.setItem('streamer_' + id, q.get('streamer'));
   const tab = q.get('tab');
   if (tab && VALID_TABS.indexOf(tab) >= 0) currentTab = tab;
-  if (q.get('admin') || q.get('late') || q.get('tab') || q.get('streamer')) {
+  if (q.get('admin') || q.get('late') || q.get('tab')) {
     history.replaceState(null, '', '/t/' + id + (currentTab !== 'overview' ? '?tab=' + currentTab : ''));
   }
 }
@@ -220,7 +249,10 @@ function playerName(id) {
 }
 
 function mapsFor(bracket, round) {
-  return (T.maps && T.maps[bracket + ':' + round]) || [];
+  const own = (T.maps && T.maps[bracket + ':' + round]) || [];
+  // A 3rd place match with no maps of its own is played on the semi-finals' maps.
+  if (bracket === '3p' && !own.length) return (T.maps && T.maps['wb:' + (round - 1)]) || [];
+  return own;
 }
 // resolve a map id to its DB object (or null)
 function mapObj(id) {
@@ -233,6 +265,22 @@ function mapName(id) {
   const m = mapObj(id);
   return m ? m.name : (id || '');
 }
+// Which "Hidden Map N" a map is, for the organizer who can see the real name and still needs to
+// know what the players are calling it. Same rule as the server: position among the secret maps
+// in database order. Only meaningful to a viewer who gets the unfiltered list, i.e. map prep.
+function secretNoOf(id) {
+  let n = 0;
+  for (const m of (T.mapDb || [])) {
+    if (!m.secret) continue;
+    n++;
+    if (m.id === id) return n;
+  }
+  return 0;
+}
+// A map the server masked has no picture to show and never will until it is played, so the tile
+// says so instead of the generic "no image" - which would read as an organizer who forgot one.
+function mapNoImgLabel(m) { return (m && m.masked) ? 'HIDDEN' : 'no image'; }
+
 // a clickable map chip that opens the map's image/description (if any)
 function mapChip(id, cls) {
   const m = mapObj(id);
@@ -298,8 +346,14 @@ document.addEventListener('click', e => {
   }
 });
 
+// With divisions a match label says which one: "PRINCE · SEMIS".
 function roundLabel(m) {
+  const core = roundLabelCore(m);
+  return (m && m.division && divisionsOnT()) ? divisionNameOf(m.division).toUpperCase() + ' \u00b7 ' + core : core;
+}
+function roundLabelCore(m) {
   if (m.bracket === 'gf') return T.bracketType === 'swiss' ? 'FINAL' : 'GRAND FINAL';
+  if (m.bracket === '3p') return '3RD PLACE MATCH';
   if (m.bracket === 'sw') return 'ROUND ' + m.round;
   if (m.bracket === 'ffa') {
     const maxR = Math.max.apply(null, T.matches.map(x => x.round));
@@ -307,8 +361,10 @@ function roundLabel(m) {
     return (cnt === 1 && m.round === maxR && m.round > 1) ? 'FINAL' : 'ROUND ' + m.round;
   }
   if (m.bracket === 'lb') return 'LOSERS BRACKET R' + m.round;
-  // wb
-  const R = T.rounds || 1;
+  // wb - each division has its own number of rounds
+  const R = (m.division && divisionsOnT())
+    ? (T.matches || []).filter(x => x.bracket === 'wb' && (x.division || 0) === m.division).reduce((a, x) => Math.max(a, x.round || 0), 0) || 1
+    : (T.rounds || 1);
   const prefix = T.bracketType === 'double' ? 'WINNERS BRACKET ' : '';
   if (m.round === R) return prefix + (T.bracketType === 'double' ? 'FINAL' : 'FINAL');
   if (m.round === R - 1) return prefix + 'SEMIS';
@@ -333,6 +389,7 @@ function colLabel(bracket, r, totalRounds) {
     if (totalRounds && r === totalRounds) return 'LB FINAL';
     return 'LB ROUND ' + r;
   }
+  if (bracket === '3p') return '3RD PLACE';
   return 'ROUND ' + r;
 }
 
@@ -440,6 +497,162 @@ function fmtDate(v) {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return d.getUTCDate() + ' ' + months[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
 }
+// ---- multi-day events ----
+// `eventDays` is a sorted list of 'YYYY-MM-DD'. One day (or none) means a normal single-day
+// event and every label below returns '' so nothing changes on screen.
+function eventDayList(t) {
+  const d = (t && t.eventDays) || [];
+  return Array.isArray(d) && d.length > 1 ? d.slice().sort() : [];
+}
+function dayAddUTC(ymd, n) {
+  const p = String(ymd).split('-');
+  const d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2]));
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// Group a sorted day list into contiguous runs, so "two weekends" reads as two ranges rather
+// than four loose dates - which is the whole point of the feature.
+function dayRuns(days) {
+  const runs = [];
+  for (const d of days) {
+    const last = runs[runs.length - 1];
+    if (last && dayAddUTC(last[last.length - 1], 1) === d) last.push(d);
+    else runs.push([d]);
+  }
+  return runs;
+}
+// "12-13 Sep 2026" / "12-13 & 19-20 Sep 2026" / "31 Dec 2026-1 Jan 2027". '' when single-day.
+// Each endpoint carries only as much as it needs: the last always shows month and year, and any
+// earlier one shows the month (and year) only when the NEXT endpoint differs. That is what keeps
+// "30 Sep-1 Oct 2026" from reading "30 Sep-1 Oct Oct 2026".
+function eventDaysLabel(t) {
+  const days = eventDayList(t);
+  if (!days.length) return '';
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const runs = dayRuns(days);
+  // flatten to the endpoints actually printed, in order
+  const ends = [];
+  for (const run of runs) {
+    ends.push(run[0]);
+    if (run.length > 1) ends.push(run[run.length - 1]);
+  }
+  const fmt = (ymd, i) => {
+    const [y, m, d] = String(ymd).split('-');
+    const next = ends[i + 1];
+    const isLast = i === ends.length - 1;
+    const needYear = isLast || (next && next.slice(0, 4) !== y);
+    const needMon = isLast || needYear || (next && next.slice(5, 7) !== m);
+    return (+d) + (needMon ? ' ' + MON[+m - 1] : '') + (needYear ? ' ' + y : '');
+  };
+  let i = 0;
+  return runs.map(run => {
+    if (run.length === 1) return fmt(run[0], i++);
+    const a = fmt(run[0], i++), b = fmt(run[run.length - 1], i++);
+    return a + '\u2013' + b;
+  }).join(' & ');
+}
+function eventDaysCountLabel(t) {
+  const days = eventDayList(t);
+  return days.length ? days.length + ' days' : '';
+}
+
+// A month calendar for picking the days an event runs on. Standard multi-select semantics, the
+// ones people already know from a file manager:
+//   click        - select just that day (and set it as the anchor)
+//   shift+click  - select the whole range from the anchor to that day
+//   ctrl/cmd+click - add or remove that one day, keeping the rest
+// It is wired two-way to the existing native date input, which stays the accessible way to type
+// a start date: typing there re-selects that single day, and the earliest day picked here is
+// written back as the start date. All dates are handled in UTC, like the rest of the site.
+function mountDayPicker(host, opts) {
+  const o = opts || {};
+  let days = (o.days || []).slice().sort();
+  let anchor = days[0] || o.startDay || new Date().toISOString().slice(0, 10);
+  let view = (days[0] || anchor).slice(0, 7);            // 'YYYY-MM' currently on screen
+  const fire = () => { if (o.onChange) o.onChange(days.slice()); };
+
+  const draw = () => {
+    const [vy, vm] = view.split('-').map(Number);
+    const first = new Date(Date.UTC(vy, vm - 1, 1));
+    const monthName = ['January','February','March','April','May','June','July','August','September','October','November','December'][vm - 1];
+    // Monday-first grid
+    const lead = (first.getUTCDay() + 6) % 7;
+    const nDays = new Date(Date.UTC(vy, vm, 0)).getUTCDate();
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    let cells = '';
+    for (let i = 0; i < lead; i++) cells += '<span class="dp-cell dp-empty"></span>';
+    for (let d = 1; d <= nDays; d++) {
+      const ymd = vy + '-' + String(vm).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+      const on = days.indexOf(ymd) >= 0;
+      const cls = ['dp-cell'];
+      if (on) cls.push('on');
+      if (on && days[0] === ymd) cls.push('first');
+      if (ymd === todayYmd) cls.push('today');
+      cells += '<button type="button" class="' + cls.join(' ') + '" data-dp="' + ymd + '">' + d + '</button>';
+    }
+    host.innerHTML = `<div class="daypicker">
+      <div class="dp-head">
+        <button type="button" class="dp-nav" data-dpmove="-1" title="Previous month">\u2039</button>
+        <span class="dp-title">${esc(monthName)} ${vy}</span>
+        <button type="button" class="dp-nav" data-dpmove="1" title="Next month">\u203A</button>
+      </div>
+      <div class="dp-grid dp-dow">${['Mo','Tu','We','Th','Fr','Sa','Su'].map(x => '<span class="dp-cell dp-dowc">' + x + '</span>').join('')}</div>
+      <div class="dp-grid">${cells}</div>
+      <div class="dp-foot">
+        <span class="dp-sum">${days.length > 1
+          ? esc(eventDaysLabel({ eventDays: days })) + ' <span class="muted">(' + days.length + ' days)</span>'
+          : (days.length ? esc(fmtDate(days[0])) + ' <span class="muted">(single day)</span>' : '<span class="muted">No day selected</span>')}</span>
+        ${days.length > 1 ? '<button type="button" class="dp-clear" data-dpclear>Just the first day</button>' : ''}
+      </div>
+      <div class="dp-hint muted small">Click a day \u00b7 <strong>Shift</strong>+click for a range \u00b7 <strong>Ctrl</strong>/<strong>Cmd</strong>+click to add single days</div>
+    </div>`;
+    host.querySelectorAll('[data-dpmove]').forEach(b => b.onclick = (e) => {
+      e.preventDefault();
+      const n = +b.dataset.dpmove;
+      const d = new Date(Date.UTC(vy, vm - 1 + n, 1));
+      view = d.toISOString().slice(0, 7);
+      draw();
+    });
+    const clr = host.querySelector('[data-dpclear]');
+    if (clr) clr.onclick = (e) => { e.preventDefault(); days = days.slice(0, 1); draw(); fire(); };
+    host.querySelectorAll('[data-dp]').forEach(b => b.onclick = (e) => {
+      e.preventDefault();
+      const ymd = b.dataset.dp;
+      if (e.shiftKey && anchor) {
+        const lo = anchor <= ymd ? anchor : ymd, hi = anchor <= ymd ? ymd : anchor;
+        const range = [];
+        for (let cur = lo; cur <= hi; cur = dayAddUTC(cur, 1)) {
+          range.push(cur);
+          if (range.length > 31) break;              // hard cap, matching the server
+        }
+        days = range;
+      } else if (e.ctrlKey || e.metaKey) {
+        const i = days.indexOf(ymd);
+        if (i >= 0) { if (days.length > 1) days.splice(i, 1); }   // never leave zero days
+        else days.push(ymd);
+        days.sort();
+        anchor = ymd;
+      } else {
+        days = [ymd];
+        anchor = ymd;
+      }
+      draw();
+      fire();
+    });
+  };
+
+  draw();
+  return {
+    get: () => days.slice(),
+    // called when the native date input changes: that day becomes the whole selection
+    setSingle: (ymd) => {
+      if (!ymd) return;
+      days = [ymd]; anchor = ymd; view = ymd.slice(0, 7); draw();
+    },
+    showMonthOf: (ymd) => { if (ymd) { view = ymd.slice(0, 7); draw(); } }
+  };
+}
+
 // the date to display + sort by for a tournament (imported: challonge date; else event date)
 function tourneyDate(t) {
   return t.imported ? (t.challongeDate || t.eventDate) : (t.eventDate || null);
@@ -494,6 +707,120 @@ function formatPrize(p) {
 function statusLabel(s) {
   return { signup: 'Signups open', draft: 'Drafting', drafted: 'Teams locked', running: 'In progress', finished: 'Finished' }[s] || s;
 }
+// `status` is 'signup' from the moment a tournament is created, including while it is waiting for
+// a scheduled opening time - so the pill claimed "Signups open" when the server would in fact
+// refuse a signup. Anything drawing the status pill should use these two, not statusLabel alone.
+function signupsNotOpenYet(t) {
+  return !!(t && t.status === 'signup' && !t.abandoned && t.signupOpensAt
+            && new Date(t.signupOpensAt).getTime() > Date.now());
+}
+function statusPillLabel(t) {
+  if (!t) return '';
+  if (t.abandoned) return 'ABANDONED';
+  if (signupsNotOpenYet(t)) return 'Signups not open yet';
+  return statusLabel(t.status);
+}
+function statusPillClass(t) {
+  if (!t) return '';
+  if (t.abandoned) return 'abandoned';
+  return signupsNotOpenYet(t) ? 'presignup' : t.status;
+}
+
+// ---- divisions (King / Prince ...) ----
+// Each division is its own bracket on its own tab: 'bracket' for division 1, 'bracket2'... after.
+const DIVISION_DEFAULT_NAMES = ['King', 'Prince', 'Duke', 'Baron'];
+function divisionsOnT(t) {
+  t = t || T;
+  return !!t && t.competition === 'team' && (t.bracketType === 'single' || t.bracketType === 'double') && (parseInt(t.divisions, 10) || 0) > 1;
+}
+function divisionNameOf(d, t) {
+  t = t || T;
+  const names = (t && t.divisionNames) || [];
+  return names[d - 1] || DIVISION_DEFAULT_NAMES[d - 1] || ('Division ' + d);
+}
+function divisionChampionOf(d, t) { t = t || T; return ((t && t.divisionChampions) || [])[d - 1] || null; }
+function divisionTeamsOf(d, t) { t = t || T; return ((t && t.teams) || []).filter(x => (x.division || 0) === d); }
+function divisionTab(d) { return d <= 1 ? 'bracket' : 'bracket' + d; }
+function isBracketTab(tab) { return /^bracket[2-4]?$/.test(tab || ''); }
+function tabDivision(tab) { const m = /^bracket([2-4])$/.exec(tab || ''); return m ? parseInt(m[1], 10) : 1; }
+// The tab a match is shown on.
+function bracketTabFor(m) { return (m && m.division && divisionsOnT()) ? divisionTab(m.division) : 'bracket'; }
+// How many teams a division is going to have, before its teams exist: what the split or the draft
+// will produce. Null when nobody can know yet (captains still to be picked by hand).
+function plannedDivisionSize(d, t) {
+  t = t || T;
+  const n = parseInt(t.divisions, 10) || 0;
+  if (!(n > 1) || d < 1 || d > n) return null;
+  const made = divisionTeamsOf(d, t).length;
+  if (made || (t.teams || []).some(x => x.division)) return made;
+  if (t.formation === 'draft') {
+    if (d === 1) return parseInt(t.captainCount, 10) || null;
+    const c = (t.divCaptains || []).find(x => x.division === d);
+    return (c && c.mode !== 'manual' && c.count) ? c.count : null;
+  }
+  const total = (typeof projectedTeamCount === 'function') ? projectedTeamCount() : (t.teams || []).length;
+  if (!total) return null;
+  const top = parseInt(t.divisionTop, 10) || 0;
+  if (n === 2 && top > 0 && top < total) return d === 1 ? top : total - top;
+  const per = Math.ceil(total / n);
+  return Math.max(0, Math.min(per, total - per * (d - 1)));
+}
+// How many rounds a division's bracket is shifted against the largest one. The round lengths are
+// set for the largest division and a smaller one plays them aligned back from the final, so its
+// round r takes the length - and the map pool - of the largest division's round r + offset.
+// Mirrors poolRoundKey in lib/match.js.
+function divisionRoundOffset(division) {
+  if (!division || !divisionsOnT()) return 0;
+  const wbRounds = d => (T.matches || []).filter(x => x.bracket === 'wb' && (x.division || 0) === d).reduce((a, x) => Math.max(a, x.round || 0), 0);
+  if (T.cfg) {
+    if (!T.cfg.divAlign) return 0;
+    const R = (Array.isArray(T.cfg.wb) ? T.cfg.wb : (T.cfg.rounds || [])).length;
+    return Math.max(0, R - wbRounds(division));
+  }
+  const lg = n => { let r = 0; while ((1 << r) < n) r++; return r; };
+  let maxN = 0;
+  for (let d = 1; d <= T.divisions; d++) maxN = Math.max(maxN, plannedDivisionSize(d) || 0);
+  const nd = plannedDivisionSize(division) || 0;
+  return (maxN && nd) ? Math.max(0, lg(maxN) - lg(nd)) : 0;
+}
+function poolRoundOf(bracket, round, division) {
+  const off = divisionRoundOffset(division);
+  if (!off || (bracket !== 'wb' && bracket !== 'lb')) return round;
+  return round + (bracket === 'wb' ? off : 2 * off);
+}
+function divisionListText(t) {
+  t = t || T;
+  const n = parseInt(t.divisions, 10) || 0;
+  const names = [];
+  for (let d = 1; d <= n; d++) names.push(divisionNameOf(d, t));
+  return names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names.join('');
+}
+
+// ---- playing order ----
+// When a match is played, as a number: sorting by it lists a tournament in the order it is played.
+// The Swiss rounds come first, then its playoffs or final. In an elimination bracket the losers
+// bracket interleaves with the winners bracket (its round 2k is played alongside winners round
+// k+1, just after it), the 3rd place match goes just before the final and a grand final last.
+// Divisions line up from their final, the way their match lengths do.
+function matchChrono(m) {
+  if (!m) return 0;
+  const b = m.bracket, r = m.round || 0;
+  if (b === 'sw' || b === 'ffa') return r;
+  const base = (T && T.bracketType === 'swiss') ? 10000 : 0;
+  if (b === 'gf') return base + 9999;
+  const off = m.division ? divisionRoundOffset(m.division) : 0;
+  const wbAt = x => (x <= 1 ? 0.5 : 2 * x - 2);
+  if (b === 'lb') return base + r + 2 * off + 0.1;
+  if (b === '3p') return base + wbAt(r + off) - 0.25;
+  return base + wbAt(r + off);
+}
+// A copy of `list` in playing order (newest first when asked), top of the bracket first within a
+// round. The order is worked out once per match, not once per comparison.
+function sortByPlay(list, newestFirst) {
+  const at = new Map();
+  for (const m of list) at.set(m, matchChrono(m));
+  return list.slice().sort((a, b) => (newestFirst ? at.get(b) - at.get(a) : at.get(a) - at.get(b)) || (a.index || 0) - (b.index || 0));
+}
 
 function typeLine(t) {
   // Challonge doesn't tell us the team size or our formation options, so don't fabricate a
@@ -508,8 +835,226 @@ function typeLine(t) {
     return 'FFA ' + md + ' (' + sz + ', ' + t.ffaCfg.perMatch + ' per lobby)' + (t.maxTeams ? ' · max ' + t.maxTeams : '');
   }
   const bt = { single: 'single elim', double: 'double elim', swiss: 'swiss' }[t.bracketType];
+  const swissTail = (t.bracketType === 'swiss' && stageTwoOn(t))
+    ? ' \u2192 ' + (t.stage2.type === 'double' ? 'double' : 'single') + '-elim playoffs' : '';
   const form = t.teamSize === 1 ? '1v1' : t.teamSize + 'v' + t.teamSize + ' · ' + (t.formation === 'draft' ? 'captains draft' : t.formation === 'open' ? 'open teams' : 'premade');
-  return form + ' · ' + bt + (t.maxTeams ? ' · max ' + t.maxTeams + ' teams' : '');
+  // A tournament created from a named preset says so: it is the format's identity, and only a
+  // global tournament director can have made it.
+  const head = t.presetName ? t.presetName + ' · ' : '';
+  const divTail = divisionsOnT(t) ? ' \u00b7 ' + divisionListText(t) + ' brackets' : '';
+  return head + form + ' · ' + bt + swissTail + divTail + (t.maxTeams ? ' · max ' + t.maxTeams + ' teams' : '');
+}
+
+// ---- declared early stop (qualifiers) ----
+// A qualifier that will stop at N survivors must SAY SO from the moment the bracket appears,
+// or the bracket lies: it draws a grand final that nobody is ever going to play.
+function stopAtOf(t) { return parseInt(((t || T) || {}).stopAtAlive, 10) || 0; }
+function stopAtLine(t) {
+  t = t || T;
+  const n = stopAtOf(t);
+  if (!n) return '';
+  return 'Ends when ' + n + ' are left \u2014 all ' + n + ' qualify, and the remaining matches are not played.';
+}
+// How many eliminations still to go. Null when there is no declared stop or it has happened.
+function stopAtRemaining(t) {
+  t = t || T;
+  const n = stopAtOf(t);
+  if (!n || t.status !== 'running') return null;
+  const alive = (t.aliveCount != null) ? t.aliveCount : (t.teams || []).filter(x => !x.eliminated).length;
+  return Math.max(0, alive - n);
+}
+// A match that was still outstanding when the tournament stopped was never played, and should
+// not sit on the bracket looking like it is coming up.
+function neverPlayed(m, t) {
+  t = t || T;
+  const ef = t.earlyFinish;
+  if (!ef) return false;
+  if (m.status === 'done' || m.status === 'bye') return false;
+  return Array.isArray(ef.unplayed) ? ef.unplayed.indexOf(m.id) >= 0 : true;
+}
+
+// ---- Swiss record cuts + stage 2 (the LotS / Invitational format) ----
+// Every helper here answers "off" for a tournament that did not configure them, so a normal
+// Swiss or elimination event renders exactly as it did before any of this existed.
+function swissCutCfg(t) {
+  const tt = (t || T) || {};
+  // The live cfg is the truth once the bracket exists; before that the plan is all there is,
+  // and the format summary has to be able to describe a tournament that has not started.
+  const c = (tt.cfg && (tt.cfg.winCut || tt.cfg.lossCut)) ? tt.cfg : (tt.cfg || tt.plan || {});
+  const src = (c.winCut || c.lossCut) ? c : (tt.plan || {});
+  const win = parseInt(src.winCut, 10) || 0;
+  const loss = parseInt(src.lossCut, 10) || 0;
+  return { on: !!(win || loss), win: win, loss: loss, decidingBo: parseInt(src.decidingBo, 10) || 0 };
+}
+// How many rounds this Swiss can run to - the same number lib/swiss.js derives, and the only
+// one worth laying map pools out against.
+// With record cuts the count is DERIVED (a 3/3 cut is five rounds: two wins, two losses and the
+// game that settles it), never typed in, so `plan.rounds` is simply absent. Reading it and
+// falling back to log2(teams) gave FOUR for a sixteen-player 3/3 stage, which is why round five
+// had no column to set a pool in.
+function swissPlannedRounds(t, n) {
+  const tt = (t || T) || {};
+  const c = swissCutCfg(tt);
+  if (c.on) return (c.win && c.loss) ? (c.win + c.loss - 1) : (c.win || c.loss);
+  const r = parseInt((tt.cfg || {}).rounds, 10) || parseInt((tt.plan || {}).rounds, 10) || 0;
+  if (r) return r;
+  const teams = n || (tt.teams || []).length || 0;
+  return Math.max(1, Math.ceil(Math.log2(Math.max(2, teams))));
+}
+function swissCutLabel(t) {
+  const c = swissCutCfg(t);
+  if (!c.on) return '';
+  const bits = [];
+  if (c.win) bits.push(c.win + ' win' + (c.win === 1 ? '' : 's') + ' advances');
+  if (c.loss) bits.push(c.loss + ' loss' + (c.loss === 1 ? '' : 'es') + ' eliminates');
+  return bits.join(', ');
+}
+function stageTwoCfgOf(t) { const s = ((t || T) || {}).stage2; return (s && s.cutTo) ? s : null; }
+function stageTwoOn(t) { return !!stageTwoCfgOf(t); }
+// Is a playoff stage CONFIGURED (not necessarily built yet)? stageTwoLive answers "is it
+// running"; this answers "is one coming", which is what decides whether the opponent-pick
+// setting will ever fire on a Swiss.
+function swissStageTwoPlanned(t) {
+  const tt = (t || T) || {};
+  if (tt.bracketType !== 'swiss') return false;
+  if (tt.stage2) return true;
+  const src = (tt.cfg && tt.cfg.stage2 !== undefined) ? tt.cfg : (tt.plan || {});
+  return !!src.stage2;
+}
+function stageTwoLive(t) { const s = stageTwoCfgOf(t); return !!(s && s.built); }
+
+// ---- the 3rd place match (single elimination, or single-elimination playoffs) ----
+function thirdPlaceMatchOf(t) {
+  return ((t || T).matches || []).find(m => m.bracket === '3p' && !(m.division || 0)) || null;
+}
+// Has anything happened in it that removing it would destroy? Mirrors lib/match thirdPlaceStarted.
+function thirdPlaceTouched(m) {
+  if (!m) return false;
+  if (m.status === 'done' || m.status === 'live' || (Array.isArray(m.games) && m.games.length) || m.pendingReport) return true;
+  if (m.veto && ((m.veto.stepIndex || 0) > 0 || (m.veto.banned || []).length || (m.veto.picks || []).length)) return true;
+  // faction choices stay secret until both sides are done; a side that is done is a start
+  if (m.fveto && m.fveto.games && Object.values(m.fveto.games).some(g => g && (g.t1Done || g.t2Done))) return true;
+  return false;
+}
+// Can this tournament have one at all, right now? Single elimination without divisions, or a
+// Swiss whose playoffs are single elimination - in both cases with at least four players in it.
+function thirdPlaceEligible(t) {
+  t = t || T;
+  if (!t || t.competition === 'ffa' || t.imported) return false;
+  if (t.bracketType === 'single') return !((t.divisions || 0) > 1) && (t.teams || []).length >= 4;
+  if (t.bracketType !== 'swiss') return false;
+  const s2 = stageTwoCfgOf(t);
+  if (!s2 || s2.type === 'double') return false;
+  return (s2.built ? (s2.field || []).length : s2.cutTo) >= 4;
+}
+// Is it switched on (built, or waiting for the bracket to be built)?
+function thirdPlaceOn(t) {
+  t = t || T;
+  if (thirdPlaceMatchOf(t)) return true;
+  if (t.bracketType === 'swiss') { const s2 = stageTwoCfgOf(t); return !!(s2 ? s2.thirdPlace : (t.plan && t.plan.s2Third)); }
+  return !!((t.cfg && t.cfg.thirdPlace) || (!t.cfg && t.plan && t.plan.thirdPlace));
+}
+// The tab the bracket lives on. A Swiss is a list of rounds - until its playoffs exist, and then
+// the playoff bracket is what is on top of that tab, so it is called what it is.
+function bracketTabName(t) {
+  t = t || T;
+  if (t.competition === 'ffa') return 'Rounds';
+  if (t.bracketType !== 'swiss') return 'Bracket';
+  return (t.playoffs && t.playoffs.made) || stageTwoLive(t) ? 'Bracket' : 'Rounds';
+}
+
+// One client-side Swiss table, used by the standings tab and by any badge that needs a
+// team's state. Mirrors lib/swiss.js swissRecord.
+function swissTable(t) {
+  t = t || T;
+  const cuts = swissCutCfg(t);
+  const S = {};
+  for (const team of (t.teams || [])) S[team.id] = { id: team.id, w: 0, l: 0, gd: 0, byes: 0, played: 0, state: 'active' };
+  for (const m of (t.matches || [])) {
+    if (m.bracket !== 'sw') continue;
+    if (m.status === 'bye') {
+      const id = m.team1 !== 'BYE' ? m.team1 : m.team2;
+      if (S[id]) { S[id].w++; S[id].gd += 1; S[id].byes++; S[id].played++; }
+    } else if (m.status === 'done') {
+      const ws = m.winner === m.team1 ? m.score1 : m.score2;
+      const ls = m.winner === m.team1 ? m.score2 : m.score1;
+      if (S[m.winner]) { S[m.winner].w++; S[m.winner].gd += ws - ls; S[m.winner].played++; }
+      if (S[m.loser]) { S[m.loser].l++; S[m.loser].gd -= ws - ls; S[m.loser].played++; }
+    }
+  }
+  const quota = (t.cfg && t.cfg.rounds) || 0;
+  for (const id of Object.keys(S)) {
+    const r = S[id];
+    if (cuts.on) {
+      if (cuts.win && r.w >= cuts.win) r.state = 'advanced';
+      else if (cuts.loss && r.l >= cuts.loss) r.state = 'eliminated';
+      else if (quota && r.played >= quota) r.state = 'done';
+    } else if (quota && r.played >= quota) r.state = 'done';
+  }
+  // The server sends the table in its own order (T.swissOrder) - that is the order the cut and the
+  // playoff seeds come from, and its tiebreak can include a seeded coin flip this page cannot
+  // repeat. The local sort is only a fallback for a view that does not carry the order.
+  if (Array.isArray(t.swissOrder) && t.swissOrder.length) {
+    const pos = {};
+    t.swissOrder.forEach((id, i) => { pos[id] = i; });
+    return Object.values(S).sort((a, b) => (pos[a.id] != null ? pos[a.id] : 1e9) - (pos[b.id] != null ? pos[b.id] : 1e9));
+  }
+  return Object.values(S).sort((a, b) => b.w - a.w || a.l - b.l || b.gd - a.gd || teamSeed(a.id) - teamSeed(b.id));
+}
+// How equal Swiss records are ordered, in words. One sentence, used wherever it is explained.
+function swissTiebreakText(mode) {
+  return mode === 'beaten'
+    ? 'Equal records are ordered by the sum of the Swiss scores (wins) of the opponents each player beat, then at random.'
+    : 'Equal records are ordered by game difference.';
+}
+
+// Each team's W-L as it stood going INTO `round` - i.e. the score group a pairing came out of.
+// Mirrors recordsBefore in lib/swiss.js. It has to be the historical record, not the current
+// one: by the time round 4 is over everyone in it has played round 4, so reading the standings
+// would say 2-2 for a match that was a 2-1 pairing when it was drawn.
+function swissRecordsBefore(round, t) {
+  t = t || T;
+  const out = {};
+  for (const team of (t.teams || [])) out[team.id] = { w: 0, l: 0 };
+  for (const m of (t.matches || [])) {
+    if (m.bracket !== 'sw' || !(m.round < round)) continue;
+    if (m.status === 'bye') {
+      const id = m.team1 !== 'BYE' ? m.team1 : m.team2;
+      if (out[id]) out[id].w++;
+    } else if (m.status === 'done') {
+      if (out[m.winner]) out[m.winner].w++;
+      if (out[m.loser]) out[m.loser].l++;
+    }
+  }
+  return out;
+}
+
+// The score group a Swiss pairing came out of: "2-1" when both arrived on the same record, which
+// is the normal case, and "2-1 vs 1-2" when an odd group floated its lowest player down into the
+// next one. Null for anything that is not a head-to-head Swiss match.
+function swissMatchRecord(m, t) {
+  if (!m || m.bracket !== 'sw' || !m.round || m.round < 2) return null;
+  if (!m.team1 || !m.team2 || m.team1 === 'BYE' || m.team2 === 'BYE') return null;
+  const before = swissRecordsBefore(m.round, t);
+  const a = before[m.team1], b = before[m.team2];
+  if (!a || !b) return null;
+  const lab = r => r.w + '-' + r.l;
+  return lab(a) === lab(b) ? lab(a) : (lab(a) + ' vs ' + lab(b));
+}
+
+// Sort key for a round's matches: the score group they belong to, best first. A floated pairing
+// is played in the LOWER group (that is where the float went), so it sorts with that one.
+function swissMatchRank(m, t) {
+  if (!m || m.bracket !== 'sw') return [-1, -1];
+  const before = swissRecordsBefore(m.round, t);
+  const a = before[m.team1] || { w: 0, l: 0 }, b = before[m.team2] || { w: 0, l: 0 };
+  return [Math.min(a.w, b.w), Math.max(a.l, b.l)];
+}
+function swissQueueSort(list, t) {
+  return list.slice().sort((x, y) => {
+    const rx = swissMatchRank(x, t), ry = swissMatchRank(y, t);
+    return (ry[0] - rx[0]) || (rx[1] - ry[1]) || ((x.index || 0) - (y.index || 0));
+  });
 }
 
 function planSummary(t) {
@@ -538,9 +1083,10 @@ function planSummary(t) {
     }
     return parts.join(' · ');
   };
+  const third = thirdPlaceOn(t) ? ' \u00b7 3rd place match' : '';
   if (t.perRoundBo) {
     if (t.bracketType === 'single' && Array.isArray(p.roundsList) && p.roundsList.length) {
-      return compactRounds(p.roundsList, 'R');
+      return compactRounds(p.roundsList, 'R') + third;
     }
     if (t.bracketType === 'double' && (Array.isArray(p.wbList) || Array.isArray(p.lbList))) {
       const wb = compactRounds(p.wbList || [], 'WB R');
@@ -548,9 +1094,24 @@ function planSummary(t) {
       return [wb, lb].filter(Boolean).join(' · ') + ' · GF Bo' + (p.gf || 5) + (p.lbHandicap ? ' (upper finalist starts 1-0 up)' : '');
     }
   }
-  if (t.bracketType === 'single') return 'Bo' + p.early + ' rounds · Bo' + p.semi + ' semifinal · Bo' + p.final + ' final';
+  if (t.bracketType === 'single') return 'Bo' + p.early + ' rounds · Bo' + p.semi + ' semifinal · Bo' + p.final + ' final' + third;
   if (t.bracketType === 'double') return 'Winners bracket Bo' + p.wb + ' (final Bo' + p.wbFinal + ') · losers bracket Bo' + p.lb + ' (final Bo' + p.lbFinal + ') · grand final Bo' + p.gf + (p.lbHandicap ? ' (upper finalist starts 1-0 up)' : '');
-  return 'Bo' + p.bo + ' matches' + (p.final ? ' · Bo' + p.finalBo + ' final between the top 2' : ' · highest standing wins') + (p.fast ? ' · fast pairing' : '');
+  const cutTxt = swissCutLabel(t);
+  const parts = ['Bo' + p.bo + ' matches'];
+  if (cutTxt) {
+    parts.push(cutTxt);
+    if (p.decidingBo) parts.push('Bo' + p.decidingBo + ' when a win qualifies or a loss eliminates');
+  }
+  if (p.stage2) {
+    parts.push('top ' + (p.s2CutTo || 8) + ' go to a ' + (p.s2Type === 'double' ? 'double' : 'single') + '-elimination playoff bracket'
+      + (p.s2Type !== 'double' && thirdPlaceOn(t) ? ' with a 3rd place match' : ''));
+  } else if (p.final) {
+    parts.push('Bo' + p.finalBo + ' final between the top 2');
+  } else if (!cutTxt) {
+    parts.push('highest standing wins');
+  }
+  if (p.fast && !cutTxt) parts.push('fast pairing');
+  return parts.join(' \u00b7 ');
 }
 
 function modal(html, onMount, opts) {
@@ -733,9 +1294,20 @@ function drawTopbar(modeText) {
       if (!btns.length && mode) btns.push('<span>' + esc(mode) + '</span>');
       return btns.join('');
     })() +
+    // Stand-down toggle. Shown to anyone ON the site-admin list, including while their powers
+    // are off - otherwise switching off would be a one-way door. Separate from "View as player",
+    // which is a per-tournament display toggle and changes no permissions at all.
+    (siteAdminAccount()
+      ? '<button class="btn ' + (adminStoodDown() ? 'amber' : 'ghost') + ' small" id="saPowerBtn" title="'
+        + (adminStoodDown()
+            ? 'Your site-admin powers are OFF. You are seeing the site exactly as a normal player, including map pools. Click to switch them back on.'
+            : 'Your site-admin powers are ON. Click to switch them off site-wide, so you cannot see anything a normal player cannot.')
+        + '">ADMIN ' + (adminStoodDown() ? 'OFF' : 'ON') + '</button>'
+      : '') +
     '<button class="gearbtn" id="lockBtn" title="' + (siteAdmin() ? 'Open site admin console' : 'Link this account as site admin') + '">' + (siteAdmin() ? '\uD83D\uDD13' : '\uD83D\uDD12') + '</button>' +
     '<button class="gearbtn" id="gearBtn" title="Display settings">⚙</button>';
   document.getElementById('gearBtn').onclick = openSettings;
+  { const sp = document.getElementById('saPowerBtn'); if (sp) sp.onclick = () => setAdminStandDown(!adminStoodDown()); }
   const saLink = document.getElementById('saLink');
   if (saLink) saLink.onclick = () => { history.pushState(null, '', '/siteadmin'); route(); };
   const edLink = document.getElementById('edLink');
@@ -885,21 +1457,31 @@ async function renderSiteAdmin() {
   const app = document.getElementById('app');
   const isDirector = !!(fafAuth.user && fafAuth.user.director);
   if (!siteAdmin() && !isDirector) {
-    app.innerHTML = `<div class="page"><div class="panel"><div class="empty">
-      Site admin only - use the lock button in the top right to log in.</div></div></div>`;
+    // Being stood down is not the same as not being an admin, and saying "site admin only" to
+    // someone who IS one would be baffling.
+    app.innerHTML = adminStoodDown()
+      ? `<div class="page"><div class="panel section"><h2>Powers are <span class="h2-strong">switched off</span></h2>
+          <p class="muted small" style="margin:6px 0 12px">You are a site admin, but you have switched your powers off, so you are seeing the site exactly as a normal player would - map pools included. Switch them back on to use the console.</p>
+          <button class="btn primary" id="saStandUp">Switch site-admin powers back on</button></div></div>`
+      : `<div class="page"><div class="panel"><div class="empty">
+          Site admin only - use the lock button in the top right to log in.</div></div></div>`;
+    const su = document.getElementById('saStandUp');
+    if (su) su.onclick = () => setAdminStandDown(false);
     return;
   }
-  // Directors see a reduced console (no Requests, no Directors management).
+  // Directors get the whole console EXCEPT Site Admins. Everything else here is at or below
+  // what the role already carries (organizer rights on every official tournament, appointing
+  // other directors); the site-admin list is the one real escalation, so it stays out.
   const director = !siteAdmin() && isDirector;
-  const validTabs = director ? ['bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
+  const validTabs = director ? ['requests', 'directors', 'bans', 'logs', 'archived', 'articles'] : ['requests', 'siteadmins', 'directors', 'bans', 'logs', 'archived', 'articles'];
   if (validTabs.indexOf(saTab) < 0) saTab = validTabs[0];
   app.innerHTML = `<div class="page">
     <h1 style="margin:0 0 14px">Site admin${director ? ' <span class="muted" style="font-size:14px;font-weight:400">(tournament director)</span>' : ''}</h1>
-    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you can edit the FAQ / Rules articles here under <strong>Articles</strong>.</p>' : ''}
+    ${director ? '<p class="muted small" style="margin:-8px 0 12px">As a tournament director you have the whole console except <strong>Site Admins</strong>: access requests, the director roster, tournament bans, logs, archived tournaments and the FAQ / Rules articles.</p>' : ''}
     <div class="tabs" style="margin-bottom:14px">
-      ${director ? '' : `<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
+      ${`<button class="tab ${saTab === 'requests' ? 'active' : ''}" data-satab="requests">Requests${(saData && ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length)) ? ' (' + ((saData.requests || []).filter(r => r.status === 'pending').length + (saData.editorRequests || []).filter(r => r.status === 'pending').length + (saData.importerRequests || []).filter(r => r.status === 'pending').length) + ')' : ''}</button>`}
       ${director ? '' : `<button class="tab ${saTab === 'siteadmins' ? 'active' : ''}" data-satab="siteadmins">Site Admins${(saData && (saData.siteAdmins || []).length) ? ' (' + saData.siteAdmins.length + ')' : ''}</button>`}
-      ${director ? '' : `<button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>`}
+      <button class="tab ${saTab === 'directors' ? 'active' : ''}" data-satab="directors">Directors${(saData && (saData.directors || []).length) ? ' (' + saData.directors.length + ')' : ''}</button>
       <button class="tab ${saTab === 'bans' ? 'active' : ''}" data-satab="bans">Tournament bans${(saData && (saData.bans || []).length) ? ' (' + saData.bans.length + ')' : ''}</button>
       <button class="tab ${saTab === 'logs' ? 'active' : ''}" data-satab="logs">Logs</button>
       <button class="tab ${saTab === 'archived' ? 'active' : ''}" data-satab="archived">Archived${(saData && (saData.archived || []).length) ? ' (' + saData.archived.length + ')' : ''}</button>
@@ -951,6 +1533,7 @@ function adminLookupBox(container, onPick, opts) {
     try {
       const payload = { name: v };
       if (opts.tournamentId) payload.tournamentId = opts.tournamentId;
+      if (opts.seriesId) payload.seriesId = opts.seriesId;
       const rr = await fetch('/api/admin_lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const d = await rr.json().catch(() => ({}));
       if (!rr.ok) throw new Error(d.error || 'Lookup failed');
@@ -960,6 +1543,62 @@ function adminLookupBox(container, onPick, opts) {
   };
   container.querySelector('.alGo').onclick = go;
   name.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+}
+
+// One ban panel for all three scopes - the site-admin console (global), a tournament's Admin tab,
+// and a series page. They differ only in wording and in where the two actions post to, so they
+// share this rather than drifting into three near-identical tables.
+// opts: { title, blurb, bans, lookup:{tournamentId|seriesId}, addLabel,
+//         onSet({fafId,name,reason,expires}), onRemove(fafId), after() }
+function banPanel(el, opts) {
+  const bans = opts.bans || [];
+  const today = new Date().toISOString().slice(0, 10);
+  const active = bans.filter(b => !b.expired).length;
+  let html = `<div class="panel section"><h2>${esc(opts.title)} <span class="h2-strong">(${active}${bans.length > active ? ' active, ' + (bans.length - active) + ' expired' : ''})</span></h2>
+    <p class="muted small">${opts.blurb}</p>
+    <div class="banAdd" style="margin:10px 0"></div>`;
+  if (!bans.length) html += '<div class="empty">Nobody is banned.</div>';
+  else html += '<div class="ban-table-wrap"><table class="ban-table"><thead><tr><th>Player</th><th>Reason</th><th>Banned by</th><th>Expires</th><th></th></tr></thead><tbody>' +
+    bans.map(b => `<tr class="${b.expired ? 'ban-expired' : ''}">
+      <td>${esc(b.name)} <span class="muted small">${esc(b.fafId)}</span></td>
+      <td class="small">${esc(b.reason || '\u2014')}</td>
+      <td class="small">${b.by ? esc(b.by) : '<span class="muted">\u2014</span>'}<div class="muted small">${b.at ? esc(fmtWhen(b.at)) : ''}</div></td>
+      <td class="small"><input type="date" class="banExp" data-fid="${esc(b.fafId)}" data-name="${esc(b.name)}" value="${b.expires ? esc(b.expires.slice(0, 10)) : ''}">${b.expired ? ' <span class="idbadge late">expired</span>' : (b.expires ? '' : ' <span class="muted small">no expiry</span>')}</td>
+      <td><button class="btn danger small" data-banrem="${esc(b.fafId)}">Lift ban</button></td>
+    </tr>`).join('') + '</tbody></table></div>';
+  html += '</div>';
+  el.innerHTML = html;
+
+  const done = async (msg) => { toast(msg); if (opts.after) await opts.after(); };
+  adminLookupBox(el.querySelector('.banAdd'), (found, result) => {
+    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)})
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" class="bpReason" placeholder="Reason (optional)" maxlength="300" style="flex:1;min-width:180px">
+        <label class="muted small">Expires <input type="date" class="bpExp" min="${today}"></label>
+        <button class="btn danger small bpGo">${esc(opts.addLabel || 'Ban')}</button>
+      </div>`;
+    result.querySelector('.bpGo').onclick = async () => {
+      try {
+        await opts.onSet({ fafId: found.fafId, name: found.name,
+          reason: result.querySelector('.bpReason').value,
+          expires: result.querySelector('.bpExp').value || null });
+        await done('Banned');
+      } catch (e) { toast(e.message, true); }
+    };
+  }, opts.lookup || {});
+
+  el.querySelectorAll('[data-banrem]').forEach(b => b.onclick = async () => {
+    if (!confirm('Lift this ban?')) return;
+    try { await opts.onRemove(b.dataset.banrem); await done('Ban lifted'); }
+    catch (e) { toast(e.message, true); }
+  });
+  // changing the date in-place re-saves the same ban with a new expiry (blank = no expiry)
+  el.querySelectorAll('.banExp').forEach(inp => inp.onchange = async () => {
+    try {
+      await opts.onSet({ fafId: inp.dataset.fid, name: inp.dataset.name, reason: '', expires: inp.value || null });
+      await done(inp.value ? 'Expiry updated' : 'Expiry cleared');
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 function drawSaSiteAdmins(el) {
@@ -997,13 +1636,16 @@ function drawSaSiteAdmins(el) {
 function drawSaDirectors(el) {
   const dirs = saData.directors || [];
   let html = `<div class="panel section"><h2>Global tournament directors <span class="h2-strong">(${dirs.length})</span></h2>
-    <p class="muted small">Directors get organizer rights on every <strong>official</strong> tournament (not community ones), plus this console's Logs, Archived, Articles and Tournament bans tabs (not Requests or director management).</p>
+    <p class="muted small">Directors get organizer rights on every <strong>official</strong> tournament (not community ones), can <strong>see</strong> drafts of every tournament including community ones (without organizer rights on those), and get this console's Directors, Tournament bans, Logs, Archived and Articles tabs. Not Requests, and not Site Admins.</p>
+    <p class="muted small">Directors can add and remove directors, so the team manages itself. Every change is logged with the name of whoever made it, and the last remaining director can't be removed.</p>
     <div id="dirAdd" style="margin:10px 0"></div>`;
   if (!dirs.length) html += '<div class="empty">No directors yet.</div>';
-  else html += '<div>' + dirs.map(d => `<div class="sa-req">
-    <div class="sa-req-main"><div class="sa-req-name">${esc(d.name)} <span class="muted small">FAF id ${esc(d.fafId)}</span></div><div class="muted small">Added ${esc(fmtWhen(d.at))}</div></div>
-    <div class="sa-req-act"><button class="btn danger small" data-dirrev="${esc(d.fafId)}">Remove</button></div>
-  </div>`).join('') + '</div>';
+  else html += '<div>' + dirs.map(d => {
+    const isMe = saData.me && d.fafId === saData.me;
+    return `<div class="sa-req">
+    <div class="sa-req-main"><div class="sa-req-name">${esc(d.name)} <span class="muted small">FAF id ${esc(d.fafId)}</span>${isMe ? ' <span class="idbadge verified">you</span>' : ''}</div><div class="muted small">Added ${esc(fmtWhen(d.at))}${d.by ? ' by ' + esc(d.by) : ''}</div></div>
+    <div class="sa-req-act"><button class="btn danger small" data-dirrev="${esc(d.fafId)}"${isMe ? ' data-dirself="1"' : ''}>Remove</button></div>
+  </div>`; }).join('') + '</div>';
   html += '</div>';
   el.innerHTML = html;
   adminLookupBox(el.querySelector('#dirAdd'), (found, result) => {
@@ -1014,53 +1656,24 @@ function drawSaDirectors(el) {
     };
   });
   el.querySelectorAll('[data-dirrev]').forEach(b => b.onclick = async () => {
-    if (!confirm('Remove this director? They will lose access to all official tournaments.')) return;
+    // Standing yourself down is allowed, but it takes this console away from you, so say so.
+    const msg = b.dataset.dirself
+      ? 'Remove YOURSELF as a tournament director?\n\nYou will lose organizer rights on every official tournament and this console. Only a site admin can put you back.'
+      : 'Remove this director? They will lose access to all official tournaments.';
+    if (!confirm(msg)) return;
     try { await saPost('director_revoke', { fafId: b.dataset.dirrev }); toast('Removed'); renderSiteAdmin(); }
     catch (e) { toast(e.message, true); }
   });
 }
 
 function drawSaBans(el) {
-  const bans = saData.bans || [];
-  const today = new Date().toISOString().slice(0, 10);
-  let html = `<div class="panel section"><h2>Tournament bans <span class="h2-strong">(${bans.length})</span></h2>
-    <p class="muted small">Banned accounts can't sign up, be added, or be invited to <strong>official</strong> tournaments (community tournaments are unaffected). Set an expiry date; it's changeable any time. An expired ban stops applying automatically.</p>
-    <div id="banAdd" style="margin:10px 0"></div>`;
-  if (!bans.length) html += '<div class="empty">Nobody is banned.</div>';
-  else html += '<table><thead><tr><th>Player</th><th>Reason</th><th>Expires</th><th></th></tr></thead><tbody>' +
-    bans.map(b => {
-      const expired = b.expires && new Date(b.expires).getTime() < Date.now();
-      return `<tr>
-        <td>${esc(b.name)} <span class="muted small">${esc(b.fafId)}</span></td>
-        <td class="small">${esc(b.reason || '—')}</td>
-        <td class="small">${b.expires ? '<input type="date" class="banExp" data-fid="' + esc(b.fafId) + '" data-name="' + esc(b.name) + '" value="' + esc(b.expires.slice(0, 10)) + '">' + (expired ? ' <span class="idbadge late">expired</span>' : '') : '<input type="date" class="banExp" data-fid="' + esc(b.fafId) + '" data-name="' + esc(b.name) + '" value=""> <span class="muted small">no expiry</span>'}</td>
-        <td><button class="btn danger small" data-banrem="${esc(b.fafId)}">Lift ban</button></td>
-      </tr>`;
-    }).join('') + '</tbody></table>';
-  html += '</div>';
-  el.innerHTML = html;
-  adminLookupBox(el.querySelector('#banAdd'), (found, result) => {
-    result.innerHTML = `Found <strong>${esc(found.name)}</strong> (id ${esc(found.fafId)})
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
-        <input type="text" id="banReason" placeholder="Reason (optional)" maxlength="300" style="flex:1;min-width:180px">
-        <label class="muted small">Expires <input type="date" id="banExpNew" min="${today}"></label>
-        <button class="btn danger small" id="banGo">Ban</button>
-      </div>`;
-    result.querySelector('#banGo').onclick = async () => {
-      try {
-        await saPost('ban_set', { fafId: found.fafId, name: found.name, reason: result.querySelector('#banReason').value, expires: result.querySelector('#banExpNew').value || null });
-        toast('Ban set'); renderSiteAdmin();
-      } catch (e) { toast(e.message, true); }
-    };
-  });
-  el.querySelectorAll('[data-banrem]').forEach(b => b.onclick = async () => {
-    if (!confirm('Lift this ban?')) return;
-    try { await saPost('ban_remove', { fafId: b.dataset.banrem }); toast('Ban lifted'); renderSiteAdmin(); }
-    catch (e) { toast(e.message, true); }
-  });
-  el.querySelectorAll('.banExp').forEach(inp => inp.onchange = async () => {
-    try { await saPost('ban_set', { fafId: inp.dataset.fid, name: inp.dataset.name, expires: inp.value || null }); toast('Expiry updated'); }
-    catch (e) { toast(e.message, true); renderSiteAdmin(); }
+  banPanel(el, {
+    title: 'Global tournament bans',
+    blurb: "Banned accounts can't sign up, be added, or be invited to <strong>official</strong> tournaments (community tournaments are unaffected). This is the widest of the three scopes \u2014 organizers can also ban from a single tournament, and series owners from a whole series. Set an expiry date; it's changeable any time, and an expired ban stops applying automatically without losing the record of who set it.",
+    bans: saData.bans || [],
+    onSet: (r) => saPost('ban_set', r),
+    onRemove: (fid) => saPost('ban_remove', { fafId: fid }),
+    after: () => renderSiteAdmin()
   });
 }
 

@@ -137,6 +137,9 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 }
 .pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
 .pill.signup   { color: var(--green); border-color: #6fcf8e55; }
+/* signups exist but are waiting for their scheduled opening time - not the same as open */
+.pill.presignup { color: var(--muted); border-color: var(--line-solid); }
+.pill.presignup::before { box-shadow: none; opacity: .6; }
 .pill.draft, .pill.drafted { color: var(--amber); border-color: #ffb44755; }
 .pill.running  { color: var(--green); border-color: #6fcf8e66; background: #12331f66; }
 .pill.running::before { animation: pulse 1.6s ease-in-out infinite; }
@@ -194,6 +197,8 @@ input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; }
 .qvs { color: var(--muted); font-size: 11px; font-family: var(--mono); }
 .qscore { font-family: var(--mono); font-size: 16px; font-weight: 600; color: var(--text); white-space: nowrap; }
 .qwin { color: var(--green); }
+.qrec { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line-solid); border-radius: 3px; padding: 1px 7px; white-space: nowrap; }
+.qitem.done .qrec { opacity: .8; }
 .livechip { font-family: var(--mono); font-size: 10px; color: var(--blue); border: 1px solid #5c9ee855; border-radius: 3px; padding: 1px 7px; letter-spacing: 1px; }
 .livechip::before { content: '● '; animation: pulse 1.6s infinite; }
 
@@ -218,7 +223,14 @@ svg.connectors path { stroke: #2c4258; stroke-width: 2; fill: none; }
 .bcol-matches { flex: 1; display: flex; flex-direction: column; justify-content: space-around; gap: 14px; }
 .bcol-title { font-family: var(--display); font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); text-align: center; margin-bottom: 2px; }
 .bcol-bo { text-align: center; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-.bcol-bo select { font-family: var(--mono); font-size: 11px; padding: 1px 4px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line-solid); border-radius: 3px; }
+.bcol-bo select { width: auto; font-family: var(--mono); font-size: 11px; padding: 1px 4px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line-solid); border-radius: 3px; }
+/* The 3rd place match hangs under the final, in its column (hangUnderFinal in app.bracket.js). The
+   spacer above the final is sized to the block below it, so the final stays centred. */
+.bfinal-stack { display: flex; flex-direction: column; }
+.bthird { margin-top: 26px; }
+.bthird-spacer { margin-bottom: 26px; }
+.bthird .bcol-title { margin-bottom: 4px; }
+.third-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
 .mapblock {
   border: 1px solid #2c4258; border-left: 3px solid var(--blue);
   border-radius: 4px; background: #101a26;
@@ -350,9 +362,6 @@ tbody tr:hover { background: #ffffff05; }
 .veto-abtag.team-A { color: #7db8ff; border: 1px solid #2d5a9e; }
 .veto-abtag.team-B { color: #ffb066; border: 1px solid #6b5220; }
 .veto-history { margin-bottom: 8px; }
-.veto-games { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.veto-game { display: flex; align-items: center; gap: 5px; }
-.vg-num { font-family: var(--mono); font-size: 10px; color: var(--muted); }
 .vg-dec { font-family: var(--mono); font-size: 9px; color: var(--amber); text-transform: uppercase; }
 .veto-map.act-ban { cursor: pointer; color: var(--text); background: var(--panel2); }
 .veto-map.act-ban:hover { border-color: var(--red); color: var(--red); }
@@ -961,16 +970,39 @@ body.modal-open .turnbanner { animation: none !important; }
 .veto-card-head { flex-wrap: nowrap; gap: 12px; }
 .veto-card-head h2 { white-space: nowrap; }
 
-/* Vetoes tab: my-matches / all scope switch (competitors only) */
-.veto-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
-.veto-scope .btn.on { border-color: var(--amber); color: var(--amber); background: var(--amber-dim, #2a2113); }
+/* Vetoes tab: a sub-page per part of the tournament (Swiss stage / playoffs, or a division) and
+   the follow box that narrows the page to one team or player */
+.veto-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.subtabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.subtab {
+  font-family: var(--display); font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
+  padding: 6px 12px; cursor: pointer; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line-solid); border-radius: 4px;
+}
+.subtab:hover { color: var(--text); border-color: #3a5878; }
+.subtab.active { color: var(--amber); border-color: #ffb44788; background: var(--amber-dim); box-shadow: inset 0 -2px 0 var(--amber); }
+.veto-follow { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.veto-follow select { width: auto; max-width: 280px; padding: 6px 9px; }
+@media (max-width: 700px) {
+  .veto-follow { margin-left: 0; width: 100%; }
+  .veto-follow select { flex: 1; max-width: none; }
+}
 
 /* replay ids link to the FAF vault */
 .replay-link { color: inherit; text-decoration: underline dotted; }
 .replay-link:hover { color: var(--amber); text-decoration: underline; }
 /* organizers listed one per row with their discord handle */
 .org-callout-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
-.org-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* The name and its Discord handle are welded into one pill: square inner corners so they read as
+   a single object, which is what makes it obvious whose handle it is. Never truncated - the pair
+   wraps as a unit instead, so a handle can't end up orphaned under someone else's name. */
+.org-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.org-idpair { display: inline-flex; align-items: stretch; max-width: 100%; }
+.org-idpair .org-name { margin: 2px 0; border-radius: 3px 0 0 3px; border-right: none; }
+.org-idpair .org-discord {
+  margin: 2px 0; border-radius: 0 3px 3px 0; border-left: 1px solid #6b5220;
+  display: inline-flex; align-items: center; white-space: nowrap;
+}
 .org-discord { font-family: var(--mono); font-size: 11px; color: var(--blue); background: #4c8fd41f; border: 1px solid #4c8fd444; border-radius: 3px; padding: 1px 6px; }
 /* chat notice shown before the tournament starts */
 .chat-prestart { border-color: #FFB44755; }
@@ -998,3 +1030,553 @@ body.modal-open .turnbanner { animation: none !important; }
 .sr-swatch { font-family: var(--display); font-size: 14px; width: 38px; height: 30px; border: 1px solid var(--line-solid); border-radius: 4px; background: var(--panel2, #141d28); cursor: pointer; }
 .sr-swatch:hover { border-color: var(--amber); }
 .sr-swatch.on { border-color: currentColor; box-shadow: 0 0 0 1px currentColor inset; }
+
+/* ---------- faction veto ---------- */
+/* A game's faction choice (inside the games table, .vgt). Colours stand in for faction logos
+   (which are game assets we don't ship); the initial plus the name keeps it unambiguous. */
+.fveto-col {
+  margin-left: auto; padding-left: 14px; border-left: 1px solid #2a3d55;
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  min-width: 210px; max-width: 340px;
+}
+/* Your turn. The old active state was a 1px amber edge and a small amber line of text, which
+   is why players did not notice they were on the clock. It now reads as a job. */
+.fveto-col.active {
+  border-left-color: var(--amber); border-left-width: 3px;
+  background: linear-gradient(90deg, #ffb44714, transparent 70%);
+  border-radius: 0 4px 4px 0; padding-top: 2px; padding-bottom: 4px;
+}
+.fveto-turn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase;
+  color: #0A1420; background: var(--amber); border-radius: 3px; padding: 2px 8px 2px 6px;
+  box-shadow: 0 0 12px #ffb44740;
+}
+.fveto-turn .turn-dot { width: 7px; height: 7px; background: #0A1420; }
+/* the amber "you owe a faction choice" link on a bracket box and in a veto card */
+.fveto-cta { color: var(--amber); font-weight: 600; }
+.fveto-cta:hover { text-decoration: underline; }
+.fveto-cta .fv-count {
+  display: inline-block; min-width: 15px; padding: 0 4px; margin-left: 2px;
+  border-radius: 7px; background: var(--amber); color: #0A1420;
+  font-family: var(--mono); font-size: 10px; font-weight: 700; text-align: center;
+}
+.fveto-col.done { border-left-color: var(--green); }
+.fveto-prompt { font-size: 13px; font-weight: 700; color: var(--amber); }
+.fveto-chips, .fveto-mine { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.fveto-wait { font-size: 12px; color: var(--muted); font-style: italic; }
+.fveto-note { line-height: 1.4; }
+.fveto-res { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.fv-who { color: var(--muted); min-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-arrow { color: var(--muted); font-size: 12px; }
+
+.fchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px 3px 4px; border-radius: 4px; font: inherit; font-size: 11px;
+  background: #16202c; border: 1px solid #35506e; color: var(--text); cursor: default;
+}
+.fchip .fchip-glyph {
+  width: 17px; height: 17px; border-radius: 3px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 10px; color: #08121c;
+}
+.fchip.f-uef  .fchip-glyph { background: #4a90d9; }
+.fchip.f-aeon .fchip-glyph { background: #57c46a; }
+.fchip.f-cybran .fchip-glyph { background: #d9534f; }
+.fchip.f-sera .fchip-glyph { background: #d9b84a; }
+.fchip.clickable { cursor: pointer; }
+.fchip.clickable:hover { border-color: var(--amber); background: #1d2b3a; }
+.fchip.dim { opacity: .4; }
+.fchip.dim .fchip-name { text-decoration: line-through; }
+.fchip.on { border-color: var(--green); }
+.fchip[disabled] { cursor: default; }
+/* The games of a series, one aligned row each: game, map, then each team's faction. Used in the
+   veto popup, on the Vetoes tab and in the match details. */
+.vgt { width: 100%; margin-top: 4px; font-size: 13px; }
+/* phones turn panel tables into sideways scrollers; this one is built to fit instead */
+.panel table.vgt { display: table; overflow-x: visible; white-space: normal; }
+.vgt th { font-size: 10px; padding: 5px 8px; }
+.vgt td { padding: 6px 8px; vertical-align: middle; }
+.vgt .vgt-n { width: 1%; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.vgt td.vgt-map .veto-map { display: inline-block; margin-right: 6px; }
+.vgt th.vgt-f { min-width: 72px; white-space: normal; overflow-wrap: anywhere; }
+.vgt td.vgt-f { width: 1%; white-space: nowrap; }
+/* an open faction choice spans both team columns; it sits in the row, not beside it */
+.vgt .fveto-col { margin: 0; padding: 0; border: none; min-width: 0; max-width: none; width: auto; }
+.vgt .fveto-col.active { padding: 2px 0 4px 10px; border-left: 3px solid var(--amber); }
+@media (max-width: 520px) {
+  .vgt th, .vgt td { padding: 5px 4px; }
+  .vgt td.vgt-f .fchip-name { display: none; }
+  /* the ban / pick order: the team above its map, no thumbnail, so the map name keeps its width */
+  .vlog-row, .vlog-row.with-thumb { grid-template-columns: 18px 46px minmax(0, 1fr); row-gap: 1px; }
+  .vlog-row .vlog-thumb, .vlog-row .vlog-noimg { display: none; }
+  .vlog-row .vlog-team, .vlog-row .vlog-map { grid-column: 3; }
+  .vlog-row .vlog-n, .vlog-row .vlog-act { grid-row: span 2; }
+}
+@media (max-width: 700px) {
+  .fveto-col { margin-left: 0; padding-left: 0; border-left: none; border-top: 1px solid #2a3d55; padding-top: 8px; width: 100%; max-width: none; }
+}
+
+/* ---------- chat: reply / quote and @everyone ---------- */
+.chat-quote {
+  display: flex; gap: 6px; align-items: baseline; cursor: pointer;
+  border-left: 2px solid #3a5a80; padding: 2px 0 2px 8px; margin-bottom: 3px;
+  font-size: 11px; color: var(--muted); max-width: 100%;
+}
+.chat-quote:hover { border-left-color: var(--blue); }
+.chat-quote .cq-who { color: var(--blue); font-weight: 600; flex: 0 0 auto; }
+.chat-quote .cq-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-msg .chat-mod a[data-chatreply] { color: var(--muted); }
+.chat-msg .chat-mod a[data-chatreply]:hover { color: var(--blue); }
+/* the composer's "replying to" bar */
+.chat-replybar {
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+  background: #16202c; border-left: 2px solid var(--blue);
+  padding: 4px 8px; margin-bottom: 4px; border-radius: 0 4px 4px 0;
+}
+.chat-replybar .crb-label { color: var(--muted); flex: 0 0 auto; }
+.chat-replybar .crb-who { color: var(--blue); font-weight: 600; flex: 0 0 auto; }
+.chat-replybar .crb-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.chat-replybar .crb-x {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 0 2px; flex: 0 0 auto;
+}
+.chat-replybar .crb-x:hover { color: var(--text); }
+/* an @everyone announcement stands out from ordinary chatter */
+.chat-msg.chat-everyone { background: rgba(217,184,74,0.10); border-left: 2px solid var(--amber); padding-left: 8px; border-radius: 0 4px 4px 0; }
+/* brief flash when jumping to a quoted original */
+.chat-flash { background: rgba(92,158,232,0.18); transition: background 1s; }
+
+/* ---------- veto: make BAN vs PICK unmissable, and confirm before committing ---------- */
+.veto-act {
+  display: inline-block; padding: 1px 7px; border-radius: 3px;
+  font-weight: 800; letter-spacing: .06em; font-size: 12px;
+}
+.veto-act-ban  { color: #ff6b63; }
+.veto-act-pick { color: #5fd177; }
+span.veto-act-ban  { background: rgba(217,83,79,0.18);  border: 1px solid rgba(217,83,79,0.55); }
+span.veto-act-pick { background: rgba(87,196,106,0.15); border: 1px solid rgba(87,196,106,0.5); }
+.veto-head-ban  { border-left: 3px solid #d9534f; padding-left: 8px; }
+.veto-head-pick { border-left: 3px solid #57c46a; padding-left: 8px; }
+/* the "your turn" line under the header */
+.veto-yourturn {
+  margin: 6px 0 10px; padding: 6px 10px; border-radius: 4px; font-size: 12px;
+  background: #16202c; border-left: 3px solid currentColor;
+}
+/* a map armed by the first click, waiting for the second */
+.veto-map.armed { outline: 2px solid var(--amber); outline-offset: 1px; position: relative; }
+.veto-map .vm-confirm {
+  display: block; margin-top: 2px; font-size: 10px; font-weight: 700;
+  letter-spacing: .04em; color: var(--amber); text-transform: uppercase;
+}
+.veto-map.act-ban.armed  { outline-color: #d9534f; }
+.veto-map.act-ban.armed  .vm-confirm { color: #ff6b63; }
+.veto-map.act-pick.armed { outline-color: #57c46a; }
+.veto-map.act-pick.armed .vm-confirm { color: #5fd177; }
+.veto-map[disabled] { opacity: .5; cursor: default; }
+/* armed faction chip, awaiting its confirming second click */
+.fchip.armed { outline: 2px solid var(--amber); outline-offset: 1px; }
+.fchip.armed .fchip-name { font-weight: 700; }
+.fchip[disabled].armed { opacity: 1; }
+
+/* your own matches, tinted in every Matches-tab section */
+tr.mt-mine > td { background: rgba(217,164,74,0.07); }
+tr.mt-mine > td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+tr.mt-mine:hover > td { background: rgba(217,164,74,0.12); }
+/* replay links inside the match details popup */
+.md-replays { margin: 10px 0 0; font-size: 12px; text-align: center; }
+.md-replays a { margin-right: 2px; }
+/* the speaker's Discord handle, attached to their own message so it is never ambiguous */
+.chat-dc {
+  font-family: var(--mono); font-size: 10px; color: var(--blue);
+  background: #4c8fd41f; border: 1px solid #4c8fd444; border-radius: 3px;
+  padding: 0 5px; margin-left: 6px; vertical-align: baseline;
+}
+
+/* "How the veto will run" preview, shown on a map pool before any of it happens */
+.vp-title { margin: 14px 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.vp-steps { display: flex; flex-direction: column; gap: 3px; }
+.vp-step { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 6px; border-radius: 3px; background: #16202c; }
+.vp-step.decider { background: #1d2b1f; }
+.vp-n { min-width: 18px; text-align: right; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.vp-team { color: var(--text); }
+
+/* home: collapsible completed archive, split by year */
+h2.collapsy { cursor: pointer; user-select: none; }
+h2.collapsy:hover { color: var(--amber); }
+.collapsy-caret { display: inline-block; width: 12px; color: var(--muted); font-size: 11px; }
+.cmp-year { margin-top: 14px; }
+.cmp-year:first-child { margin-top: 4px; }
+.cmp-year-head {
+  margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--amber); border-bottom: 1px solid #2a3d55; padding-bottom: 4px;
+}
+.cmp-more { margin-top: 8px; }
+
+/* ---------------------------------------------------------------------------
+   Pinned chat
+   One chat can be pinned to a rail on the right, so it stays readable while the
+   user works through the bracket, matches and vetoes. The rail is fixed to the
+   viewport and the page is PADDED out of its way rather than covered: an overlay
+   would sit on top of match boxes and swallow their clicks. On the bracket that
+   just makes the (already horizontally scrollable) bracket narrower.
+   --------------------------------------------------------------------------- */
+:root { --pin-w: clamp(300px, 25vw, 370px); --pin-top: 56px; --pin-h: min(58vh, 440px); }
+
+.pin-rail {
+  position: fixed; right: 0; top: var(--pin-top); bottom: 0;
+  width: var(--pin-w);
+  z-index: 18;                       /* under the sticky top bar (20) and any modal (50) */
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #16202c, var(--panel));
+  border-left: 1px solid var(--line-solid);
+  box-shadow: -14px 0 34px #00000073;
+}
+.pin-rail::before {                  /* the amber edge every panel in this theme carries */
+  content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px;
+  background: linear-gradient(180deg, var(--amber), transparent 55%); opacity: .5;
+}
+.pin-rail-body { flex: 1; min-height: 0; display: flex; }
+/* the panel fills the rail: the log takes the slack, the composer stays pinned to the bottom */
+.chat-panel.chat-panel-pinned { flex: 1; min-height: 0; height: 100%; border: none; border-radius: 0; background: transparent; }
+.chat-panel-pinned .chat-log { height: auto; flex: 1 1 auto; min-height: 0; }
+.chat-panel-pinned .chat-input { flex-wrap: wrap; }
+.chat-panel-pinned .chat-input .btn { flex: 0 0 auto; }
+
+body.chat-pinned main { padding-right: calc(var(--pin-w) + 10px); }
+body.chat-pinned #toast { transform: translateX(calc(-50% - (var(--pin-w) / 2))); }
+
+/* chat panel header: label on the left, pin/close controls on the right */
+.chat-head { display: flex; align-items: center; gap: 8px; }
+.chat-head .ch-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-head .ch-pin-mark { flex: none; font-size: 12px; filter: saturate(.8); }
+.chat-head .ch-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.ch-icon {
+  background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+  color: var(--muted); font-size: 13px; line-height: 1; padding: 4px 6px;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.ch-icon:hover { color: var(--amber); border-color: #ffb44755; background: var(--amber-dim); }
+.ch-icon.ch-close:hover { color: var(--red); border-color: #e2564a66; background: #e2564a1c; }
+
+/* "Pin this chat on the right" — quiet until you want it, amber once it is on */
+.chat-pin-btn {
+  background: transparent; border: 1px solid var(--line-solid); border-radius: 4px;
+  color: var(--muted); cursor: pointer; white-space: nowrap;
+  font-family: var(--body); font-size: 11px; letter-spacing: .04em; text-transform: none;
+  padding: 4px 9px; transition: color .15s, border-color .15s, background .15s;
+}
+.chat-pin-btn:hover { color: var(--amber); border-color: #ffb44766; background: var(--amber-dim); }
+.chat-pin-btn.on { color: var(--amber); border-color: var(--amber); background: var(--amber-dim); }
+
+/* room list: the room button and its pin toggle sit side by side */
+.chat-room-row { display: flex; align-items: stretch; gap: 4px; }
+.chat-room-row .chat-room { flex: 1; min-width: 0; }
+.chat-pin-mini {
+  flex: 0 0 auto; width: 30px;
+  background: var(--panel2, #141d28); border: 1px solid var(--line-solid); border-radius: 4px;
+  color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; padding: 0;
+  opacity: .45; transition: opacity .15s, border-color .15s, background .15s;
+}
+.chat-room-row:hover .chat-pin-mini { opacity: .9; }
+.chat-pin-mini:hover { opacity: 1; border-color: var(--amber); background: var(--amber-dim); }
+.chat-pin-mini.on { opacity: 1; border-color: var(--amber); background: var(--amber-dim); box-shadow: 0 0 10px #ffb44722; }
+.chat-pin-hint { margin: 10px 0 0; line-height: 1.45; }
+
+/* Narrow screens have no room for a rail — dock the pinned chat to the bottom instead. */
+@media (max-width: 980px) {
+  .pin-rail {
+    top: auto; left: 0; right: 0; width: auto; height: var(--pin-h);
+    border-left: none; border-top: 1px solid var(--line-solid);
+    box-shadow: 0 -14px 34px #00000073;
+  }
+  .pin-rail::before { left: 0; right: 0; top: -1px; bottom: auto; width: auto; height: 2px;
+    background: linear-gradient(90deg, var(--amber), transparent 55%); }
+  body.chat-pinned main { padding-right: 0; padding-bottom: calc(var(--pin-h) + 24px); }
+  body.chat-pinned #toast { transform: translateX(-50%); bottom: calc(var(--pin-h) + 16px); }
+  .chat-pin-btn { font-size: 10px; padding: 4px 7px; }
+}
+
+/* Which rating counts and as of when. It was three grey sentences competing with the Discord
+   help text and players missed it; it is now a bordered callout the eye lands on. */
+.rating-callout {
+  border: 1px solid var(--line-solid); border-left: 3px solid var(--amber);
+  border-radius: 4px; background: #ffb4470a;
+  padding: 10px 12px; margin: 12px 0;
+}
+.rating-callout .rc-src { font-size: 13px; }
+.rating-callout .rc-req { margin-top: 6px; }
+.rating-callout strong, .rating-source strong { color: var(--amber); }
+.rating-source { font-size: 13px; }
+
+/* organizer-only all-leaderboard rating breakdown */
+.ar-table { width: 100%; }
+.ar-table td, .ar-table th { padding: 6px 8px; }
+.ar-table tr.ar-counted { background: #ffb4470f; }
+.ar-table tr.ar-counted td { color: var(--text); }
+.ar-chip {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+  color: #0A1420; background: var(--amber); border-radius: 3px; padding: 1px 5px; margin-left: 6px;
+  vertical-align: 1px;
+}
+
+/* ---------------------------------------------------------------------------
+   Multi-day events: the day picker, and the "runs on N days" chip
+   --------------------------------------------------------------------------- */
+.tdays {
+  display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  color: var(--amber); border: 1px solid #ffb44755; background: var(--amber-dim);
+  border-radius: 3px; padding: 1px 6px; vertical-align: 1px; white-space: nowrap;
+}
+.dp-host { margin-top: 8px; }
+.daypicker {
+  border: 1px solid var(--line-solid); border-radius: 6px;
+  background: var(--panel2, #141d28); padding: 10px 12px; max-width: 340px;
+}
+.dp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.dp-title { font-family: var(--display); font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
+.dp-nav {
+  background: none; border: 1px solid var(--line-solid); border-radius: 4px; cursor: pointer;
+  color: var(--muted); font-size: 15px; line-height: 1; padding: 2px 9px;
+}
+.dp-nav:hover { color: var(--amber); border-color: #ffb44766; }
+.dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.dp-dow { margin-bottom: 3px; }
+.dp-cell {
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1 / 1; min-height: 30px; padding: 0;
+  background: none; border: 1px solid transparent; border-radius: 4px;
+  color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.dp-cell.dp-empty, .dp-cell.dp-dowc { cursor: default; border: none; }
+.dp-dowc { color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: .06em; }
+button.dp-cell:hover { border-color: var(--amber); background: #1d2b3a; }
+.dp-cell.today { border-color: #35506e; }
+.dp-cell.on { background: var(--amber-dim); border-color: var(--amber); color: var(--amber); font-weight: 700; }
+.dp-cell.on.first { background: var(--amber); color: #0A1420; }
+.dp-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 9px; font-size: 12px; }
+.dp-sum { flex: 1; min-width: 0; color: var(--text); }
+.dp-clear {
+  background: none; border: 1px solid var(--line-solid); border-radius: 4px; cursor: pointer;
+  color: var(--muted); font: inherit; font-size: 11px; padding: 3px 8px;
+}
+.dp-clear:hover { color: var(--amber); border-color: #ffb44766; }
+.dp-hint { margin-top: 6px; line-height: 1.4; }
+
+/* ---------------------------------------------------------------------------
+   Bans. One panel serves all three scopes (global, series, tournament).
+   --------------------------------------------------------------------------- */
+.ban-table-wrap { overflow-x: auto; }
+.ban-table { width: 100%; }
+.ban-table td, .ban-table th { padding: 7px 8px; vertical-align: top; }
+.ban-table input[type="date"] { max-width: 165px; }
+/* an expired ban keeps its row - the record of who set it and why is the point */
+.ban-table tr.ban-expired td { opacity: .55; }
+.ban-notice { border-left: 3px solid var(--red); background: #e2564a0f; }
+.ban-notice h2::before { background: var(--red); }
+
+/* per-match Bo selector in the match details header (organizers only) */
+.md-bo-sel {
+  display: inline-block; width: auto; margin: 0 0 0 2px; padding: 2px 6px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.4;
+  vertical-align: middle; height: auto;
+}
+/* a swiss row for someone already knocked out reads as history, not a live contender */
+tr.row-out > td { opacity: .55; }
+
+/* ---- opponent pick phase (LotS: seeds 1-8 choose who they play) ---- */
+.pick-callout {
+  border: 1px solid var(--amber, #d99a2b);
+  background: color-mix(in srgb, var(--amber, #d99a2b) 12%, transparent);
+  border-radius: 6px; padding: 10px 12px; margin: 0 0 12px;
+}
+.pick-callout-h {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--amber, #d99a2b);
+}
+.pick-clock {
+  font-family: var(--mono); font-size: 12px; margin-left: 6px;
+  padding: 1px 6px; border-radius: 4px;
+  background: rgba(255, 255, 255, .07);
+}
+.pick-clock.urgent { background: var(--danger, #e5484d); color: #fff; }
+/* The pairing rows have class names of their own. As .pick-list / .pick-row they also matched the
+   compact clickable lists further up (a wrapping row of small bordered chips), so each pairing was
+   squeezed into a box of its own and every name was cut off. Names wrap rather than truncate. */
+.opp-list { margin-top: 12px; border-top: 1px solid var(--line, #2a2f37); }
+.opp-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 4px; border-bottom: 1px solid var(--line, #2a2f37);
+}
+.opp-row.turn { background: rgba(255, 255, 255, .04); }
+.opp-seed {
+  width: 26px; text-align: center; flex: none;
+  color: var(--muted, #8b93a1); font-size: 12px;
+}
+.opp-name, .opp-target { flex: 1 1 40%; min-width: 0; overflow-wrap: anywhere; }
+.opp-vs { flex: none; font-size: 12px; }
+.opp-pending { color: var(--amber, #d99a2b); font-style: italic; }
+.pick-choose { margin-top: 14px; }
+.pick-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.pick-opts .btn { margin: 0; }
+/* undo the last pick / redo the playoffs: organizers, until the first playoff match starts */
+.playoff-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.playoff-actions .btn { margin: 0; }
+@media (max-width: 560px) {
+  .opp-row { flex-wrap: wrap; gap: 4px 8px; }
+  .opp-name, .opp-target { flex-basis: calc(100% - 40px); }
+  .opp-target { margin-left: 34px; }   /* under the name, not under the seed number */
+  .opp-vs { display: none; }
+}
+
+/* ---- read-only rating check (Players tab) ---- */
+.signup-actions {
+  display: flex; align-items: flex-start; gap: 12px;
+  flex-wrap: wrap; margin-top: 16px;
+}
+.signup-actions .btn { margin: 0; }
+.rating-check { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rating-check .btn { margin: 0; }
+.rating-check .rc-note { margin: 0; }
+.rc-out {
+  margin-top: 8px; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--line, #2a2f37);
+  background: rgba(255, 255, 255, .03);
+  max-width: 520px;
+}
+.rc-out.good { border-color: var(--green, #46a758); background: color-mix(in srgb, var(--green, #46a758) 10%, transparent); }
+.rc-out.bad { border-color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 10%, transparent); }
+.rc-out.warn { border-color: var(--amber, #d99a2b); background: color-mix(in srgb, var(--amber, #d99a2b) 10%, transparent); }
+.rc-verdict { font-weight: 600; margin-bottom: 6px; }
+.rc-num { margin-bottom: 2px; }
+
+/* "click here" from the overview lands ON the check, not just on the tab */
+.focus-flash {
+  animation: focusFlash 2s ease-out 1;
+  border-radius: 6px;
+}
+@keyframes focusFlash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  15%, 60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber, #d99a2b) 55%, transparent); }
+}
+@media (max-width: 560px) {
+  .signup-actions { flex-direction: column; align-items: stretch; }
+  .rc-out { max-width: none; }
+}
+
+/* ---- declared early stop: the bracket must not draw matches nobody will play ---- */
+.stop-notice { border-left: 3px solid var(--amber, #d99a2b); }
+.stop-notice.done { border-left-color: var(--muted, #8b93a1); }
+.stop-head { letter-spacing: 1px; color: var(--amber, #d99a2b); margin-bottom: 6px; }
+.stop-notice.done .stop-head { color: var(--muted, #8b93a1); }
+.stop-count { margin-top: 6px; }
+/* a match that was never played reads as history, not as something still to come */
+.bmatch.notplayed { opacity: .4; }
+.bmatch.notplayed::after {
+  content: 'not played';
+  position: absolute; right: 6px; bottom: 2px;
+  font-family: var(--mono); font-size: 9px; letter-spacing: .5px;
+  color: var(--muted, #8b93a1); text-transform: uppercase;
+}
+
+/* setting the early-stop rule from the Admin tab while the tournament runs */
+.stop-set {
+  margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--line, #2a2f37); border-radius: 6px;
+  background: rgba(255, 255, 255, .02);
+}
+.stop-set .btn { margin: 0; }
+
+/* ---- arranging the opening Swiss matchups ---- */
+.r1edit .r1rows { display: flex; flex-direction: column; gap: 6px; }
+.r1row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.r1row select { margin: 0; flex: 1 1 160px; min-width: 0; max-width: 240px; }
+.r1n { width: 20px; flex: none; color: var(--muted, #8b93a1); font-size: 12px; text-align: right; }
+.r1edit .warn { color: var(--amber, #d99a2b); }
+@media (max-width: 560px) { .r1row select { flex-basis: 100%; max-width: none; } }
+
+/* ---------- divisions (King / Prince) ---------- */
+.champ-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+.champ-row .champ { flex: 1; min-width: 240px; margin-bottom: 0; }
+.div-draft { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-solid); }
+.div-draft-h { font-family: var(--display); font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin: 14px 0 6px; }
+.div-draft .div-draft-h { margin-top: 0; }
+
+/* ---------- Hall of Fame ---------- */
+.hof-search { margin: 0 0 12px; }
+.hof-search input { width: 100%; max-width: 420px; }
+.hof-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+
+/* ---------- Predictions ---------- */
+.pred-prize { margin-top: 12px; padding: 10px 14px; border: 1px solid #ffb44766; background: var(--amber-dim); border-radius: 4px; color: var(--text); font-size: 14px; }
+.pred-prize-k { font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin-right: 8px; }
+.pred-state { font-family: var(--mono); font-size: 9px; letter-spacing: .5px; padding: 1px 5px; border-radius: 3px; margin-left: 4px; vertical-align: 1px; border: 1px solid var(--line-solid); }
+.pred-state.open { color: #3fb950; border-color: #2ea04366; }
+.pred-state.locked { color: var(--muted); }
+.pred-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.pred-head h2 { margin: 0; }
+.pred-note { margin: 0 0 12px; padding: 8px 12px; border-left: 3px solid var(--line-solid); background: var(--panel2); font-size: 13px; }
+.pred-note.ok { border-left-color: var(--green); }
+.pred-note.warn { border-left-color: var(--amber); color: var(--amber); }
+.pred-viewing { margin: 0 0 12px; padding: 8px 12px; border: 1px solid #4c8fd455; background: #4c8fd41a; border-radius: 4px; font-size: 13px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pred-score { margin: 0 0 12px; font-size: 13px; }
+.pred-score .ok, .pred-mark.ok { color: #3fb950; }
+.pred-score .no, .pred-mark.no { color: #ff6369; }
+.pred-div { font-family: var(--display); font-size: 14px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin: 16px 0 8px; }
+.pred-round { margin: 0 0 14px; }
+.pred-round-h { font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.pred-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.pred-match { display: flex; flex-direction: column; gap: 4px; padding: 6px; border: 1px solid var(--line-solid); border-radius: 4px; background: var(--panel2); min-width: 0; }
+.pred-match.ok { border-color: #2ea04366; }
+.pred-match.no { border-color: #ff636955; }
+.pm-label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--muted); padding: 0 2px; }
+.pred-team {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; text-align: left;
+  padding: 6px 8px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--bg);
+  color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+}
+.pred-team .seedtag { margin-right: 0; }
+.pred-team .pt-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pred-team:hover:not(:disabled) { border-color: var(--amber); }
+.pred-team.on { border-color: var(--green); background: #2ea04322; box-shadow: inset 3px 0 0 var(--green); }
+.pred-team:disabled { cursor: default; }
+.pred-team:disabled:not(.on) { opacity: .75; }
+.pred-team .pt-won { font-family: var(--mono); font-size: 9px; letter-spacing: .5px; color: var(--amber); }
+.pred-team.won { border-style: dashed; }
+.pred-tbd { padding: 6px 8px; font-size: 12px; color: var(--muted); font-style: italic; border: 1px dashed var(--line-solid); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pred-mark { font-weight: 700; min-width: 12px; display: inline-block; text-align: center; }
+.pred-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-solid); }
+.pred-dist { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.pd-item { font-family: var(--mono); font-size: 11px; padding: 3px 8px; border: 1px solid var(--line-solid); border-radius: 3px; color: var(--muted); }
+.pd-item strong { color: var(--text); margin-right: 4px; }
+.pd-item.off { border-color: #ffb44788; color: var(--amber); }
+.pred-recs { display: flex; flex-direction: column; gap: 4px; }
+.pred-recrow { display: grid; grid-template-columns: 28px minmax(90px, 1fr) auto 90px 18px; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 3px; }
+.pred-recrow:nth-child(odd) { background: var(--panel2); }
+.pred-recrow.ok { box-shadow: inset 3px 0 0 #2ea043; }
+.pred-recrow.no { box-shadow: inset 3px 0 0 #ff6369; }
+.pred-recrow .pr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pred-rec { display: flex; gap: 4px; flex-wrap: wrap; }
+.pred-rec select { width: auto; padding: 4px 8px; }
+.pred-rc { font-family: var(--mono); font-size: 12px; padding: 4px 8px; border: 1px solid var(--line-solid); border-radius: 3px; background: var(--bg); color: var(--muted); cursor: pointer; }
+.pred-rc:hover:not(:disabled) { border-color: var(--amber); color: var(--text); }
+.pred-rc.on { border-color: var(--green); background: #2ea04333; color: var(--text); }
+.pred-rc:disabled { cursor: default; }
+.pred-names { display: flex; gap: 6px; flex-wrap: wrap; }
+.pred-names .me { border-color: var(--amber); }
+.pred-board tr.me td { background: var(--amber-dim); }
+.pred-badge { font-family: var(--mono); font-size: 9px; letter-spacing: .5px; padding: 1px 6px; border-radius: 3px; vertical-align: 1px; margin-left: 4px; }
+.pred-badge.perfect { color: #0A1420; background: var(--amber); }
+.pred-badge.alive { color: #3fb950; border: 1px solid #2ea04366; }
+.pred-perfect-line { margin: 0 0 10px; padding: 8px 12px; border: 1px solid #ffb44766; background: var(--amber-dim); border-radius: 4px; }
+@media (max-width: 560px) {
+  /* name, record so far and mark on one line, the record buttons under them */
+  .pred-recrow { grid-template-columns: 24px minmax(0, 1fr) auto 18px; row-gap: 4px; }
+  .pred-recrow .seedtag { grid-column: 1; grid-row: 1; }
+  .pred-recrow .pr-name { grid-column: 2; grid-row: 1; }
+  .pred-recrow .pr-now { grid-column: 3; grid-row: 1; }
+  .pred-recrow .pred-mark { grid-column: 4; grid-row: 1; }
+  .pred-recrow .pred-rec { grid-column: 1 / -1; grid-row: 2; }
+}
